@@ -1,0 +1,15 @@
+{
+  "name": "sview",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Minimal frameless cross-platform image viewer built with Tauri",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:debug": "tauri build --debug"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
