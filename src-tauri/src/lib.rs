@@ -165,10 +165,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
+    app.run(|_app_handle, _event| {
         // macOS: Finder / Dock からファイルを開いたときに届く
         #[cfg(target_os = "macos")]
-        if let tauri::RunEvent::Opened { urls } = event {
+        if let tauri::RunEvent::Opened { urls } = &_event {
             use tauri::{Emitter, Manager};
             if let Some(path) = urls
                 .iter()
@@ -177,12 +177,11 @@ pub fn run() {
             {
                 let path = path.to_string_lossy().into_owned();
                 // フロントエンドが未起動の場合に備えて state にも入れておく
-                if let Some(state) = app_handle.try_state::<StartupFile>() {
+                if let Some(state) = _app_handle.try_state::<StartupFile>() {
                     *state.0.lock().unwrap() = Some(path.clone());
                 }
-                let _ = app_handle.emit("open-file", path);
+                let _ = _app_handle.emit("open-file", path);
             }
         }
-        let _ = (&app_handle, &event);
     });
 }
