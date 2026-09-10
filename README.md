@@ -121,11 +121,49 @@ macOS はマウスの「進む/戻る」ボタンの扱いが Windows と異な�
 
 また、フレームレス・透過ウィンドウの実現に `macOSPrivateApi` を使用しています。Mac App Store 配布を行う場合はこの設定を外す必要があります。
 
+### Linux（Ubuntu）から Windows 向けバイナリをクロスビルドする
+
+macOS 実機や CI（`macos-latest`）を使わずに開発機（Ubuntu）だけで完結させたい場合、Windows 向けバイナリは [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin) を使うことで Linux 上からクロスビルドできます（Ubuntu 上で動作確認済み）。
+
+前提パッケージのインストール:
+
+```sh
+# リンクに使う clang / lld と、NSIS インストーラを生成する makensis
+sudo apt-get install -y clang lld llvm nsis
+
+rustup target add x86_64-pc-windows-msvc
+cargo install cargo-xwin
+```
+
+ビルド（Tauri CLI に `--runner cargo-xwin` を指定するのが重要です。省略すると通常の `cc`(GCC) が呼ばれてリソースコンパイルに失敗します）:
+
+```sh
+npx tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+```
+
+初回実行時に Windows SDK / MSVC CRT ヘッダーが自動ダウンロードされます（Microsoft の再配布可能条件下で提供されているもので、`cargo-xwin` が取得・管理します）。生成物:
+
+- 実行ファイル: `src-tauri/target/x86_64-pc-windows-msvc/release/sview.exe`
+- インストーラ: `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/sView_<version>_x64-setup.exe`
+
+制約事項:
+
+- MSI（WiX）バンドルはクロスビルドで問題が出ることがあるため、`--bundles nsis` を推奨します
+- コード署名（Authenticode）は行われません。これは GitHub Actions の `windows-latest` ビルドでも同様です
+- WebView2 ランタイムの検証など、一部の実行時挙動は実機の Windows での確認を推奨します
+
+**macOS 向けバイナリは Linux からクロスビルドできません。** Apple の開発者利用許諾により macOS SDK を Linux 上で正規に取得・利用することができず、また `.app`/`.dmg` の生成や署名・公証には `codesign` などの macOS ネイティブツールが必要なため、Tauri でも公式にサポートされていません。macOS 向けビルドは引き続き macOS 実機か、CI の `macos-latest` runner（`.github/workflows/build.yml`）を利用してください。
+
 ### 未署名バイナリの実行
 
-- **macOS**: 署名なしのため、初回起動時に「開発元を検証できません」と表示されます。`.app` を右クリック →「開く」、または `xattr -cr sView.app` で回避できます
+配布物は Apple Developer ID による署名・公証（notarization）を行っていません（ad-hoc 署名のみ）。そのため、ダウンロードした `.dmg` / `.app` には macOS が自動で quarantine 属性を付与し、初回起動時にブロックされます。
+
+- **macOS**: 「"sView"は壊れているため開けません。ゴミ箱に入れる必要があります。」と表示される場合、アプリが壊れているわけではなく quarantine 属性が原因です。以下で解除してください
+
+  ```sh
+  xattr -cr /Applications/sView.app
+  ```
+
+  （`.app` を任意の場所に置いている場合はそのパスを指定してください。システム設定 →「プライバシーとセキュリティ」→「このまま開く」からでも起動できます）
+
 - **Windows**: SmartScreen の警告が出た場合は「詳細情報」→「実行」を選択してください
-
-## ライセンス
-
-MIT
