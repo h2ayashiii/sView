@@ -32,6 +32,8 @@ let images = [];
 let index = -1;
 // 書庫を開いている場合はそのフルパス。フォルダの場合は null
 let archivePath = null;
+// 全エントリが共有する先頭フォルダ。表示名からはこの分を取り除く
+let entryPrefix = "";
 // 表示要求の世代。非同期読み込みの結果が古い場合は捨てる
 let showToken = 0;
 
@@ -156,11 +158,15 @@ function updateChrome() {
     return;
   }
   app.classList.remove("no-image");
-  const name = baseName(images[index]);
+  // 書庫内は同名ファイルが別フォルダに並びうるので、共通フォルダを除いた
+  // 相対パスで表示する（単一フォルダの書庫なら結果的にファイル名だけになる）
+  const name = archivePath
+    ? images[index].slice(entryPrefix.length)
+    : baseName(images[index]);
   filenameEl.textContent = archivePath ? `${baseName(archivePath)} / ${name}` : name;
   filenameEl.title = archivePath ? `${archivePath} :: ${images[index]}` : images[index];
   counterEl.textContent = `${index + 1} / ${images.length}`;
-  appWindow.setTitle(`${name} - sView`).catch(() => {});
+  appWindow.setTitle(`${baseName(images[index])} - sView`).catch(() => {});
 }
 
 function preloadNeighbors() {
@@ -206,6 +212,7 @@ async function openPath(path, preferredIndex = -1) {
     const res = await invoke("list_images", { path });
     if (res.archive !== archivePath) clearBlobCache();
     archivePath = res.archive ?? null;
+    entryPrefix = res.prefix ?? "";
     images = res.images;
     index = preferredIndex >= 0 && preferredIndex < images.length ? preferredIndex : res.index;
     await show();

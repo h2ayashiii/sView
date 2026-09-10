@@ -41,6 +41,8 @@ struct ImageList {
     index: usize,
     /// 書庫を開いている場合はその書庫のフルパス
     archive: Option<String>,
+    /// 表示名から取り除く共通フォルダ（書庫のみ。例: "book/"）
+    prefix: String,
 }
 
 fn has_ext(path: &Path, exts: &[&str]) -> bool {
@@ -137,6 +139,25 @@ mod tests {
         assert!(!is_archive(Path::new("/x/photo.png")));
     }
 
+    #[test]
+    fn common_prefix_strips_only_a_shared_folder() {
+        let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // 余計に一層挟まれている → その一層を吸収
+        assert_eq!(
+            common_dir_prefix(&v(&["book/001.png", "book/002.png"])),
+            "book/"
+        );
+        assert_eq!(common_dir_prefix(&v(&["a/b/1.png", "a/b/2.png"])), "a/b/");
+        // 章分けされている → 共通部分までしか削らない
+        assert_eq!(common_dir_prefix(&v(&["a/b/1.png", "a/c/2.png"])), "a/");
+        assert_eq!(common_dir_prefix(&v(&["ch1/1.png", "ch2/1.png"])), "");
+        // 名前が前方一致するだけの別フォルダを誤って削らない
+        assert_eq!(common_dir_prefix(&v(&["ch1/1.png", "ch10/1.png"])), "");
+        // 書庫直下に画像が並んでいる → 削らない
+        assert_eq!(common_dir_prefix(&v(&["001.png", "002.png"])), "");
+        assert_eq!(common_dir_prefix(&[]), "");
+    }
+
     /// 画像2枚とテキスト1枚を含む zip を作り、一覧と単体取り出しを確認する
     #[test]
     fn archive_listing_and_single_entry_read() {
@@ -171,6 +192,8 @@ mod tests {
             list.archive.as_deref(),
             Some(path.to_string_lossy().as_ref())
         );
+        // 画像はすべて b/ の下なので、その一層は表示名から取り除かれる
+        assert_eq!(list.prefix, "b/");
 
         let bytes = read_archive_entry(&path, "b/img2.png", &cache).unwrap();
         assert_eq!(bytes, b"two");
@@ -213,6 +236,33 @@ fn with_archive<T>(
     f(&mut slot.as_mut().expect("just inserted").zip)
 }
 
+/// 全エントリが共有する先頭フォルダを返す（末尾に "/" を含む）。
+/// 圧縮ソフトが余計に一層挟んだ場合、その一層をここで吸収して
+/// 表示名を「書庫直下に画像が並んでいる」ように見せる
+fn common_dir_prefix(names: &[String]) -> String {
+    let Some(first) = names.first() else {
+        return String::new();
+    };
+    let mut prefix = match first.rfind('/') {
+        Some(i) => &first[..=i],
+        None => return String::new(),
+    };
+    for name in &names[1..] {
+        // 候補が合わなければ 1 階層ずつ短くする
+        while !prefix.is_empty() && !name.starts_with(prefix) {
+            let without_slash = &prefix[..prefix.len() - 1];
+            prefix = match without_slash.rfind('/') {
+                Some(i) => &prefix[..=i],
+                None => "",
+            };
+        }
+        if prefix.is_empty() {
+            break;
+        }
+    }
+    prefix.to_owned()
+}
+
 /// 書庫内の画像エントリ名を自然順で返す
 fn list_archive_images(path: &Path, cache: &ArchiveCache) -> Result<ImageList, String> {
     let mut names = with_archive(path, cache, |zip| {
@@ -229,10 +279,12 @@ fn list_archive_images(path: &Path, cache: &ArchiveCache) -> Result<ImageList, S
         ));
     }
     names.sort_by(|x, y| natural_cmp(x, y));
+    let prefix = common_dir_prefix(&names);
     Ok(ImageList {
         images: names,
         index: 0,
         archive: Some(path.to_string_lossy().into_owned()),
+        prefix,
     })
 }
 
@@ -285,6 +337,7 @@ fn list_dir_images(dir: &Path, current: Option<&std::ffi::OsStr>) -> Result<Imag
         images,
         index,
         archive: None,
+        prefix: String::new(),
     })
 }
 
