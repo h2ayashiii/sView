@@ -12,14 +12,72 @@ const placeholder = document.getElementById("placeholder");
 const errorBox = document.getElementById("error");
 const filenameEl = document.getElementById("filename");
 const counterEl = document.getElementById("counter");
+const navPrev = document.getElementById("nav-prev");
+const navNext = document.getElementById("nav-next");
 
 const IMAGE_EXT_FILTER = [
   "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg",
   "png", "svg", "tif", "tiff", "webp",
 ];
+const ARCHIVE_EXT_FILTER = ["zip", "cbz"];
 
-let images = []; // 同一フォルダ内の画像のフルパス（自然順ソート済み）
+// blob URL に必要な MIME（拡張子から判定）
+const MIME = {
+  avif: "image/avif", bmp: "image/bmp", gif: "image/gif", ico: "image/x-icon",
+  jfif: "image/jpeg", jpe: "image/jpeg", jpeg: "image/jpeg", jpg: "image/jpeg",
+  png: "image/png", svg: "image/svg+xml", tif: "image/tiff", tiff: "image/tiff",
+  webp: "image/webp",
+};
+
+// フォルダの場合は画像のフルパス、書庫の場合は書庫内のエントリ名（自然順ソート済み）
+let images = [];
 let index = -1;
+// 書庫を開いている場合はそのフルパス。フォルダの場合は null
+let archivePath = null;
+// 全エントリが共有する先頭フォルダ。表示名からはこの分を取り除く
+let entryPrefix = "";
+// 表示要求の世代。非同期読み込みの結果が古い場合は捨てる
+let showToken = 0;
+
+// ---- 書庫内画像の遅延ロード ----
+// 書庫は一括展開せず、表示するエントリだけを Rust 側から取り出して
+// blob URL 化する。前後の先読み分を含め数枚だけ保持する
+const BLOB_CACHE_MAX = 5;
+const blobCache = new Map(); // entry -> blob URL（挿入順 = LRU 順）
+
+function extOf(name) {
+  const m = /\.([^.\\/]+)$/.exec(name);
+  return m ? m[1].toLowerCase() : "";
+}
+
+function clearBlobCache() {
+  for (const url of blobCache.values()) URL.revokeObjectURL(url);
+  blobCache.clear();
+}
+
+function trimBlobCache() {
+  while (blobCache.size > BLOB_CACHE_MAX) {
+    const [oldest, url] = blobCache.entries().next().value;
+    if (oldest === images[index]) break; // 表示中のものは残す
+    URL.revokeObjectURL(url);
+    blobCache.delete(oldest);
+  }
+}
+
+async function archiveBlobUrl(entry) {
+  const cached = blobCache.get(entry);
+  if (cached) {
+    // LRU 更新
+    blobCache.delete(entry);
+    blobCache.set(entry, cached);
+    return cached;
+  }
+  const bytes = await invoke("read_archive_image", { archive: archivePath, entry });
+  const url = URL.createObjectURL(new Blob([bytes], { type: MIME[extOf(entry)] ?? "" }));
+  blobCache.set(entry, url);
+  trimBlobCache();
+  return url;
+}
 
 // ---- zoom / pan state ----
 // mode "fit": ウィンドウにフィット（このときステージはウィンドウドラッグ領域になる）
@@ -82,11 +140,17 @@ function zoomTo(target) {
 }
 
 // ---- display ----
-function showError(message) {
+// エラーと案内（端に到達したなど）を同じ場所に出す。kind で色だけ変える
+function showToast(message, kind) {
   errorBox.textContent = String(message);
+  errorBox.classList.toggle("notice", kind === "notice");
   errorBox.hidden = false;
-  clearTimeout(showError.timer);
-  showError.timer = setTimeout(() => (errorBox.hidden = true), 4000);
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => (errorBox.hidden = true), kind === "notice" ? 1500 : 4000);
+}
+
+function showError(message) {
+  showToast(message, "error");
 }
 
 function baseName(path) {
@@ -102,27 +166,50 @@ function updateChrome() {
     return;
   }
   app.classList.remove("no-image");
-  const name = baseName(images[index]);
-  filenameEl.textContent = name;
-  filenameEl.title = images[index];
+  // 書庫内は同名ファイルが別フォルダに並びうるので、共通フォルダを除いた
+  // 相対パスで表示する（単一フォルダの書庫なら結果的にファイル名だけになる）
+  const name = archivePath
+    ? images[index].slice(entryPrefix.length)
+    : baseName(images[index]);
+  filenameEl.textContent = archivePath ? `${baseName(archivePath)} / ${name}` : name;
+  filenameEl.title = archivePath ? `${archivePath} :: ${images[index]}` : images[index];
   counterEl.textContent = `${index + 1} / ${images.length}`;
-  appWindow.setTitle(`${name} - sView`).catch(() => {});
+  navPrev.disabled = index === 0;
+  navNext.disabled = index === images.length - 1;
+  appWindow.setTitle(`${baseName(images[index])} - sView`).catch(() => {});
 }
 
 function preloadNeighbors() {
   if (images.length < 2) return;
   for (const off of [1, -1]) {
-    const i = (index + off + images.length) % images.length;
-    if (i !== index) new Image().src = convertFileSrc(images[i]);
+    // 端で折り返さないので、範囲外は先読みしない
+    const i = index + off;
+    if (i < 0 || i >= images.length) continue;
+    if (archivePath) {
+      // 先読みも 1 件ずつ。失敗しても表示には影響させない
+      archiveBlobUrl(images[i]).catch(() => {});
+    } else {
+      new Image().src = convertFileSrc(images[i]);
+    }
   }
 }
 
-function show() {
+async function show() {
   if (index < 0 || index >= images.length) return;
+  const token = ++showToken;
   setFitMode();
   placeholder.hidden = true;
-  img.src = convertFileSrc(images[index]);
   updateChrome();
+  try {
+    const src = archivePath
+      ? await archiveBlobUrl(images[index])
+      : convertFileSrc(images[index]);
+    if (token !== showToken) return; // 既に別の画像へ移動している
+    img.src = src;
+  } catch (e) {
+    if (token === showToken) showError(e);
+    return;
+  }
   preloadNeighbors();
 }
 
@@ -131,12 +218,15 @@ img.addEventListener("error", () => {
 });
 
 // ---- open / navigate ----
-async function openPath(path) {
+async function openPath(path, preferredIndex = -1) {
   try {
     const res = await invoke("list_images", { path });
+    if (res.archive !== archivePath) clearBlobCache();
+    archivePath = res.archive ?? null;
+    entryPrefix = res.prefix ?? "";
     images = res.images;
-    index = res.index;
-    show();
+    index = preferredIndex >= 0 && preferredIndex < images.length ? preferredIndex : res.index;
+    await show();
   } catch (e) {
     showError(e);
   }
@@ -144,21 +234,46 @@ async function openPath(path) {
 
 function step(delta) {
   if (images.length === 0) return;
-  index = (index + delta + images.length) % images.length;
+  const next = index + delta;
+  if (next < 0 || next >= images.length) {
+    // 端では折り返さず、そこが端であることだけ知らせる
+    showToast(next < 0 ? "最初の画像です" : "最後の画像です", "notice");
+    return;
+  }
+  index = next;
   show();
 }
 
 async function rescan() {
   if (index < 0 || !images.length) return;
-  await openPath(images[index]);
+  if (archivePath) {
+    // 書庫の中身が差し替わっている可能性があるのでキャッシュを捨てて開き直す
+    clearBlobCache();
+    await openPath(archivePath, index);
+  } else {
+    await openPath(images[index]);
+  }
 }
 
 async function openDialog() {
   try {
     const selected = await dialog.open({
       multiple: false,
-      filters: [{ name: "画像", extensions: IMAGE_EXT_FILTER }],
+      filters: [
+        { name: "画像・圧縮フォルダ", extensions: [...IMAGE_EXT_FILTER, ...ARCHIVE_EXT_FILTER] },
+        { name: "画像", extensions: IMAGE_EXT_FILTER },
+        { name: "圧縮フォルダ (zip / cbz)", extensions: ARCHIVE_EXT_FILTER },
+      ],
     });
+    if (typeof selected === "string") await openPath(selected);
+  } catch (e) {
+    showError(e);
+  }
+}
+
+async function openFolderDialog() {
+  try {
+    const selected = await dialog.open({ directory: true, multiple: false });
     if (typeof selected === "string") await openPath(selected);
   } catch (e) {
     showError(e);
@@ -205,6 +320,10 @@ window.addEventListener("keydown", (e) => {
     case "o":
     case "O":
       openDialog();
+      break;
+    case "d":
+    case "D":
+      openFolderDialog();
       break;
     case "r":
     case "R":
@@ -269,8 +388,8 @@ window.addEventListener("mouseup", () => (panning = null));
 
 // ---- misc UI ----
 placeholder.addEventListener("click", openDialog);
-document.getElementById("nav-prev").addEventListener("click", () => step(-1));
-document.getElementById("nav-next").addEventListener("click", () => step(1));
+navPrev.addEventListener("click", () => step(-1));
+navNext.addEventListener("click", () => step(1));
 document.getElementById("btn-min").addEventListener("click", () => appWindow.minimize());
 document.getElementById("btn-max").addEventListener("click", () => appWindow.toggleMaximize());
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
