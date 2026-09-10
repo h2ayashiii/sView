@@ -34,7 +34,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "dmg", "app"],
     "category": "Photography",
     "shortDescription": "Minimal frameless image viewer",
     "icon": [

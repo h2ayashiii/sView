@@ -89,7 +89,7 @@ npm run build:debug
 
 | OS | 実行ファイル | インストーラ |
 | --- | --- | --- |
-| Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/msi/`・`bundle/nsis/` |
+| Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/nsis/`（NSIS インストーラにアプリ本体一式を同梱） |
 | macOS | `src-tauri/target/release/bundle/macos/sView.app` | `src-tauri/target/release/bundle/dmg/` |
 
 GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイナリを自動ビルドしています。手元にビルド環境がない場合は Actions の成果物（Artifacts）を利用してください。
@@ -148,7 +148,7 @@ npx tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles ns
 
 制約事項:
 
-- MSI（WiX）バンドルはクロスビルドで問題が出ることがあるため、`--bundles nsis` を推奨します
+- MSI（WiX）バンドルは生成しません（クロスビルドでの不安定さもあり、配布物は NSIS インストーラ1本に統一しています。`tauri.conf.json` の `bundle.targets` で `nsis` のみ指定）
 - コード署名（Authenticode）は行われません。これは GitHub Actions の `windows-latest` ビルドでも同様です
 - WebView2 ランタイムの検証など、一部の実行時挙動は実機の Windows での確認を推奨します
 
@@ -156,14 +156,14 @@ npx tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles ns
 
 ### 未署名バイナリの実行
 
-配布物は Apple Developer ID による署名・公証（notarization）を行っていません（ad-hoc 署名のみ）。そのため、ダウンロードした `.dmg` / `.app` には macOS が自動で quarantine 属性を付与し、初回起動時にブロックされます。
+配布物は Apple Developer ID による署名・公証（notarization）を行っていません（ad-hoc 署名のみ）。Apple Developer Program（有料）への登録なしにはこれを回避できないため、ダウンロードした `.dmg` / `.app` は macOS の Gatekeeper と quarantine 属性の対象になり、初回起動時にブロックされます。
 
-- **macOS**: 「"sView"は壊れているため開けません。ゴミ箱に入れる必要があります。」と表示される場合、アプリが壊れているわけではなく quarantine 属性が原因です。以下で解除してください
+- **macOS**: 「"sView" は壊れているため開けません」または「Apple は、"sView" に Mac に損害を与えたり、プライバシーを侵害する可能性のあるマルウェアが含まれていないことを検証できませんでした。」と表示される場合、アプリが壊れている・マルウェアが含まれているわけではなく、未署名アプリに付与される quarantine 属性が原因です。`sView.app` を `/Applications` に移動したうえで、ターミナルで以下を実行して quarantine 属性を解除してください
 
   ```sh
   xattr -cr /Applications/sView.app
   ```
 
-  （`.app` を任意の場所に置いている場合はそのパスを指定してください。システム設定 →「プライバシーとセキュリティ」→「このまま開く」からでも起動できます）
+  （`.dmg` からドラッグ＆ドロップでインストールする運用を想定しています。`.app` を別の場所に置いている場合はそのパスを指定してください。システム設定 →「プライバシーとセキュリティ」→「このまま開く」からでも起動できる場合があります）
 
 - **Windows**: SmartScreen の警告が出た場合は「詳細情報」→「実行」を選択してください
