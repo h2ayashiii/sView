@@ -87,12 +87,12 @@ npm run build:debug
 
 ビルド成果物の場所:
 
-| OS | 実行ファイル | インストーラ |
+| OS | 実行ファイル（インストール不要のポータブル版） | インストーラ |
 | --- | --- | --- |
-| Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/nsis/`（NSIS インストーラにアプリ本体一式を同梱） |
+| Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/nsis/`（NSIS インストーラ。実行するとアプリ本体一式を Program Files にインストール） |
 | macOS | `src-tauri/target/release/bundle/macos/sView.app` | `src-tauri/target/release/bundle/dmg/` |
 
-GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイナリを自動ビルドしています。手元にビルド環境がない場合は Actions の成果物（Artifacts）を利用してください。
+GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイナリを自動ビルドしています。手元にビルド環境がない場合は Actions の成果物（Artifacts）を利用してください。Windows の Artifacts にはインストーラ（`*-setup.exe`）に加えて、インストール不要でそのまま実行できるポータブル版の `sview.exe` 単体も含まれます。
 
 ## プロジェクト構成
 
