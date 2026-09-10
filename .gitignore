@@ -1,0 +1,10 @@
+# Node
+node_modules/
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/
+
+# Misc
+.DS_Store
+Thumbs.db
