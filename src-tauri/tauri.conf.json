@@ -50,6 +50,12 @@
         "name": "Image",
         "description": "Image file",
         "role": "Viewer"
+      },
+      {
+        "ext": ["cbz"],
+        "name": "Comic Book Archive",
+        "description": "Comic book archive (zip)",
+        "role": "Viewer"
       }
     ],
     "macOS": {
