@@ -12,6 +12,8 @@ const placeholder = document.getElementById("placeholder");
 const errorBox = document.getElementById("error");
 const filenameEl = document.getElementById("filename");
 const counterEl = document.getElementById("counter");
+const navPrev = document.getElementById("nav-prev");
+const navNext = document.getElementById("nav-next");
 
 const IMAGE_EXT_FILTER = [
   "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg",
@@ -138,11 +140,17 @@ function zoomTo(target) {
 }
 
 // ---- display ----
-function showError(message) {
+// エラーと案内（端に到達したなど）を同じ場所に出す。kind で色だけ変える
+function showToast(message, kind) {
   errorBox.textContent = String(message);
+  errorBox.classList.toggle("notice", kind === "notice");
   errorBox.hidden = false;
-  clearTimeout(showError.timer);
-  showError.timer = setTimeout(() => (errorBox.hidden = true), 4000);
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => (errorBox.hidden = true), kind === "notice" ? 1500 : 4000);
+}
+
+function showError(message) {
+  showToast(message, "error");
 }
 
 function baseName(path) {
@@ -166,14 +174,17 @@ function updateChrome() {
   filenameEl.textContent = archivePath ? `${baseName(archivePath)} / ${name}` : name;
   filenameEl.title = archivePath ? `${archivePath} :: ${images[index]}` : images[index];
   counterEl.textContent = `${index + 1} / ${images.length}`;
+  navPrev.disabled = index === 0;
+  navNext.disabled = index === images.length - 1;
   appWindow.setTitle(`${baseName(images[index])} - sView`).catch(() => {});
 }
 
 function preloadNeighbors() {
   if (images.length < 2) return;
   for (const off of [1, -1]) {
-    const i = (index + off + images.length) % images.length;
-    if (i === index) continue;
+    // 端で折り返さないので、範囲外は先読みしない
+    const i = index + off;
+    if (i < 0 || i >= images.length) continue;
     if (archivePath) {
       // 先読みも 1 件ずつ。失敗しても表示には影響させない
       archiveBlobUrl(images[i]).catch(() => {});
@@ -223,7 +234,13 @@ async function openPath(path, preferredIndex = -1) {
 
 function step(delta) {
   if (images.length === 0) return;
-  index = (index + delta + images.length) % images.length;
+  const next = index + delta;
+  if (next < 0 || next >= images.length) {
+    // 端では折り返さず、そこが端であることだけ知らせる
+    showToast(next < 0 ? "最初の画像です" : "最後の画像です", "notice");
+    return;
+  }
+  index = next;
   show();
 }
 
@@ -371,8 +388,8 @@ window.addEventListener("mouseup", () => (panning = null));
 
 // ---- misc UI ----
 placeholder.addEventListener("click", openDialog);
-document.getElementById("nav-prev").addEventListener("click", () => step(-1));
-document.getElementById("nav-next").addEventListener("click", () => step(1));
+navPrev.addEventListener("click", () => step(-1));
+navNext.addEventListener("click", () => step(1));
 document.getElementById("btn-min").addEventListener("click", () => appWindow.minimize());
 document.getElementById("btn-max").addEventListener("click", () => appWindow.toggleMaximize());
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());

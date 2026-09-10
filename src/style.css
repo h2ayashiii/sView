@@ -91,6 +91,11 @@ body {
   text-overflow: ellipsis;
 }
 
+/* 端に到達したときの案内。エラーではないので赤くしない */
+#error.notice {
+  background: rgba(30, 30, 30, 0.85);
+}
+
 /* ---- hover chrome ---- */
 #chrome {
   position: absolute;
@@ -179,6 +184,16 @@ body {
 
 .nav:hover {
   background: rgba(0, 0, 0, 0.6);
+}
+
+/* 端に到達したら押せないことを見た目でも示す */
+.nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.nav:disabled:hover {
+  background: rgba(0, 0, 0, 0.35);
 }
 
 #nav-prev {
