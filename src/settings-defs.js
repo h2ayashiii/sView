@@ -32,8 +32,8 @@ const SETTINGS_SECTIONS = [
       },
       {
         key: "showFilename",
-        label: "上部にファイル名を表示する",
-        hint: "マウスを乗せたときに出るファイル名と枚数の表示です",
+        label: "ファイル名を表示する",
+        hint: "マウスを乗せたときに左下へ出るファイル名と、右上の枚数表示です",
         type: "toggle",
         default: true,
       },

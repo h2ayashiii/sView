@@ -19,6 +19,10 @@ const ctxmenu = document.getElementById("ctxmenu");
 // 現在の設定（settings-defs.js の既定値で開始し、読み込み後に上書きされる）
 let settings = { ...SETTINGS_DEFAULTS };
 
+// macOS だけ閉じるボタンを左上に置く（OS の慣習に合わせる）
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+app.classList.toggle("mac", IS_MAC);
+
 const IMAGE_EXT_FILTER = [
   "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg",
   "png", "svg", "tif", "tiff", "webp",
@@ -443,9 +447,15 @@ window.addEventListener("mouseup", () => (panning = null));
 placeholder.addEventListener("click", openDialog);
 navPrev.addEventListener("click", () => step(-1));
 navNext.addEventListener("click", () => step(1));
-document.getElementById("btn-min").addEventListener("click", () => appWindow.minimize());
-document.getElementById("btn-max").addEventListener("click", () => appWindow.toggleMaximize());
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
+// Tauri のドラッグ領域はダブルクリックで最大化するが、最大化は使わないので止める
+window.addEventListener(
+  "mousedown",
+  (e) => {
+    if (e.detail >= 2 && e.target.closest?.("[data-tauri-drag-region]")) e.stopPropagation();
+  },
+  true
+);
 window.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   openContextMenu(e.clientX, e.clientY);
@@ -511,7 +521,6 @@ function wheelNavigate(deltaY) {
 }
 
 // ---- context menu ----
-const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const REVEAL_LABEL = IS_MAC
   ? "Finder で表示"
   : /Win/.test(navigator.platform || navigator.userAgent)
