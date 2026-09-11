@@ -198,11 +198,30 @@ function preloadNeighbors() {
   }
 }
 
-// 設定「画像を開いたときの表示」が等倍なら、読み込み完了後に 100% へ切り替える
+// 読み込みが終わってからでないと画像の実寸が分からないので、
+// ウィンドウサイズ合わせと起動時倍率はここでまとめて行う
+function onImageReady(run) {
+  if (img.complete && img.naturalWidth) run();
+  else img.addEventListener("load", run, { once: true });
+}
+
+// 「画像に合わせる」のとき、余白が出ないようウィンドウを画像の縦横比に合わせる
+async function fitWindowToImage() {
+  if (settings.windowSizeMode !== "flexible") return;
+  if (!img.naturalWidth || !img.naturalHeight) return;
+  try {
+    await invoke("fit_window_to_image", {
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+    });
+  } catch (e) {
+    showError(e);
+  }
+}
+
+// 設定「画像を開いたときの表示」が等倍なら 100% で表示する
 function applyStartupZoom() {
-  if (settings.startupZoom !== "actual") return;
-  if (img.complete && img.naturalWidth) zoomTo(1);
-  else img.addEventListener("load", () => zoomTo(1), { once: true });
+  if (settings.startupZoom === "actual") zoomTo(1);
 }
 
 async function show() {
@@ -217,7 +236,12 @@ async function show() {
       : convertFileSrc(images[index]);
     if (token !== showToken) return; // 既に別の画像へ移動している
     img.src = src;
-    applyStartupZoom();
+    onImageReady(async () => {
+      if (token !== showToken) return;
+      await fitWindowToImage();
+      if (token !== showToken) return;
+      applyStartupZoom();
+    });
   } catch (e) {
     if (token === showToken) showError(e);
     return;
@@ -577,8 +601,11 @@ window.addEventListener("blur", hideContextMenu);
 window.addEventListener("resize", hideContextMenu);
 
 listen("settings-changed", (event) => {
+  const previousMode = settings.windowSizeMode;
   settings = normalizeSettings(event.payload);
   applySettings();
+  // 「画像に合わせる」に切り替えた直後は、表示中の画像に合わせておく
+  if (settings.windowSizeMode !== previousMode) fitWindowToImage();
 });
 
 invoke("load_settings")
