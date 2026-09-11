@@ -547,17 +547,10 @@ fn save_settings(app: AppHandle, settings: serde_json::Value) -> Result<(), Stri
     fs::rename(&tmp, &path).map_err(|e| format!("設定を保存できません: {e}"))
 }
 
-/// 設定ウィンドウを開く（既に開いていれば前面に出すだけ）。
-/// 本体と同じく枠なし・半透明で、中身は src/settings.html
-#[tauri::command]
-fn open_settings_window(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("settings") {
-        window
-            .set_focus()
-            .map_err(|e| format!("設定ウィンドウを前面にできません: {e}"))?;
-        return Ok(());
-    }
-    WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("settings.html".into()))
+/// 設定ウィンドウを作り直す（tauri.conf.json の定義が失われた場合の保険）。
+/// 通常は起動時に非表示で作られたものを使い回すので、ここは通らない
+fn build_settings_window(app: &AppHandle) -> Result<(), String> {
+    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("sView の設定")
         .inner_size(470.0, 560.0)
         .min_inner_size(380.0, 300.0)
@@ -568,6 +561,23 @@ fn open_settings_window(app: AppHandle) -> Result<(), String> {
         .build()
         .map(|_| ())
         .map_err(|e| format!("設定ウィンドウを開けません: {e}"))
+}
+
+/// 設定ウィンドウを開く。
+/// ウィンドウ自体は tauri.conf.json で起動時に（非表示で）作っておき、
+/// ここでは表示して前面に出すだけにする。実行時に作った枠なし・半透明の
+/// ウィンドウは中身が読み込まれないことがあるため（Windows で空のまま開く）
+#[tauri::command]
+fn open_settings_window(app: AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("settings") else {
+        return build_settings_window(&app);
+    };
+    window
+        .show()
+        .map_err(|e| format!("設定ウィンドウを表示できません: {e}"))?;
+    window
+        .set_focus()
+        .map_err(|e| format!("設定ウィンドウを前面にできません: {e}"))
 }
 
 /// OS のファイルマネージャーで対象を選択状態にして開く
@@ -614,11 +624,24 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
-            // 閉じる直前の大きさを覚えて、次回「固定」で開いたときに使う
-            if window.label() == "main"
-                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
-            {
-                save_window_state(window);
+            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                return;
+            };
+            match window.label() {
+                // 設定ウィンドウは閉じずに隠す。破棄してしまうと
+                // 開き直すたびに作り直しになり、閉じ忘れるとアプリが残り続ける
+                "settings" => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                // 本体を閉じたらアプリごと終了する（非表示の設定ウィンドウが
+                // 残っていても終了できるようにする）。
+                // 閉じる直前の大きさは次回「固定」で開くときのために覚えておく
+                "main" => {
+                    save_window_state(window);
+                    window.app_handle().exit(0);
+                }
+                _ => {}
             }
         })
         .setup(|app| {

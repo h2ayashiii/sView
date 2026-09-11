@@ -72,6 +72,18 @@ function trimBlobCache() {
   }
 }
 
+// Rust から返る生バイト列の受け取り方は IPC の経路によって変わる
+// （カスタムプロトコルなら ArrayBuffer、postMessage 経由なら数値の配列）。
+// そのまま Blob に渡すと配列が文字列化されて画像が壊れるので、必ずここで揃える
+function toBytes(data) {
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  if (Array.isArray(data)) return Uint8Array.from(data);
+  throw new Error("画像データを取得できませんでした");
+}
+
 async function archiveBlobUrl(entry) {
   const cached = blobCache.get(entry);
   if (cached) {
@@ -80,7 +92,7 @@ async function archiveBlobUrl(entry) {
     blobCache.set(entry, cached);
     return cached;
   }
-  const bytes = await invoke("read_archive_image", { archive: archivePath, entry });
+  const bytes = toBytes(await invoke("read_archive_image", { archive: archivePath, entry }));
   const url = URL.createObjectURL(new Blob([bytes], { type: MIME[extOf(entry)] ?? "" }));
   blobCache.set(entry, url);
   trimBlobCache();

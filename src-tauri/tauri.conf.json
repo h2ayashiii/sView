@@ -23,10 +23,25 @@
         "visible": false,
         "transparent": true,
         "dragDropEnabled": true
+      },
+      {
+        "label": "settings",
+        "title": "sView の設定",
+        "url": "settings.html",
+        "width": 470,
+        "height": 560,
+        "minWidth": 380,
+        "minHeight": 300,
+        "center": true,
+        "resizable": true,
+        "decorations": false,
+        "visible": false,
+        "transparent": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https://asset.localhost blob: data:; style-src 'self' 'unsafe-inline'",
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https://asset.localhost blob: data:; style-src 'self' 'unsafe-inline'",
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]
