@@ -151,7 +151,16 @@ npm run build:debug
 | Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/nsis/`（NSIS インストーラ。実行するとアプリ本体一式を Program Files にインストール） |
 | macOS | `src-tauri/target/release/bundle/macos/sView.app` | `src-tauri/target/release/bundle/dmg/` |
 
-GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイナリを自動ビルドしています。手元にビルド環境がない場合は Actions の成果物（Artifacts）を利用してください。Windows の Artifacts にはインストーラ（`*-setup.exe`）に加えて、インストール不要でそのまま実行できるポータブル版の `sview.exe` 単体も含まれます。
+`bundle/macos/sView.app` と `bundle/dmg/` の `.dmg` の中身は同じものです。`tauri build` はまず `.app` を組み立て、dmg バンドラはその `.app` をそのままディスクイメージに入れるため、`.dmg` を開いて出てくる `sView.app` は `bundle/macos/sView.app` と同一です。
+
+GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイナリを自動ビルドしています。手元にビルド環境がない場合は Actions の成果物（Artifacts）を利用してください。
+
+| Artifacts | 中身 |
+| --- | --- |
+| `sview-windows` | インストーラ（`*-setup.exe`）と、インストール不要でそのまま実行できるポータブル版の `sview.exe` 単体 |
+| `sview-macos` | `.dmg` のみ |
+
+macOS で `.app` を単体でアップロードしていないのは、`.app` が（1ファイルではなく）ディレクトリだからです。Artifacts は必ず zip に固められて配布されるため、`.app` をそのまま入れると展開時に実行権限が落ちて起動できなくなります。`.dmg` は 1 ファイルなので zip を経由しても中身が変化せず、マウントすれば実行権限も ad-hoc 署名も保たれた `sView.app` がそのまま取り出せます。
 
 ## プロジェクト構成
 
@@ -216,6 +225,8 @@ npx tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles ns
 - WebView2 ランタイムの検証など、一部の実行時挙動は実機の Windows での確認を推奨します
 
 **macOS 向けバイナリは Linux からクロスビルドできません。** Apple の開発者利用許諾により macOS SDK を Linux 上で正規に取得・利用することができず、また `.app`/`.dmg` の生成や署名・公証には `codesign` などの macOS ネイティブツールが必要なため、Tauri でも公式にサポートされていません。macOS 向けビルドは引き続き macOS 実機か、CI の `macos-latest` runner（`.github/workflows/build.yml`）を利用してください。
+
+なお GitHub Actions のランナーは Linux 固定ではなく、ジョブごとに `runs-on` で OS を選びます。本リポジトリのワークフローは matrix で `windows-latest`（Windows Server の仮想マシン）と `macos-latest`（Apple シリコンの macOS 仮想マシン）を指定しているため、macOS 向けビルドは実機同等の macOS 上で `npm run build` を実行しているだけです。Linux ランナー上で `.app` / `.dmg` を作るための特別なコマンドは存在しません。
 
 ### 未署名バイナリの実行
 
