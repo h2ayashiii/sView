@@ -162,6 +162,31 @@ GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイ�
 
 macOS で `.app` を単体でアップロードしていないのは、`.app` が（1ファイルではなく）ディレクトリだからです。Artifacts は必ず zip に固められて配布されるため、`.app` をそのまま入れると展開時に実行権限が落ちて起動できなくなります。`.dmg` は 1 ファイルなので zip を経由しても中身が変化せず、マウントすれば実行権限も ad-hoc 署名も保たれた `sView.app` がそのまま取り出せます。
 
+### 他のプラットフォーム向けのビルド（クロスビルド）
+
+上記の `npm run build` は、実行した OS 向けのバイナリを作ります。Linux の開発機から他プラットフォーム向けにビルドできるかは、ターゲットによって異なります。
+
+| ターゲット | Linux からビルド | 方法 |
+| --- | --- | --- |
+| Windows（`.exe` / NSIS インストーラ） | **可能** | `cargo-xwin` を使う（下記） |
+| macOS（`.app` / `.dmg`） | **不可能** | macOS 実機か CI の `macos-latest` runner を使う |
+
+Windows 向けは、前提パッケージを入れたうえで Tauri CLI に `--runner cargo-xwin` を渡します:
+
+```sh
+# 前提パッケージ（一度だけ）
+sudo apt-get install -y clang lld llvm nsis
+rustup target add x86_64-pc-windows-msvc
+cargo install cargo-xwin
+
+# ビルド
+npx tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+```
+
+成果物は `src-tauri/target/x86_64-pc-windows-msvc/release/` 以下に出ます。`--runner cargo-xwin` を省略すると通常の `cc`(GCC) が呼ばれてリソースコンパイルに失敗するため、必ず指定してください。制約や仕組みの詳細は「プラットフォーム別の注意点」の『Linux（Ubuntu）から Windows 向けバイナリをクロスビルドする』を参照してください。
+
+macOS 向けは、Apple の開発者利用許諾により macOS SDK を Linux 上で正規に利用できず、`.app` / `.dmg` の生成や署名にも `codesign` などの macOS ネイティブツールが必要なため、クロスビルドの手段がありません（Tauri も公式にサポートしていません）。macOS 実機を持っていない場合は、GitHub Actions の `macos-latest` runner でビルドした Artifacts（`sview-macos`）を利用してください。
+
 ## プロジェクト構成
 
 ```
