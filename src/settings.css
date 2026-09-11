@@ -1,4 +1,25 @@
-/* 本体 (style.css) と同じ配色・角丸・フォントで揃える */
+/* 本体 (style.css) と同じ配色・角丸・フォントで揃える。
+   実際の色は settings.js が設定の「背景色」「背景の不透明度」から作って
+   CSS 変数に流し込む。ここに書いてある値はその前に使われる初期値 */
+:root {
+  --bg: rgba(14, 14, 16, 0.97);
+  --solid: #17171a;
+  --chrome: rgba(26, 26, 30, 0.99);
+  --bar: rgba(44, 44, 50, 1);
+  --fg: #e8e8ec;
+  --fg-dim: rgba(232, 232, 236, 0.74);
+  --fg-faint: rgba(232, 232, 236, 0.52);
+  --line: rgba(255, 255, 255, 0.12);
+  --hover: rgba(255, 255, 255, 0.07);
+  --control: rgba(255, 255, 255, 0.1);
+  --control-hover: rgba(255, 255, 255, 0.16);
+  --thumb: #d6d6dc;
+  --scroll: rgba(255, 255, 255, 0.2);
+  --scroll-hover: rgba(255, 255, 255, 0.32);
+  --accent: #5a82e6;
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23b0b0ba' stroke-width='1.4'/%3E%3C/svg%3E");
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -14,7 +35,7 @@ body {
   overflow: hidden;
   background: transparent;
   font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", sans-serif;
-  color: #e8e8ec;
+  color: var(--fg);
 }
 
 #win {
@@ -22,8 +43,8 @@ body {
   flex-direction: column;
   width: 100%;
   height: 100%;
-  background: rgba(14, 14, 16, 0.97);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg);
+  border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -36,8 +57,8 @@ body {
   align-items: center;
   gap: 10px;
   padding: 0 6px 0 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
 }
 
 #s-title {
@@ -45,7 +66,7 @@ body {
   min-width: 0;
   font-size: 12px;
   letter-spacing: 0.08em;
-  color: #d6d6dc;
+  color: var(--fg-dim);
 }
 
 #s-close {
@@ -54,7 +75,7 @@ body {
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: #cfcfd6;
+  color: var(--fg-dim);
   font-size: 11px;
   line-height: 1;
   cursor: pointer;
@@ -71,7 +92,7 @@ body {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 4px 0 12px;
+  padding: 0 0 12px;
 }
 
 #s-body::-webkit-scrollbar {
@@ -79,26 +100,47 @@ body {
 }
 
 #s-body::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--scroll);
   border: 3px solid transparent;
   background-clip: content-box;
   border-radius: 6px;
 }
 
 #s-body::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.28);
+  background: var(--scroll-hover);
   background-clip: content-box;
 }
 
+/* 分類の見出しは、背景に溶け込まないよう背景より濃い帯にする。
+   帯の色も背景色から作るので、背景を変えても浮かない */
 .section-title {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 12px 14px 6px;
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  color: #7b7b85;
-  background: rgba(14, 14, 16, 0.97);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--bar);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--fg-dim);
+}
+
+.section-title:first-child {
+  border-top: none;
+}
+
+.section-title::before {
+  content: "";
+  flex-shrink: 0;
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 /* ---- rows ---- */
@@ -111,14 +153,14 @@ body {
 }
 
 .row:hover {
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--hover);
 }
 
 .row .label {
   flex: 1;
   min-width: 0;
   font-size: 12.5px;
-  color: #e2e2e8;
+  color: var(--fg);
 }
 
 .row .hint {
@@ -126,7 +168,7 @@ body {
   margin-top: 3px;
   font-size: 10.5px;
   line-height: 1.5;
-  color: #6c6c75;
+  color: var(--fg-faint);
 }
 
 .row .control {
@@ -140,7 +182,7 @@ body {
   min-width: 3.2em;
   text-align: right;
   font-size: 11px;
-  color: #a8a8b0;
+  color: var(--fg-dim);
   font-variant-numeric: tabular-nums;
 }
 
@@ -149,31 +191,30 @@ select {
   appearance: none;
   min-width: 160px;
   padding: 5px 26px 5px 9px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06)
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23b0b0ba' stroke-width='1.4'/%3E%3C/svg%3E")
-    no-repeat right 9px center / 9px;
-  color: #e8e8ec;
+  background: var(--control) var(--select-arrow) no-repeat right 9px center / 9px;
+  color: var(--fg);
   font-size: 12px;
   font-family: inherit;
   cursor: pointer;
 }
 
 select:hover {
-  background-color: rgba(255, 255, 255, 0.1);
+  background-color: var(--control-hover);
 }
 
 select:focus-visible,
 input:focus-visible,
 button:focus-visible {
-  outline: 1px solid rgba(120, 160, 255, 0.8);
+  outline: 1px solid var(--accent);
   outline-offset: 1px;
 }
 
+/* OS が描く選択肢の一覧は透過できないので、不透明な色を使う */
 option {
-  background: #1a1a1e;
-  color: #e8e8ec;
+  background: var(--solid);
+  color: var(--fg);
 }
 
 input[type="range"] {
@@ -181,7 +222,7 @@ input[type="range"] {
   width: 150px;
   height: 3px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--control-hover);
   cursor: pointer;
 }
 
@@ -190,12 +231,12 @@ input[type="range"]::-webkit-slider-thumb {
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  background: #d6d6dc;
+  background: var(--thumb);
   cursor: pointer;
 }
 
 input[type="range"]::-webkit-slider-thumb:hover {
-  background: #fff;
+  background: var(--fg);
 }
 
 input[type="color"] {
@@ -203,7 +244,7 @@ input[type="color"] {
   width: 40px;
   height: 24px;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: transparent;
   cursor: pointer;
@@ -242,7 +283,7 @@ input[type="color"]::-webkit-color-swatch {
   position: absolute;
   inset: 0;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--control-hover);
   transition: background 0.15s ease;
   pointer-events: none;
 }
@@ -255,12 +296,12 @@ input[type="color"]::-webkit-color-swatch {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #c8c8d0;
+  background: var(--thumb);
   transition: transform 0.15s ease, background 0.15s ease;
 }
 
 .switch input:checked + .track {
-  background: rgba(90, 130, 230, 0.85);
+  background: var(--accent);
 }
 
 .switch input:checked + .track::after {
@@ -269,7 +310,7 @@ input[type="color"]::-webkit-color-swatch {
 }
 
 .switch input:focus-visible + .track {
-  outline: 1px solid rgba(120, 160, 255, 0.8);
+  outline: 1px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -280,8 +321,8 @@ input[type="color"]::-webkit-color-swatch {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid var(--line);
+  background: var(--chrome);
 }
 
 #s-status {
@@ -289,7 +330,7 @@ input[type="color"]::-webkit-color-swatch {
   min-width: 0;
   text-align: right;
   font-size: 11px;
-  color: #6c6c75;
+  color: var(--fg-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -301,15 +342,15 @@ input[type="color"]::-webkit-color-swatch {
 
 button.ghost {
   padding: 5px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: transparent;
-  color: #cfcfd6;
+  color: var(--fg-dim);
   font-size: 11.5px;
   font-family: inherit;
   cursor: pointer;
 }
 
 button.ghost:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--control-hover);
 }

@@ -82,6 +82,32 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
+    id: "window",
+    label: "ウィンドウ",
+    items: [
+      {
+        key: "windowSizeMode",
+        label: "開いたときのウィンドウサイズ",
+        hint:
+          "「固定」は前回閉じたときの大きさで開き、画像を変えても大きさは変わりません（手動でのサイズ変更は自由です）。" +
+          "「画像に合わせる」は余白が出ないよう画像ごとにウィンドウの大きさを合わせ、大きい画像は画面の高さの 90% に収めます。",
+        type: "select",
+        options: [
+          ["fixed", "固定（前回の大きさ）"],
+          ["flexible", "画像に合わせる"],
+        ],
+        default: "fixed",
+      },
+      {
+        key: "alwaysOnTop",
+        label: "常に最前面に表示する",
+        hint: "他のアプリの後ろに隠れなくなります",
+        type: "toggle",
+        default: false,
+      },
+    ],
+  },
+  {
     id: "input",
     label: "操作",
     items: [
@@ -119,32 +145,6 @@ const SETTINGS_SECTIONS = [
         hint: "「進む / 戻る」ボタンで次 / 前の画像へ移動します",
         type: "toggle",
         default: true,
-      },
-    ],
-  },
-  {
-    id: "window",
-    label: "ウィンドウ",
-    items: [
-      {
-        key: "windowSizeMode",
-        label: "開いたときのウィンドウサイズ",
-        hint:
-          "「固定」は前回閉じたときの大きさで開き、画像を変えても大きさは変わりません（手動でのサイズ変更は自由です）。" +
-          "「画像に合わせる」は余白が出ないよう画像ごとにウィンドウの大きさを合わせ、大きい画像は画面の高さの 90% に収めます。",
-        type: "select",
-        options: [
-          ["fixed", "固定（前回の大きさ）"],
-          ["flexible", "画像に合わせる"],
-        ],
-        default: "fixed",
-      },
-      {
-        key: "alwaysOnTop",
-        label: "常に最前面に表示する",
-        hint: "他のアプリの後ろに隠れなくなります",
-        type: "toggle",
-        default: false,
       },
     ],
   },
