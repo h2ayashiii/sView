@@ -22,22 +22,26 @@
 
     <!-- ホバー時のみ表示されるオーバーレイUI -->
     <div id="chrome">
+      <!-- 閉じるボタンは macOS では左上、それ以外では右上（#app.mac で切り替え） -->
       <div id="titlebar" data-tauri-drag-region>
-        <span id="filename" data-tauri-drag-region></span>
         <span id="counter" data-tauri-drag-region></span>
-        <div id="win-buttons">
-          <button id="btn-min" title="最小化" aria-label="最小化">&#x2500;</button>
-          <button id="btn-max" title="最大化 / 復元" aria-label="最大化">&#x25A1;</button>
-          <button id="btn-close" title="閉じる" aria-label="閉じる">&#x2715;</button>
-        </div>
+        <button id="btn-close" title="閉じる (Esc)" aria-label="閉じる">&#x2715;</button>
       </div>
       <button id="nav-prev" class="nav" title="前の画像 (←)" aria-label="前の画像">&#x276E;</button>
       <button id="nav-next" class="nav" title="次の画像 (→)" aria-label="次の画像">&#x276F;</button>
+      <!-- 表示中のファイル（書庫内はその中のパス）は左下に出す -->
+      <div id="statusbar" data-tauri-drag-region>
+        <span id="filename" data-tauri-drag-region></span>
+      </div>
     </div>
 
     <div id="drop-hint">ドロップして開く</div>
+
+    <!-- 右クリックメニュー（中身は main.js が組み立てる） -->
+    <div id="ctxmenu" role="menu" hidden></div>
   </div>
 
+  <script src="settings-defs.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

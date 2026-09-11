@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>sView の設定</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <div id="win">
+    <!-- 本体と同じく枠なし。上部が独自タイトルバー兼ドラッグ領域 -->
+    <div id="s-titlebar" data-tauri-drag-region>
+      <span id="s-title" data-tauri-drag-region>設定</span>
+      <button id="s-close" title="閉じる (Esc)" aria-label="閉じる">&#x2715;</button>
+    </div>
+
+    <!-- 項目が収まらなくなったらここだけがスクロールする（ページ・タブ分割はしない） -->
+    <div id="s-body"></div>
+
+    <div id="s-footer">
+      <button id="s-reset" class="ghost">既定に戻す</button>
+      <span id="s-status"></span>
+    </div>
+  </div>
+
+  <script src="settings-defs.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>

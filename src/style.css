@@ -77,7 +77,7 @@ body {
 
 #error {
   position: absolute;
-  bottom: 12px;
+  bottom: 40px;
   left: 50%;
   transform: translateX(-50%);
   background: rgba(160, 40, 40, 0.9);
@@ -119,34 +119,21 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 8px 0 12px;
+  padding: 0 8px;
   background: linear-gradient(to bottom, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
   pointer-events: auto;
 }
 
-#filename {
-  color: #e8e8ec;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+#counter {
   flex: 1;
   min-width: 0;
-}
-
-#counter {
+  text-align: right;
   color: #a8a8b0;
   font-size: 11px;
-  flex-shrink: 0;
 }
 
-#win-buttons {
-  display: flex;
-  gap: 4px;
+#btn-close {
   flex-shrink: 0;
-}
-
-#win-buttons button {
   width: 26px;
   height: 22px;
   border: none;
@@ -158,13 +145,37 @@ body {
   cursor: pointer;
 }
 
-#win-buttons button:hover {
-  background: rgba(255, 255, 255, 0.15);
+#btn-close:hover {
+  background: rgba(220, 60, 60, 0.85);
+  color: #fff;
 }
 
-#btn-close:hover {
-  background: rgba(220, 60, 60, 0.85) !important;
-  color: #fff;
+/* macOS は閉じるボタンを左上に置く（枚数表示はそのまま右） */
+#app.mac #btn-close {
+  order: -1;
+}
+
+/* ---- status bar（表示中のファイル） ---- */
+#statusbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 12px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
+  pointer-events: auto;
+}
+
+#filename {
+  max-width: 100%;
+  color: #e8e8ec;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav {
@@ -205,7 +216,7 @@ body {
 }
 
 #app.no-image .nav,
-#app.no-image #filename,
+#app.no-image #statusbar,
 #app.no-image #counter {
   display: none;
 }
@@ -227,4 +238,72 @@ body {
 
 #app.dropping #drop-hint {
   display: flex;
+}
+
+/* 設定で隠せる要素 */
+#app.hide-filename #statusbar,
+#app.hide-filename #counter,
+#app.hide-nav .nav {
+  display: none;
+}
+
+/* ---- context menu ---- */
+#ctxmenu {
+  position: absolute;
+  z-index: 10;
+  min-width: 200px;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(26, 26, 30, 0.98);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.5);
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #e2e2e8;
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ctx-item span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ctx-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ctx-item:disabled {
+  color: #5c5c65;
+  cursor: default;
+}
+
+.ctx-accel {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: #6c6c75;
+}
+
+.ctx-item:disabled .ctx-accel {
+  color: #46464d;
+}
+
+.ctx-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.09);
 }

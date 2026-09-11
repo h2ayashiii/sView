@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tauri::ipc::Response;
-use tauri::State;
+use tauri::{
+    AppHandle, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 use zip::ZipArchive;
 
 /// 対応する画像拡張子（小文字で比較）
@@ -15,6 +18,9 @@ const IMAGE_EXTS: &[&str] = &[
 
 /// 対応する書庫（圧縮フォルダ）拡張子
 const ARCHIVE_EXTS: &[&str] = &["cbz", "zip"];
+
+/// 最小ウィンドウサイズ（tauri.conf.json の minWidth / minHeight と合わせる）
+const MIN_WINDOW_SIZE: (f64, f64) = (200.0, 150.0);
 
 /// 展開後サイズの上限（zip bomb 対策 / 1枚あたり）
 const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
@@ -387,16 +393,253 @@ fn startup_file_from_args() -> Option<String> {
         .find(|a| !a.starts_with('-') && Path::new(a).exists())
 }
 
+/// ウィンドウサイズを覚えておくファイル（設定本体とは分けて、
+/// 設定ウィンドウの「既定に戻す」で消えないようにする）
+fn window_state_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("設定フォルダを取得できません: {e}"))?;
+    Ok(dir.join("window.json"))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WindowState {
+    width: f64,
+    height: f64,
+}
+
+/// 「固定」で開き直せるよう、閉じるときのウィンドウサイズを保存する
+fn save_window_state(window: &tauri::Window) {
+    let app = window.app_handle();
+    // 「画像に合わせる」で開いている間の大きさは画像都合なので覚えない
+    if settings_value(app, "windowSizeMode").as_deref() == Some("flexible") {
+        return;
+    }
+    let Ok(path) = window_state_file(app) else {
+        return;
+    };
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let size = size.to_logical::<f64>(scale);
+    if size.width < 1.0 || size.height < 1.0 {
+        return; // 最小化中などは保存しない
+    }
+    let state = WindowState {
+        width: size.width,
+        height: size.height,
+    };
+    if let (Some(dir), Ok(text)) = (path.parent(), serde_json::to_string_pretty(&state)) {
+        let _ = fs::create_dir_all(dir);
+        let _ = fs::write(&path, text);
+    }
+}
+
+/// 設定ファイルから文字列項目を 1 つ読む（Rust 側から設定を参照する用）
+fn settings_value(app: &AppHandle, key: &str) -> Option<String> {
+    let path = settings_file(app).ok()?;
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get(key)?.as_str().map(str::to_owned)
+}
+
+/// 起動時に、前回閉じたときのウィンドウサイズを復元する（「固定」のときのみ）
+fn restore_window_state(window: &tauri::Window) {
+    let app = window.app_handle();
+    if settings_value(app, "windowSizeMode").as_deref() == Some("flexible") {
+        return; // 画像を開くまでは既定サイズ
+    }
+    let Ok(path) = window_state_file(app) else {
+        return;
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(state) = serde_json::from_str::<WindowState>(&text) else {
+        return;
+    };
+    if state.width < 1.0 || state.height < 1.0 {
+        return;
+    }
+    let _ = window.set_size(LogicalSize::new(state.width, state.height));
+    let _ = window.center();
+}
+
+/// ウィンドウを画像の縦横比ぴったりに合わせる（「画像に合わせる」のとき）。
+/// 画面に収まらない画像は、画面の高さの 90% に収まるよう縮める。
+/// 画面からはみ出さないよう横も 90% を上限にし、ウィンドウの中心は動かさない。
+#[tauri::command]
+fn fit_window_to_image(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
+    const SCREEN_RATIO: f64 = 0.9;
+    if !(width > 0.0 && height > 0.0) {
+        return Err("画像サイズを取得できません".to_string());
+    }
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+
+    // 画面（作業領域）に対する上限。取得できない場合は縮小せずそのまま
+    let limit = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| {
+            let size = m.size().to_logical::<f64>(m.scale_factor());
+            (size.width * SCREEN_RATIO, size.height * SCREEN_RATIO)
+        })
+        .unwrap_or((f64::INFINITY, f64::INFINITY));
+
+    // 拡大はせず、画面に収まらないときだけ縮める
+    let ratio = (limit.1 / height).min(limit.0 / width).min(1.0);
+    let w = (width * ratio).max(MIN_WINDOW_SIZE.0);
+    let h = (height * ratio).max(MIN_WINDOW_SIZE.1);
+
+    // 変更前の中心を保ったまま大きさだけ変える
+    let center = (|| {
+        let pos = window.outer_position().ok()?.to_logical::<f64>(scale);
+        let size = window.outer_size().ok()?.to_logical::<f64>(scale);
+        Some((pos.x + size.width / 2.0, pos.y + size.height / 2.0))
+    })();
+
+    window
+        .set_size(LogicalSize::new(w, h))
+        .map_err(|e| format!("ウィンドウサイズを変更できません: {e}"))?;
+
+    if let Some((cx, cy)) = center {
+        let _ = window.set_position(LogicalPosition::new(cx - w / 2.0, cy - h / 2.0));
+    }
+    Ok(())
+}
+
+/// 設定ファイルの置き場所（OS ごとのアプリ設定フォルダ / settings.json）
+fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("設定フォルダを取得できません: {e}"))?;
+    Ok(dir.join("settings.json"))
+}
+
+/// 保存済みの設定を返す。未保存・壊れている場合は null（フロント側で既定値を使う）
+#[tauri::command]
+fn load_settings(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let path = settings_file(&app)?;
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(serde_json::from_str(&text).ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("設定を読めません: {e}")),
+    }
+}
+
+/// 設定を保存する（書き込み途中で壊れないよう一時ファイル経由で置き換える）
+#[tauri::command]
+fn save_settings(app: AppHandle, settings: serde_json::Value) -> Result<(), String> {
+    let path = settings_file(&app)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("設定フォルダを作れません: {e}"))?;
+    }
+    let text =
+        serde_json::to_string_pretty(&settings).map_err(|e| format!("設定を書けません: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, text).map_err(|e| format!("設定を書けません: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("設定を保存できません: {e}"))
+}
+
+/// 設定ウィンドウを開く（既に開いていれば前面に出すだけ）。
+/// 本体と同じく枠なし・半透明で、中身は src/settings.html
+#[tauri::command]
+fn open_settings_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("settings") {
+        window
+            .set_focus()
+            .map_err(|e| format!("設定ウィンドウを前面にできません: {e}"))?;
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("sView の設定")
+        .inner_size(470.0, 560.0)
+        .min_inner_size(380.0, 300.0)
+        .resizable(true)
+        .decorations(false)
+        .transparent(true)
+        .center()
+        .build()
+        .map(|_| ())
+        .map_err(|e| format!("設定ウィンドウを開けません: {e}"))
+}
+
+/// OS のファイルマネージャーで対象を選択状態にして開く
+#[tauri::command]
+fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    use std::process::Command;
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("ファイルが見つかりません: {path}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    let result = {
+        // explorer は選択に成功しても非 0 を返すことがあるため、起動できたかだけを見る
+        Command::new("explorer")
+            .arg(format!("/select,{}", target.display()))
+            .spawn()
+            .map(|_| ())
+    };
+
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open")
+        .arg("-R")
+        .arg(&target)
+        .spawn()
+        .map(|_| ());
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let result = {
+        // Linux には選択して開く共通の方法がないので、親フォルダを開く
+        let dir = if target.is_dir() {
+            target.clone()
+        } else {
+            target.parent().unwrap_or(&target).to_path_buf()
+        };
+        Command::new("xdg-open").arg(dir).spawn().map(|_| ())
+    };
+
+    result.map_err(|e| format!("ファイルマネージャーを開けません: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            // 閉じる直前の大きさを覚えて、次回「固定」で開いたときに使う
+            if window.label() == "main"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                save_window_state(window);
+            }
+        })
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                restore_window_state(&window.as_ref().window());
+                // サイズを整えてから見せる（起動直後のちらつきを避ける）
+                let _ = window.show();
+            }
+            Ok(())
+        })
         .manage(StartupFile(Mutex::new(startup_file_from_args())))
         .manage(ArchiveCache(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             list_images,
             read_archive_image,
-            get_startup_file
+            get_startup_file,
+            load_settings,
+            save_settings,
+            open_settings_window,
+            reveal_in_file_manager,
+            fit_window_to_image
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -405,7 +648,7 @@ pub fn run() {
         // macOS: Finder / Dock からファイルを開いたときに届く
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &_event {
-            use tauri::{Emitter, Manager};
+            use tauri::Emitter;
             if let Some(path) = urls
                 .iter()
                 .filter_map(|u| u.to_file_path().ok())
