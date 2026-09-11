@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tauri::ipc::Response;
-use tauri::State;
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use zip::ZipArchive;
 
 /// 対応する画像拡張子（小文字で比較）
@@ -387,6 +387,102 @@ fn startup_file_from_args() -> Option<String> {
         .find(|a| !a.starts_with('-') && Path::new(a).exists())
 }
 
+/// 設定ファイルの置き場所（OS ごとのアプリ設定フォルダ / settings.json）
+fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("設定フォルダを取得できません: {e}"))?;
+    Ok(dir.join("settings.json"))
+}
+
+/// 保存済みの設定を返す。未保存・壊れている場合は null（フロント側で既定値を使う）
+#[tauri::command]
+fn load_settings(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let path = settings_file(&app)?;
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(serde_json::from_str(&text).ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("設定を読めません: {e}")),
+    }
+}
+
+/// 設定を保存する（書き込み途中で壊れないよう一時ファイル経由で置き換える）
+#[tauri::command]
+fn save_settings(app: AppHandle, settings: serde_json::Value) -> Result<(), String> {
+    let path = settings_file(&app)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("設定フォルダを作れません: {e}"))?;
+    }
+    let text =
+        serde_json::to_string_pretty(&settings).map_err(|e| format!("設定を書けません: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, text).map_err(|e| format!("設定を書けません: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("設定を保存できません: {e}"))
+}
+
+/// 設定ウィンドウを開く（既に開いていれば前面に出すだけ）。
+/// 本体と同じく枠なし・半透明で、中身は src/settings.html
+#[tauri::command]
+fn open_settings_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("settings") {
+        window
+            .set_focus()
+            .map_err(|e| format!("設定ウィンドウを前面にできません: {e}"))?;
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("sView の設定")
+        .inner_size(470.0, 560.0)
+        .min_inner_size(380.0, 300.0)
+        .resizable(true)
+        .decorations(false)
+        .transparent(true)
+        .center()
+        .build()
+        .map(|_| ())
+        .map_err(|e| format!("設定ウィンドウを開けません: {e}"))
+}
+
+/// OS のファイルマネージャーで対象を選択状態にして開く
+#[tauri::command]
+fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    use std::process::Command;
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("ファイルが見つかりません: {path}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    let result = {
+        // explorer は選択に成功しても非 0 を返すことがあるため、起動できたかだけを見る
+        Command::new("explorer")
+            .arg(format!("/select,{}", target.display()))
+            .spawn()
+            .map(|_| ())
+    };
+
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open")
+        .arg("-R")
+        .arg(&target)
+        .spawn()
+        .map(|_| ());
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let result = {
+        // Linux には選択して開く共通の方法がないので、親フォルダを開く
+        let dir = if target.is_dir() {
+            target.clone()
+        } else {
+            target.parent().unwrap_or(&target).to_path_buf()
+        };
+        Command::new("xdg-open").arg(dir).spawn().map(|_| ())
+    };
+
+    result.map_err(|e| format!("ファイルマネージャーを開けません: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -396,7 +492,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_images,
             read_archive_image,
-            get_startup_file
+            get_startup_file,
+            load_settings,
+            save_settings,
+            open_settings_window,
+            reveal_in_file_manager
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -405,7 +505,7 @@ pub fn run() {
         // macOS: Finder / Dock からファイルを開いたときに届く
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &_event {
-            use tauri::{Emitter, Manager};
+            use tauri::Emitter;
             if let Some(path) = urls
                 .iter()
                 .filter_map(|u| u.to_file_path().ok())

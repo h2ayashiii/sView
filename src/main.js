@@ -14,6 +14,10 @@ const filenameEl = document.getElementById("filename");
 const counterEl = document.getElementById("counter");
 const navPrev = document.getElementById("nav-prev");
 const navNext = document.getElementById("nav-next");
+const ctxmenu = document.getElementById("ctxmenu");
+
+// 現在の設定（settings-defs.js の既定値で開始し、読み込み後に上書きされる）
+let settings = { ...SETTINGS_DEFAULTS };
 
 const IMAGE_EXT_FILTER = [
   "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg",
@@ -180,7 +184,7 @@ function updateChrome() {
 }
 
 function preloadNeighbors() {
-  if (images.length < 2) return;
+  if (!settings.preload || images.length < 2) return;
   for (const off of [1, -1]) {
     // 端で折り返さないので、範囲外は先読みしない
     const i = index + off;
@@ -192,6 +196,13 @@ function preloadNeighbors() {
       new Image().src = convertFileSrc(images[i]);
     }
   }
+}
+
+// 設定「画像を開いたときの表示」が等倍なら、読み込み完了後に 100% へ切り替える
+function applyStartupZoom() {
+  if (settings.startupZoom !== "actual") return;
+  if (img.complete && img.naturalWidth) zoomTo(1);
+  else img.addEventListener("load", () => zoomTo(1), { once: true });
 }
 
 async function show() {
@@ -206,6 +217,7 @@ async function show() {
       : convertFileSrc(images[index]);
     if (token !== showToken) return; // 既に別の画像へ移動している
     img.src = src;
+    applyStartupZoom();
   } catch (e) {
     if (token === showToken) showError(e);
     return;
@@ -234,11 +246,14 @@ async function openPath(path, preferredIndex = -1) {
 
 function step(delta) {
   if (images.length === 0) return;
-  const next = index + delta;
+  let next = index + delta;
   if (next < 0 || next >= images.length) {
-    // 端では折り返さず、そこが端であることだけ知らせる
-    showToast(next < 0 ? "最初の画像です" : "最後の画像です", "notice");
-    return;
+    if (!settings.wrapAround) {
+      // 折り返さない設定のときは、そこが端であることだけ知らせる
+      showToast(next < 0 ? "最初の画像です" : "最後の画像です", "notice");
+      return;
+    }
+    next = (next + images.length) % images.length;
   }
   index = next;
   show();
@@ -278,6 +293,12 @@ async function openFolderDialog() {
   } catch (e) {
     showError(e);
   }
+}
+
+function toggleFullscreen() {
+  appWindow.isFullscreen()
+    .then((fs) => appWindow.setFullscreen(!fs))
+    .catch(() => {});
 }
 
 // ---- input: keyboard ----
@@ -331,12 +352,15 @@ window.addEventListener("keydown", (e) => {
       break;
     case "f":
     case "F":
-      appWindow.isFullscreen()
-        .then((fs) => appWindow.setFullscreen(!fs))
-        .catch(() => {});
+      toggleFullscreen();
+      break;
+    case ",":
+      openSettings();
       break;
     case "Escape":
-      appWindow.close().catch(() => {});
+      // メニューが開いているときは、まずそれを閉じる
+      if (!ctxmenu.hidden) hideContextMenu();
+      else appWindow.close().catch(() => {});
       break;
   }
 });
@@ -347,6 +371,7 @@ window.addEventListener("keydown", (e) => {
 // macOS: マウスにより挙動が異なるが、side button は同じく button 3/4 の
 // mouseup として届く（届かないユーティリティ常駐マウスはキー操作で代替）。
 window.addEventListener("mouseup", (e) => {
+  if (!settings.sideButtons) return;
   if (e.button === 3) {
     e.preventDefault();
     step(-1);
@@ -365,7 +390,11 @@ window.addEventListener(
   (e) => {
     if (!images.length) return;
     e.preventDefault();
-    const factor = Math.exp(-e.deltaY * 0.002);
+    if (settings.wheelAction === "navigate") {
+      wheelNavigate(e.deltaY);
+      return;
+    }
+    const factor = Math.exp(-e.deltaY * 0.0004 * settings.wheelSensitivity);
     zoomAt(e.clientX, e.clientY, factor);
   },
   { passive: false }
@@ -393,7 +422,10 @@ navNext.addEventListener("click", () => step(1));
 document.getElementById("btn-min").addEventListener("click", () => appWindow.minimize());
 document.getElementById("btn-max").addEventListener("click", () => appWindow.toggleMaximize());
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
-window.addEventListener("contextmenu", (e) => e.preventDefault());
+window.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  openContextMenu(e.clientX, e.clientY);
+});
 
 // ---- drag & drop ----
 listen("tauri://drag-enter", () => app.classList.add("dropping"));
@@ -414,3 +446,144 @@ invoke("get_startup_file")
     if (path) openPath(path);
   })
   .catch(() => {});
+
+// ---- settings ----
+// 設定ウィンドウからの変更は "settings-changed" で届き、その場で反映する
+function hexToRgba(hex, alpha) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+  const n = parseInt(m ? m[1] : "0e0e10", 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+function applySettings() {
+  app.style.background = hexToRgba(settings.backgroundColor, settings.backgroundOpacity / 100);
+  app.style.borderRadius = settings.roundedCorners ? "8px" : "0";
+  app.classList.toggle("hide-filename", !settings.showFilename);
+  app.classList.toggle("hide-nav", !settings.showNavButtons);
+  img.style.imageRendering = settings.imageRendering;
+  appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
+}
+
+async function openSettings() {
+  hideContextMenu();
+  try {
+    await invoke("open_settings_window");
+  } catch (e) {
+    showError(e);
+  }
+}
+
+// ---- wheel navigation ----
+// ホイール 1 段の量はデバイス差が大きいので、しきい値までためてから 1 枚送る
+let wheelAccum = 0;
+function wheelNavigate(deltaY) {
+  const threshold = 220 - settings.wheelSensitivity * 18;
+  if (Math.sign(deltaY) !== Math.sign(wheelAccum)) wheelAccum = 0;
+  wheelAccum += deltaY;
+  while (Math.abs(wheelAccum) >= threshold) {
+    step(Math.sign(wheelAccum));
+    wheelAccum -= Math.sign(wheelAccum) * threshold;
+  }
+}
+
+// ---- context menu ----
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const REVEAL_LABEL = IS_MAC
+  ? "Finder で表示"
+  : /Win/.test(navigator.platform || navigator.userAgent)
+    ? "エクスプローラーで表示"
+    : "ファイルマネージャーで表示";
+
+// 表示中のファイル。書庫内の画像の場合は書庫そのものを指す
+function currentFilePath() {
+  if (archivePath) return archivePath;
+  return index >= 0 && index < images.length ? images[index] : null;
+}
+
+async function revealCurrent() {
+  const path = currentFilePath();
+  if (!path) return;
+  try {
+    await invoke("reveal_in_file_manager", { path });
+  } catch (e) {
+    showError(e);
+  }
+}
+
+function hideContextMenu() {
+  ctxmenu.hidden = true;
+}
+
+function buildContextMenu() {
+  const hasFile = currentFilePath() !== null;
+  return [
+    { label: REVEAL_LABEL, disabled: !hasFile, action: revealCurrent },
+    { separator: true },
+    { label: "ファイルを開く…", accel: "O", action: openDialog },
+    { label: "フォルダを開く…", accel: "D", action: openFolderDialog },
+    { label: "再読み込み", accel: "R", disabled: !hasFile, action: rescan },
+    { separator: true },
+    { label: "ウィンドウに合わせる", accel: "0", disabled: !hasFile, action: setFitMode },
+    { label: "等倍 (100%)", accel: "1", disabled: !hasFile, action: () => zoomTo(1) },
+    { label: "全画面表示", accel: "F", action: toggleFullscreen },
+    { separator: true },
+    { label: "設定…", accel: ",", action: openSettings },
+    { label: "終了", accel: "Esc", action: () => appWindow.close().catch(() => {}) },
+  ];
+}
+
+function openContextMenu(x, y) {
+  ctxmenu.textContent = "";
+  for (const item of buildContextMenu()) {
+    if (item.separator) {
+      const hr = document.createElement("div");
+      hr.className = "ctx-sep";
+      ctxmenu.appendChild(hr);
+      continue;
+    }
+    const btn = document.createElement("button");
+    btn.className = "ctx-item";
+    btn.type = "button";
+    btn.setAttribute("role", "menuitem");
+    btn.disabled = !!item.disabled;
+    const label = document.createElement("span");
+    label.textContent = item.label;
+    const accel = document.createElement("span");
+    accel.className = "ctx-accel";
+    accel.textContent = item.accel ?? "";
+    btn.append(label, accel);
+    btn.addEventListener("click", () => {
+      hideContextMenu();
+      item.action();
+    });
+    ctxmenu.appendChild(btn);
+  }
+
+  // いったん表示してから実寸で画面内に収める
+  ctxmenu.style.left = "0px";
+  ctxmenu.style.top = "0px";
+  ctxmenu.hidden = false;
+  const rect = ctxmenu.getBoundingClientRect();
+  const left = Math.max(4, Math.min(x, window.innerWidth - rect.width - 4));
+  const top = Math.max(4, Math.min(y, window.innerHeight - rect.height - 4));
+  ctxmenu.style.left = `${left}px`;
+  ctxmenu.style.top = `${top}px`;
+}
+
+window.addEventListener("mousedown", (e) => {
+  if (!ctxmenu.hidden && !ctxmenu.contains(e.target)) hideContextMenu();
+}, true);
+window.addEventListener("blur", hideContextMenu);
+window.addEventListener("resize", hideContextMenu);
+
+listen("settings-changed", (event) => {
+  settings = normalizeSettings(event.payload);
+  applySettings();
+});
+
+invoke("load_settings")
+  .then((saved) => {
+    settings = normalizeSettings(saved);
+    applySettings();
+  })
+  .catch(() => applySettings());

@@ -228,3 +228,71 @@ body {
 #app.dropping #drop-hint {
   display: flex;
 }
+
+/* 設定で隠せる要素 */
+#app.hide-filename #filename,
+#app.hide-filename #counter,
+#app.hide-nav .nav {
+  display: none;
+}
+
+/* ---- context menu ---- */
+#ctxmenu {
+  position: absolute;
+  z-index: 10;
+  min-width: 200px;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(26, 26, 30, 0.98);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.5);
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #e2e2e8;
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ctx-item span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ctx-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ctx-item:disabled {
+  color: #5c5c65;
+  cursor: default;
+}
+
+.ctx-accel {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: #6c6c75;
+}
+
+.ctx-item:disabled .ctx-accel {
+  color: #46464d;
+}
+
+.ctx-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.09);
+}
