@@ -236,7 +236,7 @@ macOS はマウスの「進む/戻る」ボタンの扱いが Windows と異な�
 - **macOS**: 「"sView" は壊れているため開けません」または「Apple は、"sView" に Mac に損害を与えたり、プライバシーを侵害する可能性のあるマルウェアが含まれていないことを検証できませんでした。」と表示される場合、アプリが壊れている・マルウェアが含まれているわけではなく、未署名アプリに付与される quarantine 属性が原因です。`sView.app` を `/Applications` に移動したうえで、ターミナルで以下を実行して quarantine 属性を解除してください
 
   ```sh
-  xattr -cr /Applications/sView.app
+  xattr -rd com.apple.quarantine /Applications/sView.app
   ```
 
   （`.dmg` からドラッグ＆ドロップでインストールする運用を想定しています。`.app` を別の場所に置いている場合はそのパスを指定してください。システム設定 →「プライバシーとセキュリティ」→「このまま開く」からでも起動できる場合があります）
