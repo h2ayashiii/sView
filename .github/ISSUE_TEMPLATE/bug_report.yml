@@ -1,0 +1,79 @@
+name: バグ報告
+description: 動作がおかしいところを報告する
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        報告ありがとうございます。再現に必要な情報を教えてください。
+
+  - type: input
+    id: version
+    attributes:
+      label: sView のバージョン
+      description: 右クリックメニュー →「設定…」を開き、ウィンドウ左下に出ている値です。
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - その他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: 入手方法
+      options:
+        - インストーラ (sView_x.y.z_x64-setup.exe)
+        - ポータブル版 (sView_x.y.z_x64-portable.exe)
+        - dmg
+        - 自分でビルドした
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      description: 何をどう開いて、どの操作をしたときに起きるかを書いてください。
+      placeholder: |
+        1. 100 枚ほどの画像が入ったフォルダを開く
+        2. → キーを押し続ける
+        3. 30 枚目あたりで画像が表示されなくなる
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待した動作
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: 開いていたファイル
+      description: |
+        画像ファイル・フォルダ・圧縮フォルダのどれを開いていたか、
+        形式（png / jpg / cbz など）や枚数、特殊な点があれば書いてください。
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: その他
+      description: スクリーンショットや、気づいたことがあれば。
+    validations:
+      required: false

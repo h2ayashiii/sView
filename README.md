@@ -2,6 +2,43 @@
 
 Tauri 製の軽量クロスプラットフォーム画像ビュアーです。ウィンドウフレームを持たず、デスクトップに「画像だけが浮かんでいる」ような表示を目指しています。
 
+> **0.1.0 はベータ版です。** ひととおり動きますが、実利用での検証はこれからです。
+> おかしなところがあれば [Issue](https://github.com/h2ayashiii/sView/issues) で教えてください。
+
+## ダウンロード
+
+[リリースページ](https://github.com/h2ayashiii/sView/releases)から、お使いの OS のファイルをダウンロードしてください。
+
+| OS | ファイル | 説明 |
+| --- | --- | --- |
+| Windows | `sView_<バージョン>_x64-setup.exe` | インストーラ。管理者権限は不要で、`%LOCALAPPDATA%` にインストールします |
+| Windows | `sView_<バージョン>_x64-portable.exe` | インストール不要。ダウンロードしてそのまま実行できます |
+| macOS | `sView_<バージョン>_<アーキテクチャ>.dmg` | 開いて `sView.app` をアプリケーションフォルダへドラッグします |
+
+macOS 版は GitHub Actions の `macos-latest` runner でビルドしているため **Apple Silicon (arm64) 向け**です。Intel Mac では動きません。
+
+Linux は配布していません。ソースからビルドすれば動作しますが、動作確認は行っていません。
+
+## 初回起動
+
+配布物には **Apple Developer ID による署名・公証（notarization）を行っていません**（ad-hoc 署名のみ）。Apple Developer Program（有料）への登録なしにはこれを回避できないため、初回起動時に OS がブロックします。アプリが壊れている・マルウェアが含まれているわけではありません。
+
+### macOS
+
+「"sView" は壊れているため開けません」または「Apple は、"sView" に Mac に損害を与えたり、プライバシーを侵害する可能性のあるマルウェアが含まれていないことを検証できませんでした。」と表示される場合、未署名アプリに付与される quarantine 属性が原因です。
+
+`sView.app` を `/Applications` に移動したうえで、ターミナルで以下を実行して quarantine 属性を解除してください。
+
+```sh
+xattr -rd com.apple.quarantine /Applications/sView.app
+```
+
+（`.app` を別の場所に置いている場合はそのパスを指定してください。システム設定 →「プライバシーとセキュリティ」→「このまま開く」からでも起動できる場合があります）
+
+### Windows
+
+SmartScreen の警告が出た場合は「詳細情報」→「実行」を選択してください。
+
 ## 特徴
 
 - **フレームレス表示** — タイトルバー・枠なし。閉じるボタン（macOS は左上、Windows / Linux は右上）や左右の移動ボタン、左下のファイル名・右下の枚数表示は、マウスを動かしている間だけオーバーレイ表示され、3 秒動かさないと消えて画像だけの表示に戻ります。最小化・最大化は持たず、大きさはウィンドウの端をドラッグして変えます
@@ -24,7 +61,7 @@ Tauri 製の軽量クロスプラットフォーム画像ビュアーです。�
 - 一覧を作るときに読むのは索引だけで画像データは読まないため、フォルダがいくつあってもメモリ使用量は変わりません
 - **軽量** — フロントエンドはフレームワーク・バンドラなしの素の HTML/CSS/JS。バックエンドは Rust。UI は OS 標準の WebView（WebView2 / WKWebView）を使うため、バイナリは数MB程度です
 - **対応形式** — 画像: png / jpg / jpeg / jfif / gif / webp / bmp / ico / tif / tiff / avif / svg、書庫: zip / cbz
-- **対応OS** — Windows 10/11・macOS 10.15 以降（Linux でもビルド可能）
+- **対応OS** — Windows 10/11・macOS 10.15 以降（Apple Silicon）
 
 ### ウィンドウサイズ
 
@@ -152,7 +189,7 @@ npm run build:debug
 
 | OS | 実行ファイル（インストール不要のポータブル版） | インストーラ |
 | --- | --- | --- |
-| Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/nsis/`（NSIS インストーラ。実行するとアプリ本体一式を Program Files にインストール） |
+| Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/nsis/`（NSIS インストーラ。管理者権限なしで `%LOCALAPPDATA%` にインストールします） |
 | macOS | `src-tauri/target/release/bundle/macos/sView.app` | `src-tauri/target/release/bundle/dmg/` |
 
 `bundle/macos/sView.app` と `bundle/dmg/` の `.dmg` の中身は同じものです。`tauri build` はまず `.app` を組み立て、dmg バンドラはその `.app` をそのままディスクイメージに入れるため、`.dmg` を開いて出てくる `sView.app` は `bundle/macos/sView.app` と同一です。
@@ -201,31 +238,6 @@ git push origin v0.2.0
 
 「Run workflow」ボタンが出るのは、ワークフローファイルがデフォルトブランチ（main）にあるためです。実行時には**選択したブランチ側の `build.yml`** が使われるので、ワークフロー自体の変更もそのブランチで試せます。ただし画面の入力欄の内容は main 側の定義が使われることがあるため、main にマージする前に新しい入力を試すときは上記の CLI（API に直接渡す形）が確実です。
 
-### 他のプラットフォーム向けのビルド（クロスビルド）
-
-上記の `npm run build` は、実行した OS 向けのバイナリを作ります。Linux の開発機から他プラットフォーム向けにビルドできるかは、ターゲットによって異なります。
-
-| ターゲット | Linux からビルド | 方法 |
-| --- | --- | --- |
-| Windows（`.exe` / NSIS インストーラ） | **可能** | `cargo-xwin` を使う（下記） |
-| macOS（`.app` / `.dmg`） | **不可能** | macOS 実機か CI の `macos-latest` runner を使う |
-
-Windows 向けは、前提パッケージを入れたうえで Tauri CLI に `--runner cargo-xwin` を渡します:
-
-```sh
-# 前提パッケージ（一度だけ）
-sudo apt-get install -y clang lld llvm nsis
-rustup target add x86_64-pc-windows-msvc
-cargo install cargo-xwin
-
-# ビルド
-npx tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
-```
-
-成果物は `src-tauri/target/x86_64-pc-windows-msvc/release/` 以下に出ます。`--runner cargo-xwin` を省略すると通常の `cc`(GCC) が呼ばれてリソースコンパイルに失敗するため、必ず指定してください。制約や仕組みの詳細は「プラットフォーム別の注意点」の『Linux（Ubuntu）から Windows 向けバイナリをクロスビルドする』を参照してください。
-
-macOS 向けは、Apple の開発者利用許諾により macOS SDK を Linux 上で正規に利用できず、`.app` / `.dmg` の生成や署名にも `codesign` などの macOS ネイティブツールが必要なため、クロスビルドの手段がありません（Tauri も公式にサポートしていません）。macOS 実機を持っていない場合は、GitHub Actions の `macos-latest` runner でビルドした Artifacts（`sView-<バージョン>-macos`）を利用してください。
-
 ## プロジェクト構成
 
 ```
@@ -242,7 +254,9 @@ sView/
 │   ├── src/lib.rs        # フォルダスキャン・自然順ソート・起動ファイル処理・設定とウィンドウ状態（大きさ・位置）の保存
 │   ├── tauri.conf.json   # ウィンドウ設定（フレームレス等）・バンドル設定・バージョン
 │   └── capabilities/     # フロントエンドに許可する API の定義
-└── scripts/              # ビルドスクリプトと、リリース時にタグのバージョンを反映する set-version.mjs
+├── scripts/              # ビルドスクリプトと、リリース時にタグのバージョンを反映する set-version.mjs
+├── LICENSE               # Commons Clause + MIT
+└── THIRD-PARTY-NOTICES   # 配布バイナリに含まれる第三者ソフトウェアのライセンス表示
 ```
 
 ## プラットフォーム別の注意点
@@ -257,16 +271,18 @@ macOS はマウスの「進む/戻る」ボタンの扱いが Windows と異な�
 
 また、フレームレス・透過ウィンドウの実現に `macOSPrivateApi` を使用しています。Mac App Store 配布を行う場合はこの設定を外す必要があります。
 
-### 未署名バイナリの実行
+## ライセンス
 
-配布物は Apple Developer ID による署名・公証（notarization）を行っていません（ad-hoc 署名のみ）。Apple Developer Program（有料）への登録なしにはこれを回避できないため、ダウンロードした `.dmg` / `.app` は macOS の Gatekeeper と quarantine 属性の対象になり、初回起動時にブロックされます。
+[Commons Clause License Condition v1.0](https://commonsclause.com/) を付した MIT ライセンスで公開しています。全文は [LICENSE](LICENSE) を参照してください。
 
-- **macOS**: 「"sView" は壊れているため開けません」または「Apple は、"sView" に Mac に損害を与えたり、プライバシーを侵害する可能性のあるマルウェアが含まれていないことを検証できませんでした。」と表示される場合、アプリが壊れている・マルウェアが含まれているわけではなく、未署名アプリに付与される quarantine 属性が原因です。`sView.app` を `/Applications` に移動したうえで、ターミナルで以下を実行して quarantine 属性を解除してください
+| できること | できないこと |
+| --- | --- |
+| 個人・法人を問わず、業務でも自由に使う | 販売する（有償バンドル、SaaS 化、有償サポートを含む） |
+| ソースを改変する | 対価を得る形で提供する |
+| 改変版を**無償で**再配布・公開する | |
 
-  ```sh
-  xattr -rd com.apple.quarantine /Applications/sView.app
-  ```
+MIT が与える権利から「Sell する権利」だけを取り除いたものです。使うこと自体は商用・非商用を問わず自由ですが、sView やその派生物の機能を実質的な価値の源泉として対価を得ることはできません。
 
-  （`.dmg` からドラッグ＆ドロップでインストールする運用を想定しています。`.app` を別の場所に置いている場合はそのパスを指定してください。システム設定 →「プライバシーとセキュリティ」→「このまま開く」からでも起動できる場合があります）
+OSI 承認のオープンソースライセンスではないため、本プロジェクトは「オープンソース」ではなく**ソースコード公開（source-available）**と表現しています。
 
-- **Windows**: SmartScreen の警告が出た場合は「詳細情報」→「実行」を選択してください
+配布バイナリに含まれる第三者ソフトウェアのライセンス表示は [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES) にあります。
