@@ -3,6 +3,16 @@
   "private": true,
   "version": "0.1.0",
   "description": "Minimal frameless cross-platform image viewer built with Tauri",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "h2ayashiii",
+  "homepage": "https://github.com/h2ayashiii/sView",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/h2ayashiii/sView.git"
+  },
+  "bugs": {
+    "url": "https://github.com/h2ayashiii/sView/issues"
+  },
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",

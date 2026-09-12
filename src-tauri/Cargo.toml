@@ -3,7 +3,11 @@ name = "sview"
 version = "0.1.0"
 description = "Minimal frameless cross-platform image viewer"
 edition = "2021"
-license = "MIT"
+# Commons Clause + MIT。この組み合わせに該当する SPDX 識別子がないため
+# LicenseRef で示す。全文はリポジトリルートの LICENSE を参照
+license = "LicenseRef-MIT-Commons-Clause"
+authors = ["h2ayashiii"]
+repository = "https://github.com/h2ayashiii/sView"
 
 [lib]
 name = "sview_lib"
