@@ -12,6 +12,7 @@ const placeholder = document.getElementById("placeholder");
 const errorBox = document.getElementById("error");
 const filenameEl = document.getElementById("filename");
 const counterEl = document.getElementById("counter");
+const chromeEl = document.getElementById("chrome");
 const navPrev = document.getElementById("nav-prev");
 const navNext = document.getElementById("nav-next");
 const ctxmenu = document.getElementById("ctxmenu");
@@ -341,8 +342,40 @@ function toggleFullscreen() {
     .catch(() => {});
 }
 
+// ---- overlay chrome の自動表示・非表示 ----
+// マウスを動かしている間だけ出す。同じ場所に置いたままなら
+// CHROME_IDLE_MS 後に消して、マウスを乗せていないときと同じ「画像だけ」の表示に戻す
+const CHROME_IDLE_MS = 3000;
+let chromeTimer = null;
+
+function hideChrome() {
+  clearTimeout(chromeTimer);
+  chromeTimer = null;
+  // ボタンをクリックするとフォーカスが残り、:focus-within で出たままになるので外す
+  if (chromeEl.contains(document.activeElement)) document.activeElement.blur();
+  app.classList.remove("chrome-visible");
+}
+
+function showChrome() {
+  app.classList.add("chrome-visible");
+  clearTimeout(chromeTimer);
+  chromeTimer = setTimeout(hideChrome, CHROME_IDLE_MS);
+}
+
+window.addEventListener("mousemove", showChrome);
+window.addEventListener("mousedown", showChrome);
+// ウィンドウの外へ出たら待たずに消す
+document.addEventListener("mouseleave", hideChrome);
+window.addEventListener("blur", hideChrome);
+
 // ---- input: keyboard ----
 window.addEventListener("keydown", (e) => {
+  // 設定を開くショートカット（macOS: Command + , / その他: Ctrl + ,）
+  if (e.key === "," && (IS_MAC ? e.metaKey : e.ctrlKey) && !e.altKey) {
+    e.preventDefault();
+    openSettings();
+    return;
+  }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   switch (e.key) {
     case "ArrowRight":
@@ -393,9 +426,6 @@ window.addEventListener("keydown", (e) => {
     case "f":
     case "F":
       toggleFullscreen();
-      break;
-    case ",":
-      openSettings();
       break;
     case "Escape":
       // メニューが開いているときは、まずそれを閉じる
@@ -533,6 +563,9 @@ function wheelNavigate(deltaY) {
 }
 
 // ---- context menu ----
+// 設定を開くショートカットの表示（キー処理側と揃える）
+const SETTINGS_ACCEL = IS_MAC ? "\u2318," : "Ctrl+,";
+
 const REVEAL_LABEL = IS_MAC
   ? "Finder で表示"
   : /Win/.test(navigator.platform || navigator.userAgent)
@@ -572,7 +605,7 @@ function buildContextMenu() {
     { label: "等倍 (100%)", accel: "1", disabled: !hasFile, action: () => zoomTo(1) },
     { label: "全画面表示", accel: "F", action: toggleFullscreen },
     { separator: true },
-    { label: "設定…", accel: ",", action: openSettings },
+    { label: "設定…", accel: SETTINGS_ACCEL, action: openSettings },
     { label: "終了", accel: "Esc", action: () => appWindow.close().catch(() => {}) },
   ];
 }

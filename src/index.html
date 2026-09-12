@@ -20,18 +20,18 @@
       <div id="error" hidden></div>
     </div>
 
-    <!-- ホバー時のみ表示されるオーバーレイUI -->
+    <!-- マウスを動かしている間だけ表示されるオーバーレイUI -->
     <div id="chrome">
       <!-- 閉じるボタンは macOS では左上、それ以外では右上（#app.mac で切り替え） -->
       <div id="titlebar" data-tauri-drag-region>
-        <span id="counter" data-tauri-drag-region></span>
         <button id="btn-close" title="閉じる (Esc)" aria-label="閉じる">&#x2715;</button>
       </div>
       <button id="nav-prev" class="nav" title="前の画像 (←)" aria-label="前の画像">&#x276E;</button>
       <button id="nav-next" class="nav" title="次の画像 (→)" aria-label="次の画像">&#x276F;</button>
-      <!-- 表示中のファイル（書庫内はその中のパス）は左下に出す -->
+      <!-- 表示中のファイル（書庫内はその中のパス）は左下、枚数は右下に出す -->
       <div id="statusbar" data-tauri-drag-region>
         <span id="filename" data-tauri-drag-region></span>
+        <span id="counter" data-tauri-drag-region></span>
       </div>
     </div>
 
