@@ -5,7 +5,9 @@ Guidance for coding agents working in this repository.
 ## Overview
 
 sView is a minimal, frameless, cross-platform image viewer built with **Tauri v2**.
-It opens single images, folders, and zip/cbz archives; the overlay UI appears only on hover.
+It opens single images, folders, and zip/cbz archives; the overlay UI shows while the mouse
+moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` toggle
+`#app.chrome-visible` in `src/main.js`).
 
 - **Backend**: Rust 2021, crate `sview` / lib `sview_lib` (`tauri`, `tauri-plugin-dialog`, `serde`, `zip`).
 - **Frontend**: plain HTML/CSS/JS. **No framework, no bundler, no TypeScript.**
@@ -78,8 +80,9 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - The supported image extension list is duplicated in three places — update all of them:
   `IMAGE_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` (`src/main.js`),
   `fileAssociations` (`tauri.conf.json`).
-- The "fixed" window size lives in `window.json` in the app config dir, separate from
-  `settings.json`. "Reset to defaults" intentionally leaves it alone.
+- The window's size and position live in `window.json` in the app config dir, separate from
+  `settings.json`. "Reset to defaults" intentionally leaves it alone. The position is restored
+  in both size modes (skipped when it lands on no connected monitor); the size only in "fixed".
 - Archives: `MAX_ENTRY_BYTES` (512 MB) guards against zip bombs, and the open archive handle is
   cached with an `(mtime, size)` stamp — don't re-open it naively.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
