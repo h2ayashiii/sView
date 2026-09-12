@@ -96,7 +96,10 @@ body {
   background: rgba(30, 30, 30, 0.85);
 }
 
-/* ---- hover chrome ---- */
+/* ---- overlay chrome ----
+   表示・非表示は main.js が #app.chrome-visible で切り替える
+   （マウスを動かしたら表示し、そのまま動かなければ数秒で消す）。
+   隠れている間は透明なだけでなく操作も受け付けない（見えないボタンの誤操作を防ぐ） */
 #chrome {
   position: absolute;
   inset: 0;
@@ -105,9 +108,18 @@ body {
   pointer-events: none;
 }
 
-#app:hover #chrome,
+#app.chrome-visible #chrome,
 #chrome:focus-within {
   opacity: 1;
+}
+
+#app.chrome-visible #titlebar,
+#app.chrome-visible #statusbar,
+#app.chrome-visible .nav,
+#chrome:focus-within #titlebar,
+#chrome:focus-within #statusbar,
+#chrome:focus-within .nav {
+  pointer-events: auto;
 }
 
 #titlebar {
@@ -118,18 +130,10 @@ body {
   height: 32px;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
   padding: 0 8px;
   background: linear-gradient(to bottom, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
-  pointer-events: auto;
-}
-
-#counter {
-  flex: 1;
-  min-width: 0;
-  text-align: right;
-  color: #a8a8b0;
-  font-size: 11px;
 }
 
 #btn-close {
@@ -150,12 +154,12 @@ body {
   color: #fff;
 }
 
-/* macOS は閉じるボタンを左上に置く（枚数表示はそのまま右） */
-#app.mac #btn-close {
-  order: -1;
+/* macOS は閉じるボタンを左上に置く */
+#app.mac #titlebar {
+  justify-content: flex-start;
 }
 
-/* ---- status bar（表示中のファイル） ---- */
+/* ---- status bar（左: 表示中のファイル / 右: 枚数） ---- */
 #statusbar {
   position: absolute;
   left: 0;
@@ -163,18 +167,26 @@ body {
   bottom: 0;
   display: flex;
   align-items: center;
+  gap: 12px;
   height: 30px;
   padding: 0 12px;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
-  pointer-events: auto;
 }
 
 #filename {
-  max-width: 100%;
+  flex: 1;
+  min-width: 0;
   color: #e8e8ec;
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#counter {
+  flex-shrink: 0;
+  color: #a8a8b0;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -190,7 +202,6 @@ body {
   color: rgba(255, 255, 255, 0.85);
   font-size: 18px;
   cursor: pointer;
-  pointer-events: auto;
 }
 
 .nav:hover {

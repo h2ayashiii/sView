@@ -22,6 +22,11 @@ const ARCHIVE_EXTS: &[&str] = &["cbz", "zip"];
 /// 最小ウィンドウサイズ（tauri.conf.json の minWidth / minHeight と合わせる）
 const MIN_WINDOW_SIZE: (f64, f64) = (200.0, 150.0);
 
+/// 設定と window.json を置くフォルダ名。
+/// Tauri の app_config_dir() は identifier（bundle ID）をそのままフォルダ名にするが、
+/// 逆ドメイン名がそのまま見えるのは分かりにくいので、ここは短い名前に固定する
+const CONFIG_DIR_NAME: &str = "sview";
+
 /// 展開後サイズの上限（zip bomb 対策 / 1枚あたり）
 const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -393,50 +398,95 @@ fn startup_file_from_args() -> Option<String> {
         .find(|a| !a.starts_with('-') && Path::new(a).exists())
 }
 
-/// ウィンドウサイズを覚えておくファイル（設定本体とは分けて、
-/// 設定ウィンドウの「既定に戻す」で消えないようにする）
-fn window_state_file(app: &AppHandle) -> Result<PathBuf, String> {
+/// 設定ファイル類を置くフォルダ（OS の設定フォルダ / sview）
+fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
-        .app_config_dir()
+        .config_dir()
         .map_err(|e| format!("設定フォルダを取得できません: {e}"))?;
-    Ok(dir.join("window.json"))
+    Ok(dir.join(CONFIG_DIR_NAME))
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+/// ウィンドウの大きさと位置を覚えておくファイル（設定本体とは分けて、
+/// 設定ウィンドウの「既定に戻す」で消えないようにする）
+fn window_state_file(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(config_dir(app)?.join("window.json"))
+}
+
+/// 各項目は Option。古い window.json（大きさだけ）もそのまま読めるようにし、
+/// 保存できなかった項目は既定の挙動（中央・既定サイズ）に任せる
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct WindowState {
-    width: f64,
-    height: f64,
+    width: Option<f64>,
+    height: Option<f64>,
+    x: Option<f64>,
+    y: Option<f64>,
 }
 
-/// 「固定」で開き直せるよう、閉じるときのウィンドウサイズを保存する
+fn read_window_state(app: &AppHandle) -> Option<WindowState> {
+    let path = window_state_file(app).ok()?;
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// 前回の続きから開けるよう、閉じるときのウィンドウの位置と大きさを保存する。
+/// 位置はどちらのサイズ設定でも覚えるが、「画像に合わせる」で開いている間の
+/// 大きさは画像都合なので覚えない（前に覚えた大きさをそのまま残す）
 fn save_window_state(window: &tauri::Window) {
     let app = window.app_handle();
-    // 「画像に合わせる」で開いている間の大きさは画像都合なので覚えない
-    if settings_value(app, "windowSizeMode").as_deref() == Some("flexible") {
-        return;
-    }
     let Ok(path) = window_state_file(app) else {
         return;
     };
     let Ok(scale) = window.scale_factor() else {
         return;
     };
-    let Ok(size) = window.inner_size() else {
+    // 最小化中は位置も大きさも実際の見た目と違うので触らない
+    if window.is_minimized().unwrap_or(false) {
         return;
-    };
-    let size = size.to_logical::<f64>(scale);
-    if size.width < 1.0 || size.height < 1.0 {
-        return; // 最小化中などは保存しない
     }
-    let state = WindowState {
-        width: size.width,
-        height: size.height,
-    };
+
+    let mut state = read_window_state(app).unwrap_or_default();
+
+    if let Ok(pos) = window.outer_position() {
+        let pos = pos.to_logical::<f64>(scale);
+        state.x = Some(pos.x);
+        state.y = Some(pos.y);
+    }
+
+    if settings_value(app, "windowSizeMode").as_deref() != Some("flexible") {
+        if let Ok(size) = window.inner_size() {
+            let size = size.to_logical::<f64>(scale);
+            if size.width >= 1.0 && size.height >= 1.0 {
+                state.width = Some(size.width);
+                state.height = Some(size.height);
+            }
+        }
+    }
+
     if let (Some(dir), Ok(text)) = (path.parent(), serde_json::to_string_pretty(&state)) {
         let _ = fs::create_dir_all(dir);
         let _ = fs::write(&path, text);
     }
+}
+
+/// 保存した位置が今つながっているディスプレイのどれかに載っているかを見る。
+/// 前回使っていた外部ディスプレイが外れている場合に、画面外へ開くのを防ぐ
+fn position_is_on_screen(window: &tauri::Window, x: f64, y: f64) -> bool {
+    let Ok(monitors) = window.available_monitors() else {
+        return false;
+    };
+    monitors.iter().any(|m| {
+        let scale = m.scale_factor();
+        let origin = m.position().to_logical::<f64>(scale);
+        let size = m.size().to_logical::<f64>(scale);
+        // 端にぴったり寄せた場合を落とさないよう少しだけ余裕を見る
+        const SLACK: f64 = 8.0;
+        x >= origin.x - SLACK
+            && y >= origin.y - SLACK
+            && x < origin.x + size.width
+            && y < origin.y + size.height
+    })
 }
 
 /// 設定ファイルから文字列項目を 1 つ読む（Rust 側から設定を参照する用）
@@ -447,26 +497,28 @@ fn settings_value(app: &AppHandle, key: &str) -> Option<String> {
     value.get(key)?.as_str().map(str::to_owned)
 }
 
-/// 起動時に、前回閉じたときのウィンドウサイズを復元する（「固定」のときのみ）
+/// 起動時に、前回閉じたときのウィンドウを復元する。
+/// 位置は常に、大きさは「固定」のときだけ戻す
+/// （「画像に合わせる」は画像を開くまで既定サイズ）
 fn restore_window_state(window: &tauri::Window) {
     let app = window.app_handle();
-    if settings_value(app, "windowSizeMode").as_deref() == Some("flexible") {
-        return; // 画像を開くまでは既定サイズ
+    let Some(state) = read_window_state(app) else {
+        return;
+    };
+
+    if settings_value(app, "windowSizeMode").as_deref() != Some("flexible") {
+        if let (Some(width), Some(height)) = (state.width, state.height) {
+            if width >= 1.0 && height >= 1.0 {
+                let _ = window.set_size(LogicalSize::new(width, height));
+            }
+        }
     }
-    let Ok(path) = window_state_file(app) else {
-        return;
-    };
-    let Ok(text) = fs::read_to_string(path) else {
-        return;
-    };
-    let Ok(state) = serde_json::from_str::<WindowState>(&text) else {
-        return;
-    };
-    if state.width < 1.0 || state.height < 1.0 {
-        return;
+
+    if let (Some(x), Some(y)) = (state.x, state.y) {
+        if position_is_on_screen(window, x, y) {
+            let _ = window.set_position(LogicalPosition::new(x, y));
+        }
     }
-    let _ = window.set_size(LogicalSize::new(state.width, state.height));
-    let _ = window.center();
 }
 
 /// ウィンドウを画像の縦横比ぴったりに合わせる（「画像に合わせる」のとき）。
@@ -513,13 +565,9 @@ fn fit_window_to_image(window: WebviewWindow, width: f64, height: f64) -> Result
     Ok(())
 }
 
-/// 設定ファイルの置き場所（OS ごとのアプリ設定フォルダ / settings.json）
+/// 設定ファイルの置き場所（OS の設定フォルダ / sview / settings.json）
 fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("設定フォルダを取得できません: {e}"))?;
-    Ok(dir.join("settings.json"))
+    Ok(config_dir(app)?.join("settings.json"))
 }
 
 /// アプリのバージョンを返す（tauri.conf.json の version。
