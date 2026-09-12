@@ -325,6 +325,13 @@ input[type="color"]::-webkit-color-swatch {
   background: var(--chrome);
 }
 
+#s-version {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
 #s-status {
   flex: 1;
   min-width: 0;
