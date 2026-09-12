@@ -107,6 +107,8 @@ Tauri 製の軽量クロスプラットフォーム画像ビュアーです。�
 
 設定ウィンドウは閉じても破棄せず隠すだけで、次に開くときは同じウィンドウを表示します。本体ウィンドウを閉じるとアプリごと終了します。
 
+設定ウィンドウの左下には、実行中のアプリのバージョンを表示します（`tauri.conf.json` の `version`。タグから作ったリリースではタグの値と一致します）。
+
 ## 開発環境のセットアップ
 
 必要なもの:
@@ -155,23 +157,47 @@ npm run build:debug
 
 `bundle/macos/sView.app` と `bundle/dmg/` の `.dmg` の中身は同じものです。`tauri build` はまず `.app` を組み立て、dmg バンドラはその `.app` をそのままディスクイメージに入れるため、`.dmg` を開いて出てくる `sView.app` は `bundle/macos/sView.app` と同一です。
 
-GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイナリを自動ビルドしています。手元にビルド環境がない場合は Actions の成果物（Artifacts）を利用してください。
+GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイナリをビルドできます。手元にビルド環境がない場合は、リリースの添付ファイルか、Actions の成果物（Artifacts）を利用してください。
 
-| Artifacts | 中身 |
+**ビルドが走るタイミングは 2 つだけです。** ブランチへの push や main への merge では走りません。
+
+| きっかけ | 動き |
 | --- | --- |
-| `sview-windows` | インストーラ（`*-setup.exe`）と、インストール不要でそのまま実行できるポータブル版の `sview.exe` 単体 |
-| `sview-macos` | `.dmg` のみ |
+| `v*` タグを push | Windows / macOS の両方をビルドし、GitHub Release を作って成果物を添付する |
+| 手動実行（Run workflow） | 選んだ OS だけをビルドし、Artifacts に置く（リリースは作らない） |
+
+Artifacts は zip を展開すると成果物がそのまま出てきます（`bundle/nsis/…` のような階層は作りません）。
+
+| Artifacts | 展開すると出てくるもの |
+| --- | --- |
+| `sView-<バージョン>-windows` | `sView_<バージョン>_x64-setup.exe`（インストーラ）と `sView_<バージョン>_x64-portable.exe`（インストール不要でそのまま実行できる本体） |
+| `sView-<バージョン>-macos` | `sView_<バージョン>_<アーキテクチャ>.dmg` |
 
 macOS で `.app` を単体でアップロードしていないのは、`.app` が（1ファイルではなく）ディレクトリだからです。Artifacts は必ず zip に固められて配布されるため、`.app` をそのまま入れると展開時に実行権限が落ちて起動できなくなります。`.dmg` は 1 ファイルなので zip を経由しても中身が変化せず、マウントすれば実行権限も ad-hoc 署名も保たれた `sView.app` がそのまま取り出せます。
 
+### タグを打ってリリースする
+
+`v` から始まるタグを push すると、ビルドと GitHub Release の作成までが自動で行われます。
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+- **バージョンはタグから決まります。** ビルド前に `scripts/set-version.mjs` が `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` / `package.json` の `version` をタグの値（`v` を除いたもの）に書き換えるため、設定ウィンドウに出るバージョンも成果物のファイル名もタグと一致します。リポジトリ側のバージョンを事前に上げておく必要はありません（手動ビルドではこの書き換えは行われず、リポジトリの値がそのまま使われます）。
+- タグは `v1.2.3` の形式（プレリリース `v1.2.3-beta.1` も可）にしてください。それ以外はビルド前にエラーで止まります。
+- Release には `.dmg` と `.exe` が**そのまま**添付されます。Release の添付ファイルは zip に固められないため、ダウンロードしたらすぐ実行できます。
+- リリースノートは GitHub の自動生成（`--generate-notes`）です。同じタグで再実行した場合は、既存の Release にファイルを上書きアップロードします。
+- 成果物はランナーのアーキテクチャ向けです。GitHub の `macos-latest` は Apple Silicon（arm64）のため、`.dmg` も Apple Silicon 向けになります。Intel Mac 向けも配る場合は、`--target universal-apple-darwin` でのユニバーサルビルドを追加してください。
+
 ### 任意のブランチで手動ビルドする
 
-自動ビルドが走るのは main への push と `v*` タグのときだけですが、それとは別に、**任意のブランチを選んで好きなタイミングで手動実行**できます（開発中のブランチを実機で確認したいときなど）。
+タグを打たずに、**任意のブランチを選んで好きなタイミングで手動実行**できます（開発中のブランチを実機で確認したいときなど）。
 
 - **画面から**: Actions タブ → 左の `build` → 右上の「Run workflow」→ ブランチと「ビルドする OS」を選んで実行
 - **CLI から**: `gh workflow run build.yml --ref <ブランチ名> -f targets=windows`
 
-「ビルドする OS」は `both`（既定）/ `windows` / `macos` から選べます。片方だけ確認したいときに選ぶと、もう一方のランナーは起動しません。自動実行（push / タグ）では常に両方をビルドします。
+「ビルドする OS」は `both`（既定）/ `windows` / `macos` から選べます。片方だけ確認したいときに選ぶと、もう一方のランナーは起動しません。タグ実行では常に両方をビルドします。
 
 「Run workflow」ボタンが出るのは、ワークフローファイルがデフォルトブランチ（main）にあるためです。実行時には**選択したブランチ側の `build.yml`** が使われるので、ワークフロー自体の変更もそのブランチで試せます。ただし画面の入力欄の内容は main 側の定義が使われることがあるため、main にマージする前に新しい入力を試すときは上記の CLI（API に直接渡す形）が確実です。
 
@@ -198,7 +224,7 @@ npx tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles ns
 
 成果物は `src-tauri/target/x86_64-pc-windows-msvc/release/` 以下に出ます。`--runner cargo-xwin` を省略すると通常の `cc`(GCC) が呼ばれてリソースコンパイルに失敗するため、必ず指定してください。制約や仕組みの詳細は「プラットフォーム別の注意点」の『Linux（Ubuntu）から Windows 向けバイナリをクロスビルドする』を参照してください。
 
-macOS 向けは、Apple の開発者利用許諾により macOS SDK を Linux 上で正規に利用できず、`.app` / `.dmg` の生成や署名にも `codesign` などの macOS ネイティブツールが必要なため、クロスビルドの手段がありません（Tauri も公式にサポートしていません）。macOS 実機を持っていない場合は、GitHub Actions の `macos-latest` runner でビルドした Artifacts（`sview-macos`）を利用してください。
+macOS 向けは、Apple の開発者利用許諾により macOS SDK を Linux 上で正規に利用できず、`.app` / `.dmg` の生成や署名にも `codesign` などの macOS ネイティブツールが必要なため、クロスビルドの手段がありません（Tauri も公式にサポートしていません）。macOS 実機を持っていない場合は、GitHub Actions の `macos-latest` runner でビルドした Artifacts（`sView-<バージョン>-macos`）を利用してください。
 
 ## プロジェクト構成
 
@@ -214,9 +240,9 @@ sView/
 │   └── settings-defs.js  # 設定項目の定義（本体と設定ウィンドウで共有）
 ├── src-tauri/
 │   ├── src/lib.rs        # フォルダスキャン・自然順ソート・起動ファイル処理・設定とウィンドウ状態（大きさ・位置）の保存
-│   ├── tauri.conf.json   # ウィンドウ設定（フレームレス等）・バンドル設定
+│   ├── tauri.conf.json   # ウィンドウ設定（フレームレス等）・バンドル設定・バージョン
 │   └── capabilities/     # フロントエンドに許可する API の定義
-└── scripts/              # ビルドスクリプト
+└── scripts/              # ビルドスクリプトと、リリース時にタグのバージョンを反映する set-version.mjs
 ```
 
 ## プラットフォーム別の注意点

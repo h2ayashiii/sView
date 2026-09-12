@@ -5,6 +5,9 @@ node_modules/
 src-tauri/target/
 src-tauri/gen/
 
+# CI が成果物をまとめる先（リリース時のみ作られる）
+dist/
+
 # Misc
 .DS_Store
 Thumbs.db

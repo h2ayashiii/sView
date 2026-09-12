@@ -570,6 +570,13 @@ fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(config_dir(app)?.join("settings.json"))
 }
 
+/// アプリのバージョンを返す（tauri.conf.json の version。
+/// リリース時は CI がタグの値を書き込んでからビルドする）
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 /// 保存済みの設定を返す。未保存・壊れている場合は null（フロント側で既定値を使う）
 #[tauri::command]
 fn load_settings(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
@@ -706,6 +713,7 @@ pub fn run() {
             list_images,
             read_archive_image,
             get_startup_file,
+            app_version,
             load_settings,
             save_settings,
             open_settings_window,

@@ -21,6 +21,13 @@ window.addEventListener("contextmenu", (e) => e.preventDefault());
 
 const body = document.getElementById("s-body");
 const statusEl = document.getElementById("s-status");
+const versionEl = document.getElementById("s-version");
+
+// アプリのバージョン（リリース時は CI がタグの値を書き込んでビルドする）。
+// 取得できない場合は何も出さない
+invoke("app_version")
+  .then((version) => (versionEl.textContent = `バージョン ${version}`))
+  .catch(() => {});
 
 let settings = { ...SETTINGS_DEFAULTS };
 const controls = new Map(); // key -> 値を書き戻す関数
