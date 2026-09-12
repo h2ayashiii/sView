@@ -35,7 +35,7 @@ Tauri 製の軽量クロスプラットフォーム画像ビュアーです。�
 
 ウィンドウの位置は、どちらの設定でも前回閉じたときの場所を覚えていて、次回もそこで開きます（前回使っていたディスプレイが外れているなど、保存した位置がどの画面にも載らない場合は既定どおり中央に開きます）。
 
-固定用のウィンドウサイズとウィンドウ位置は、設定とは別の `window.json` に保存します（設定の「既定に戻す」では消えません）。
+固定用のウィンドウサイズとウィンドウ位置は、設定とは別の `window.json` に保存します（`settings.json` と同じ `sview` フォルダに置きますが、設定の「既定に戻す」では消えません）。
 
 ## 操作方法
 
@@ -94,7 +94,7 @@ Tauri 製の軽量クロスプラットフォーム画像ビュアーです。�
 
 ### 設定
 
-右クリックメニューの「設定…」または `⌘ ,`（Windows・Linux は `Ctrl` + `,`）で、本体とは別の設定ウィンドウが開きます。項目はページやタブに分けず 1 枚に並べてあり、収まらない分はスクロールします。変更は即座に本体へ反映され、OS のアプリ設定フォルダ（Windows: `%APPDATA%\com.sview.viewer`、macOS: `~/Library/Application Support/com.sview.viewer`、Linux: `~/.config/com.sview.viewer`）の `settings.json` に保存されます。
+右クリックメニューの「設定…」または `⌘ ,`（Windows・Linux は `Ctrl` + `,`）で、本体とは別の設定ウィンドウが開きます。項目はページやタブに分けず 1 枚に並べてあり、収まらない分はスクロールします。変更は即座に本体へ反映され、OS の設定フォルダの中の `sview`（Windows: `%APPDATA%\sview`、macOS: `~/Library/Application Support/sview`、Linux: `~/.config/sview`）にある `settings.json` に保存されます。このフォルダ名はアプリの識別子（macOS の bundle ID として使う逆ドメイン名 `io.github.h2ayashiii.sview`）とは切り離してあり、どの OS でも `sview` です。
 
 | 分類 | 項目 |
 | --- | --- |

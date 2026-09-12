@@ -80,9 +80,11 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - The supported image extension list is duplicated in three places — update all of them:
   `IMAGE_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` (`src/main.js`),
   `fileAssociations` (`tauri.conf.json`).
-- The window's size and position live in `window.json` in the app config dir, separate from
-  `settings.json`. "Reset to defaults" intentionally leaves it alone. The position is restored
-  in both size modes (skipped when it lands on no connected monitor); the size only in "fixed".
+- Both `settings.json` and `window.json` live in `config_dir()/sview` (`CONFIG_DIR_NAME` in
+  `lib.rs`), **not** in Tauri's `app_config_dir()` — the folder name is deliberately kept
+  independent of the bundle identifier. "Reset to defaults" only touches `settings.json`.
+  `window.json` holds size and position: the position is restored in both size modes (skipped
+  when it lands on no connected monitor); the size only in "fixed".
 - Archives: `MAX_ENTRY_BYTES` (512 MB) guards against zip bombs, and the open archive handle is
   cached with an `(mtime, size)` stamp — don't re-open it naively.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.

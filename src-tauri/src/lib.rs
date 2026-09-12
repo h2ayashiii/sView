@@ -22,6 +22,11 @@ const ARCHIVE_EXTS: &[&str] = &["cbz", "zip"];
 /// 最小ウィンドウサイズ（tauri.conf.json の minWidth / minHeight と合わせる）
 const MIN_WINDOW_SIZE: (f64, f64) = (200.0, 150.0);
 
+/// 設定と window.json を置くフォルダ名。
+/// Tauri の app_config_dir() は identifier（bundle ID）をそのままフォルダ名にするが、
+/// 逆ドメイン名がそのまま見えるのは分かりにくいので、ここは短い名前に固定する
+const CONFIG_DIR_NAME: &str = "sview";
+
 /// 展開後サイズの上限（zip bomb 対策 / 1枚あたり）
 const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -393,14 +398,19 @@ fn startup_file_from_args() -> Option<String> {
         .find(|a| !a.starts_with('-') && Path::new(a).exists())
 }
 
+/// 設定ファイル類を置くフォルダ（OS の設定フォルダ / sview）
+fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .config_dir()
+        .map_err(|e| format!("設定フォルダを取得できません: {e}"))?;
+    Ok(dir.join(CONFIG_DIR_NAME))
+}
+
 /// ウィンドウの大きさと位置を覚えておくファイル（設定本体とは分けて、
 /// 設定ウィンドウの「既定に戻す」で消えないようにする）
 fn window_state_file(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("設定フォルダを取得できません: {e}"))?;
-    Ok(dir.join("window.json"))
+    Ok(config_dir(app)?.join("window.json"))
 }
 
 /// 各項目は Option。古い window.json（大きさだけ）もそのまま読めるようにし、
@@ -555,13 +565,9 @@ fn fit_window_to_image(window: WebviewWindow, width: f64, height: f64) -> Result
     Ok(())
 }
 
-/// 設定ファイルの置き場所（OS ごとのアプリ設定フォルダ / settings.json）
+/// 設定ファイルの置き場所（OS の設定フォルダ / sview / settings.json）
 fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("設定フォルダを取得できません: {e}"))?;
-    Ok(dir.join("settings.json"))
+    Ok(config_dir(app)?.join("settings.json"))
 }
 
 /// 保存済みの設定を返す。未保存・壊れている場合は null（フロント側で既定値を使う）

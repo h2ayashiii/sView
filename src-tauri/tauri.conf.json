@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "sView",
   "version": "0.1.0",
-  "identifier": "com.sview.viewer",
+  "identifier": "io.github.h2ayashiii.sview",
   "build": {
     "frontendDist": "../src"
   },
