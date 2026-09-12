@@ -24,8 +24,8 @@ It opens single images, folders, and zip/cbz archives; the overlay UI appears on
 | `src-tauri/src/main.rs` | Only calls `sview_lib::run()` |
 | `src-tauri/tauri.conf.json` | Windows, CSP, bundle, file associations |
 | `src-tauri/capabilities/` | `default.json` (main) and `settings.json` — per-window permissions |
-| `scripts/` | `build.sh` / `build.ps1` — thin `npm install && npm run build` wrappers |
-| `.github/workflows/build.yml` | Only workflow: `cargo test` + `npm run build` for Windows/macOS |
+| `scripts/` | `build.sh` / `build.ps1` — thin `npm install && npm run build` wrappers; `set-version.mjs` — writes a release tag's version into `tauri.conf.json` / `Cargo.toml` / `package.json` |
+| `.github/workflows/build.yml` | Only workflow: `cargo test` + `npm run build` for Windows/macOS. Runs **only** on `v*` tags and manual dispatch — never on a push to `main`. Tag runs attach the `.dmg` / `.exe` to a GitHub Release |
 
 ## Commands
 
@@ -45,6 +45,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `gdk-3.0.pc` not found — that is a missing dependency, not a code error.
 - `dev` / `build` additionally need a running display and a WebView runtime, so they do not
   work in a headless container. There are no frontend tests; verify JS changes by reading.
+- Releasing is `git tag vX.Y.Z && git push origin vX.Y.Z`. CI derives the version from the tag
+  (`scripts/set-version.mjs`), so there is no need to bump the version in the repo beforehand.
 - Linux → Windows cross-build requires `--runner cargo-xwin`; Linux → macOS is not possible.
 
 ## Conventions
