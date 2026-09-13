@@ -9,7 +9,8 @@ It opens single images, folders, and zip/cbz archives; the overlay UI shows whil
 moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` toggle
 `#app.chrome-visible` in `src/main.js`).
 
-- **Backend**: Rust 2021, crate `sview` / lib `sview_lib` (`tauri`, `tauri-plugin-dialog`, `serde`, `zip`).
+- **Backend**: Rust 2021, crate `sview` / lib `sview_lib` (`tauri`, `tauri-plugin-dialog`,
+  `tauri-plugin-log`, `log`, `serde`, `zip`).
 - **Frontend**: plain HTML/CSS/JS. **No framework, no bundler, no TypeScript.**
   `withGlobalTauri: true`, so APIs come from `window.__TAURI__` and scripts load via `<script src>`.
 - Targets: Windows 10/11, macOS 10.15+, Linux.
@@ -27,7 +28,8 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
 | `src-tauri/tauri.conf.json` | Windows, CSP, bundle, file associations |
 | `src-tauri/capabilities/` | `default.json` (main) and `settings.json` — per-window permissions |
 | `scripts/` | `build.sh` / `build.ps1` — thin `npm install && npm run build` wrappers; `set-version.mjs` — writes a release tag's version into `tauri.conf.json` / `Cargo.toml` / `package.json` |
-| `.github/workflows/build.yml` | Only workflow: `cargo test` + `npm run build` for Windows/macOS. Runs **only** on `v*` tags and manual dispatch — never on a push to `main`. Tag runs attach the `.dmg` / `.exe` to a GitHub Release |
+| `.github/workflows/build.yml` | Only workflow. `test` job: `cargo test` on `ubuntu-latest`, runs on PRs and pushes to `main` (needs the GTK/WebKit apt packages). `build` / `release` jobs: `cargo test` + `npm run build` for Windows/macOS, **only** on `v*` tags and manual dispatch; tag runs attach the `.dmg` / `.exe` to a GitHub Release |
+| `.github/ISSUE_TEMPLATE/` | Bug-report form (`bug_report.yml`); blank issues are disabled |
 
 ## Commands
 
@@ -67,6 +69,9 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 
 - **Add a setting** → add one entry to `SETTINGS_SECTIONS` in `src/settings-defs.js`.
   `SETTINGS_DEFAULTS` and the settings window UI are both derived from it.
+- **Add a settings-window button** (not a stored value) → add an entry with `type: "action"`
+  and `action: "<name>"`, then register the handler under that name in `ACTIONS` in
+  `src/settings.js`. Keep `settings-defs.js` pure data — `main.js` loads it too.
 - **Add a Rust command** → define it in `lib.rs`, register it in `tauri::generate_handler![...]`
   inside `run()`, and add any needed permission to the right `src-tauri/capabilities/*.json`.
 - **Add a frontend file** → add a `<script>` / `<link>` tag to `index.html` and/or `settings.html`.
@@ -81,12 +86,23 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - `MIN_WINDOW_SIZE` in `lib.rs` must stay in sync with `minWidth` / `minHeight` in `tauri.conf.json`.
 - The supported image extension list is duplicated in three places — update all of them:
   `IMAGE_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` (`src/main.js`),
-  `fileAssociations` (`tauri.conf.json`).
+  `fileAssociations` (`tauri.conf.json`). The `supported_extensions_stay_in_sync` test reads
+  `main.js` and `tauri.conf.json` and fails when they drift, so `cargo test` catches it.
+  The one deliberate difference: `ARCHIVE_EXTS` includes `zip`, but only `cbz` is file-associated
+  (taking `.zip` from archivers would be hostile). `.zip` still opens via drag & drop and `O`.
+- Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
+  `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
+  into `settings.json`.
 - Both `settings.json` and `window.json` live in `config_dir()/sview` (`CONFIG_DIR_NAME` in
   `lib.rs`), **not** in Tauri's `app_config_dir()` — the folder name is deliberately kept
   independent of the bundle identifier. "Reset to defaults" only touches `settings.json`.
   `window.json` holds size and position: the position is restored in both size modes (skipped
-  when it lands on no connected monitor); the size only in "fixed".
+  when it lands on no connected monitor); the size only in "fixed". Logs go to a `logs/`
+  subfolder of the same directory.
+- `tauri-plugin-log` is registered from `setup()` via `app.handle().plugin(...)`, not on the
+  `Builder`, because the output folder needs an `AppHandle` (`log_dir()` → `config_dir()/logs`).
+  A panic hook installed at the top of `run()` logs the panic and a backtrace before aborting,
+  and a failed `Builder::build()` shows an OS message box instead of panicking.
 - Archives: `MAX_ENTRY_BYTES` (512 MB) guards against zip bombs, and the open archive handle is
   cached with an `(mtime, size)` stamp — don't re-open it naively.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.

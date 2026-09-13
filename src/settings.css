@@ -361,3 +361,8 @@ button.ghost {
 button.ghost:hover {
   background: var(--control-hover);
 }
+
+button.ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

@@ -149,10 +149,28 @@ const SETTINGS_SECTIONS = [
       },
     ],
   },
+  {
+    id: "logs",
+    label: "ログ",
+    items: [
+      {
+        key: "openLogFolder",
+        label: "ログフォルダを開く",
+        hint: "動作の記録と、異常終了したときの内容が入っています。不具合の報告に添えてください",
+        type: "action",
+        action: "openLogFolder",
+        buttonLabel: "開く",
+      },
+    ],
+  },
 ];
 
+// type: "action" の行はボタンだけで、保存する値を持たない（default がない）。
+// フィルタを外すと undefined が settings.json に書き込まれてしまう
 const SETTINGS_DEFAULTS = Object.fromEntries(
-  SETTINGS_SECTIONS.flatMap((s) => s.items.map((i) => [i.key, i.default]))
+  SETTINGS_SECTIONS.flatMap((s) =>
+    s.items.filter((i) => "default" in i).map((i) => [i.key, i.default])
+  )
 );
 
 // 保存値に既定値を補い、欠けたキーのない設定オブジェクトを作る
