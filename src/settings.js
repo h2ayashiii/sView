@@ -119,6 +119,12 @@ function update(key, value) {
   persist();
 }
 
+// type: "action" の行から呼ぶ処理。settings-defs.js は本体ウィンドウからも読む
+// 純粋なデータなので、実際の処理はこちら側に置く
+const ACTIONS = {
+  openLogFolder: () => invoke("open_log_folder"),
+};
+
 function buildRow(item) {
   const row = document.createElement("div");
   row.className = "row";
@@ -186,6 +192,24 @@ function buildRow(item) {
     controls.set(item.key, (v) => (input.value = v));
     control.appendChild(input);
     label.htmlFor = input.id = `set-${item.key}`;
+  } else if (item.type === "action") {
+    // 値を持たない行なので controls には入れない（render() の対象外）
+    const button = document.createElement("button");
+    button.className = "ghost";
+    button.textContent = item.buttonLabel ?? "実行";
+    button.addEventListener("click", async () => {
+      const run = ACTIONS[item.action];
+      if (!run) return;
+      button.disabled = true;
+      try {
+        await run();
+      } catch (e) {
+        setStatus(String(e), true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    control.appendChild(button);
   }
 
   row.append(label, control);

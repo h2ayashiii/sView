@@ -150,6 +150,108 @@ mod tests {
         assert!(!is_archive(Path::new("/x/photo.png")));
     }
 
+    /// 目印の直後から終端記号までを切り出し、その中の "…" を集める
+    fn quoted_items(text: &str, marker: &str, end: char) -> Vec<String> {
+        let rest = text
+            .split_once(marker)
+            .unwrap_or_else(|| panic!("目印が見つかりません: {marker}"))
+            .1;
+        let block = &rest[..rest.find(end).expect("リストの終端が見つかりません")];
+        block
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(String::from)
+            .collect()
+    }
+
+    /// 同じく切り出した範囲から、`key: value` の key だけを集める
+    fn object_keys(text: &str, marker: &str, end: char) -> Vec<String> {
+        let rest = text
+            .split_once(marker)
+            .unwrap_or_else(|| panic!("目印が見つかりません: {marker}"))
+            .1;
+        let block = &rest[..rest.find(end).expect("リストの終端が見つかりません")];
+        block
+            .split(',')
+            .filter_map(|pair| pair.split_once(':'))
+            .map(|(key, _)| key.trim().to_string())
+            .collect()
+    }
+
+    fn sorted<I: IntoIterator<Item = S>, S: Into<String>>(items: I) -> Vec<String> {
+        let mut v: Vec<String> = items.into_iter().map(Into::into).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn dialog_text_loses_quotes_and_newlines() {
+        // OS のコマンドに埋め込むので、クォートを壊す文字が残っていないこと
+        let text = sanitize_dialog_text("a'b\"c\\d`e$f\ng\th");
+        assert_eq!(text, "a b c d e f g h");
+        assert!(!text.contains('\''));
+        assert!(!text.contains('"'));
+        assert!(!text.contains('\n'));
+    }
+
+    /// 対応拡張子の一覧は lib.rs / main.js / tauri.conf.json の 3 箇所にあり、
+    /// 手で揃えるしかない。ずれたらここで落として気付けるようにする
+    #[test]
+    fn supported_extensions_stay_in_sync() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("リポジトリのルートが取れません");
+        let main_js = fs::read_to_string(root.join("src/main.js")).expect("main.js を読めません");
+        let conf: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("src-tauri/tauri.conf.json"))
+                .expect("tauri.conf.json を読めません"),
+        )
+        .expect("tauri.conf.json が JSON として壊れています");
+
+        // tauri.conf.json の fileAssociations から、指定した name の ext を取り出す
+        let association = |name: &str| -> Vec<String> {
+            conf["bundle"]["fileAssociations"]
+                .as_array()
+                .expect("fileAssociations がありません")
+                .iter()
+                .find(|a| a["name"] == name)
+                .unwrap_or_else(|| panic!("fileAssociations に {name} がありません"))["ext"]
+                .as_array()
+                .expect("ext が配列ではありません")
+                .iter()
+                .map(|e| e.as_str().expect("ext が文字列ではありません").to_string())
+                .collect()
+        };
+
+        let images = sorted(IMAGE_EXTS.to_vec());
+        assert_eq!(
+            sorted(quoted_items(&main_js, "const IMAGE_EXT_FILTER = [", ']')),
+            images,
+            "main.js の IMAGE_EXT_FILTER が IMAGE_EXTS とずれています"
+        );
+        assert_eq!(
+            sorted(object_keys(&main_js, "const MIME = {", '}')),
+            images,
+            "main.js の MIME が IMAGE_EXTS とずれています"
+        );
+        assert_eq!(
+            sorted(association("Image")),
+            images,
+            "tauri.conf.json の fileAssociations が IMAGE_EXTS とずれています"
+        );
+
+        let archives = sorted(ARCHIVE_EXTS.to_vec());
+        assert_eq!(
+            sorted(quoted_items(&main_js, "const ARCHIVE_EXT_FILTER = [", ']')),
+            archives,
+            "main.js の ARCHIVE_EXT_FILTER が ARCHIVE_EXTS とずれています"
+        );
+        // 書庫は zip も開けるが、OS の関連付けは cbz だけにしている。
+        // zip を取ると解凍ソフトと取り合いになるため（ドラッグ＆ドロップと O キーでは開ける）
+        assert_eq!(association("Comic Book Archive"), vec!["cbz"]);
+    }
+
     #[test]
     fn common_prefix_strips_only_a_shared_folder() {
         let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -635,6 +737,118 @@ fn open_settings_window(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("設定ウィンドウを前面にできません: {e}"))
 }
 
+/// ログの置き場所（設定フォルダ / sview / logs）。
+/// settings.json と同じ場所にまとめて、バグ報告のときに 1 箇所を見れば済むようにする
+fn log_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(config_dir(app)?.join("logs"))
+}
+
+/// tauri-plugin-log を後から登録する。
+/// 出力先の決定に AppHandle が必要なので、Builder ではなく setup() から呼ぶ。
+/// 2MB ごとにファイルを切り替え、直近 3 本だけ残す（放置しても膨らまない）
+fn init_logging(app: &AppHandle) -> Result<(), String> {
+    use tauri_plugin_log::{Builder, RotationStrategy, Target, TargetKind, TimezoneStrategy};
+
+    let plugin = Builder::new()
+        .level(log::LevelFilter::Info)
+        // ログの時刻は報告者の手元の時計と合っている方が突き合わせやすい
+        .timezone_strategy(TimezoneStrategy::UseLocal)
+        .rotation_strategy(RotationStrategy::KeepSome(3))
+        .max_file_size(2 * 1024 * 1024)
+        .targets([
+            Target::new(TargetKind::Stdout),
+            Target::new(TargetKind::Folder {
+                path: log_dir(app)?,
+                file_name: Some("sview".into()),
+            }),
+        ])
+        .build();
+
+    app.plugin(plugin)
+        .map_err(|e| format!("ログを初期化できません: {e}"))
+}
+
+/// パニックの内容をログに残してから、既定の挙動（stderr へ出力して abort）に渡す。
+/// panic = "abort" でも hook 自体は abort の前に呼ばれる
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!(
+            "パニックが発生しました: {info}\n{}",
+            std::backtrace::Backtrace::force_capture()
+        );
+        default_hook(info);
+    }));
+}
+
+/// ダイアログへ渡せるように、引用符・バックスラッシュ・改行などを空白に置き換えて詰める。
+/// OS のコマンドの引数として埋め込むため、クォートを壊す文字を残さない
+fn sanitize_dialog_text(message: &str) -> String {
+    message
+        .chars()
+        .map(|c| match c {
+            '\'' | '"' | '\\' | '`' | '$' => ' ',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// アプリを組み立てられなかったときだけ使う、OS 標準のメッセージダイアログ。
+/// tauri-plugin-dialog はアプリが出来ていないと使えないので、ここは OS のコマンドを直接呼ぶ
+fn show_fatal_error(message: &str) {
+    let text = sanitize_dialog_text(message);
+
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg(format!(
+            "Add-Type -AssemblyName PresentationFramework; \
+             [System.Windows.MessageBox]::Show('{text}', 'sView') | Out-Null"
+        ))
+        .status();
+
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(format!(
+            r#"display alert "sView" message "{text}" as critical"#
+        ))
+        .status();
+
+    // Linux には共通のダイアログが無いので、stderr への出力だけで済ませる
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = text;
+}
+
+/// OS のファイルマネージャーでフォルダを開く（中身を表示する。選択状態にはしない）
+fn open_folder(dir: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let command = "explorer";
+    #[cfg(target_os = "macos")]
+    let command = "open";
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let command = "xdg-open";
+
+    std::process::Command::new(command)
+        .arg(dir)
+        .spawn()
+        // explorer は成功しても非 0 を返すことがあるため、起動できたかだけを見る
+        .map(|_| ())
+        .map_err(|e| format!("フォルダを開けません: {e}"))
+}
+
+/// ログフォルダを開く（まだ無い場合は作ってから開く）
+#[tauri::command]
+fn open_log_folder(app: AppHandle) -> Result<(), String> {
+    let dir = log_dir(&app)?;
+    fs::create_dir_all(&dir).map_err(|e| format!("ログフォルダを作れません: {e}"))?;
+    open_folder(&dir)
+}
+
 /// OS のファイルマネージャーで対象を選択状態にして開く
 #[tauri::command]
 fn reveal_in_file_manager(path: String) -> Result<(), String> {
@@ -676,6 +890,8 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
@@ -700,6 +916,18 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // ログの出力先が AppHandle 依存なので、ここで初めて登録できる。
+            // 失敗してもアプリは起動させる（ログが無いだけで機能は使える）
+            if let Err(e) = init_logging(app.handle()) {
+                eprintln!("{e}");
+            }
+            log::info!(
+                "sView {} を起動しました ({} / {})",
+                app.package_info().version,
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+
             if let Some(window) = app.get_webview_window("main") {
                 restore_window_state(&window.as_ref().window());
                 // サイズを整えてから見せる（起動直後のちらつきを避ける）
@@ -718,10 +946,22 @@ pub fn run() {
             save_settings,
             open_settings_window,
             reveal_in_file_manager,
+            open_log_folder,
             fit_window_to_image
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application");
+        .build(tauri::generate_context!());
+
+    // 起動に失敗したら、せめて理由を見せてから終わる（無言で死なせない）
+    let app = match app {
+        Ok(app) => app,
+        Err(e) => {
+            let message = format!("sView を起動できませんでした: {e}");
+            log::error!("{message}");
+            eprintln!("{message}");
+            show_fatal_error(&message);
+            std::process::exit(1);
+        }
+    };
 
     app.run(|_app_handle, _event| {
         // macOS: Finder / Dock からファイルを開いたときに届く
