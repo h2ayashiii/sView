@@ -62,7 +62,7 @@
     ],
     "fileAssociations": [
       {
-        "ext": ["png", "jpg", "jpeg", "jfif", "gif", "webp", "bmp", "ico", "tif", "tiff", "avif", "svg"],
+        "ext": ["avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp"],
         "name": "Image",
         "description": "Image file",
         "role": "Viewer"
@@ -70,7 +70,7 @@
       {
         "ext": ["cbz"],
         "name": "Comic Book Archive",
-        "description": "Comic book archive (zip)",
+        "description": "Comic book archive (zip). sView can also open .zip, but .zip is deliberately left unassociated to avoid taking it from archivers",
         "role": "Viewer"
       }
     ],

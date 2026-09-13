@@ -60,7 +60,7 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 - 表示名からは全エントリの共通フォルダを取り除くので、単一フォルダの書庫は `001.png`、複数フォルダの書庫は `ch2/001.png` のように出ます
 - 一覧を作るときに読むのは索引だけで画像データは読まないため、フォルダがいくつあってもメモリ使用量は変わりません
 - **軽量** — フロントエンドはフレームワーク・バンドラなしの素の HTML/CSS/JS。バックエンドは Rust。UI は OS 標準の WebView（WebView2 / WKWebView）を使うため、バイナリは数MB程度です
-- **対応形式** — 画像: png / jpg / jpeg / jfif / gif / webp / bmp / ico / tif / tiff / avif / svg、書庫: zip / cbz
+- **対応形式** — 画像: avif / bmp / gif / ico / jfif / jpe / jpeg / jpg / png / svg / tif / tiff / webp、書庫: zip / cbz
 - **対応OS** — Windows 10/11・macOS 10.15 以降（Apple Silicon）
 
 ### ウィンドウサイズ
@@ -84,6 +84,10 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 - 起動直後の画面をクリック、または `O` キーでファイルダイアログ、`D` キーでフォルダダイアログを開く
 - コマンドライン引数にパスを渡して起動（`sView path/to/image.png`、`sView path/to/folder`、`sView path/to/book.cbz`）
 - OS の「このアプリで開く」（ファイル関連付け。画像と `.cbz` を関連付けます）
+
+> [!NOTE]
+> `.zip` は sView で開けますが、**OS の関連付けはしません**。解凍ソフトとの関連付けを
+> 奪ってしまうためです。zip はドラッグ＆ドロップか `O` キーのダイアログから開いてください。
 
 ### キーボード
 

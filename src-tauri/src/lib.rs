@@ -150,6 +150,93 @@ mod tests {
         assert!(!is_archive(Path::new("/x/photo.png")));
     }
 
+    /// 目印の直後から終端記号までを切り出し、その中の "…" を集める
+    fn quoted_items(text: &str, marker: &str, end: char) -> Vec<String> {
+        let rest = text
+            .split_once(marker)
+            .unwrap_or_else(|| panic!("目印が見つかりません: {marker}"))
+            .1;
+        let block = &rest[..rest.find(end).expect("リストの終端が見つかりません")];
+        block.split('"').skip(1).step_by(2).map(String::from).collect()
+    }
+
+    /// 同じく切り出した範囲から、`key: value` の key だけを集める
+    fn object_keys(text: &str, marker: &str, end: char) -> Vec<String> {
+        let rest = text
+            .split_once(marker)
+            .unwrap_or_else(|| panic!("目印が見つかりません: {marker}"))
+            .1;
+        let block = &rest[..rest.find(end).expect("リストの終端が見つかりません")];
+        block
+            .split(',')
+            .filter_map(|pair| pair.split_once(':'))
+            .map(|(key, _)| key.trim().to_string())
+            .collect()
+    }
+
+    fn sorted<I: IntoIterator<Item = S>, S: Into<String>>(items: I) -> Vec<String> {
+        let mut v: Vec<String> = items.into_iter().map(Into::into).collect();
+        v.sort();
+        v
+    }
+
+    /// 対応拡張子の一覧は lib.rs / main.js / tauri.conf.json の 3 箇所にあり、
+    /// 手で揃えるしかない。ずれたらここで落として気付けるようにする
+    #[test]
+    fn supported_extensions_stay_in_sync() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("リポジトリのルートが取れません");
+        let main_js = fs::read_to_string(root.join("src/main.js")).expect("main.js を読めません");
+        let conf: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("src-tauri/tauri.conf.json"))
+                .expect("tauri.conf.json を読めません"),
+        )
+        .expect("tauri.conf.json が JSON として壊れています");
+
+        // tauri.conf.json の fileAssociations から、指定した name の ext を取り出す
+        let association = |name: &str| -> Vec<String> {
+            conf["bundle"]["fileAssociations"]
+                .as_array()
+                .expect("fileAssociations がありません")
+                .iter()
+                .find(|a| a["name"] == name)
+                .unwrap_or_else(|| panic!("fileAssociations に {name} がありません"))["ext"]
+                .as_array()
+                .expect("ext が配列ではありません")
+                .iter()
+                .map(|e| e.as_str().expect("ext が文字列ではありません").to_string())
+                .collect()
+        };
+
+        let images = sorted(IMAGE_EXTS.to_vec());
+        assert_eq!(
+            sorted(quoted_items(&main_js, "const IMAGE_EXT_FILTER = [", ']')),
+            images,
+            "main.js の IMAGE_EXT_FILTER が IMAGE_EXTS とずれています"
+        );
+        assert_eq!(
+            sorted(object_keys(&main_js, "const MIME = {", '}')),
+            images,
+            "main.js の MIME が IMAGE_EXTS とずれています"
+        );
+        assert_eq!(
+            sorted(association("Image")),
+            images,
+            "tauri.conf.json の fileAssociations が IMAGE_EXTS とずれています"
+        );
+
+        let archives = sorted(ARCHIVE_EXTS.to_vec());
+        assert_eq!(
+            sorted(quoted_items(&main_js, "const ARCHIVE_EXT_FILTER = [", ']')),
+            archives,
+            "main.js の ARCHIVE_EXT_FILTER が ARCHIVE_EXTS とずれています"
+        );
+        // 書庫は zip も開けるが、OS の関連付けは cbz だけにしている。
+        // zip を取ると解凍ソフトと取り合いになるため（ドラッグ＆ドロップと O キーでは開ける）
+        assert_eq!(association("Comic Book Archive"), vec!["cbz"]);
+    }
+
     #[test]
     fn common_prefix_strips_only_a_shared_folder() {
         let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
