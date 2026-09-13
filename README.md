@@ -2,8 +2,9 @@
 
 Tauri 製の軽量クロスプラットフォーム画像ビュアーです。ウィンドウフレームを持たず、デスクトップに「画像だけが浮かんでいる」ような表示を目指しています。
 
-> **0.1.0 はベータ版です。** ひととおり動きますが、実利用での検証はこれからです。
-> おかしなところがあれば [Issue](https://github.com/h2ayashiii/sView/issues) で教えてください。
+> **`0.1.0-beta.x` はベータ版です。** ひととおり動きますが、実利用での検証はこれからです。
+> **自動更新はまだありません**（`0.1.0` で導入予定）。おかしなところがあれば
+> [Issue](https://github.com/h2ayashiii/sView/issues) で教えてください。
 
 ## ダウンロード
 
@@ -18,6 +19,17 @@ Tauri 製の軽量クロスプラットフォーム画像ビュアーです。�
 macOS 版は GitHub Actions の `macos-latest` runner でビルドしているため **Apple Silicon (arm64) 向け**です。Intel Mac では動きません。
 
 Linux は配布していません。ソースからビルドすれば動作しますが、動作確認は行っていません。
+
+### バージョンの読み方
+
+| バージョン | 位置づけ |
+| --- | --- |
+| `0.1.0-beta.x` | 自動更新を含まない先行ベータ。**更新は手動でダウンロードし直します** |
+| `0.1.0` | 自動更新とその他の整備を入れた版（予定） |
+
+`0.1.0-beta.1` は SemVer では `0.1.0` より前のバージョンとして扱われるため、ベータから
+`0.1.0` へは正しくアップグレードとして認識されます（Windows のインストーラは既存の
+インストールを上書き更新します）。
 
 ## 初回起動
 
@@ -240,7 +252,8 @@ git push origin v0.2.0
 - **バージョンはタグから決まります。** ビルド前に `scripts/set-version.mjs` が `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` / `package.json` の `version` をタグの値（`v` を除いたもの）に書き換えるため、設定ウィンドウに出るバージョンも成果物のファイル名もタグと一致します。リポジトリ側のバージョンを事前に上げておく必要はありません（手動ビルドではこの書き換えは行われず、リポジトリの値がそのまま使われます）。
 - タグは `v1.2.3` の形式（プレリリース `v1.2.3-beta.1` も可）にしてください。それ以外はビルド前にエラーで止まります。
 - Release には `.dmg` と `.exe` が**そのまま**添付されます。Release の添付ファイルは zip に固められないため、ダウンロードしたらすぐ実行できます。
-- リリースノートは GitHub の自動生成（`--generate-notes`）です。同じタグで再実行した場合は、既存の Release にファイルを上書きアップロードします。
+- リリースノートは、`.github/release-notes/<タグ名>.md` があればその内容を使い、無ければ GitHub の自動生成（`--generate-notes`）になります。節目のリリースでは手書きのノートを置いてください。同じタグで再実行した場合は、既存の Release にファイルを上書きアップロードします。
+- **依存を足したり外したりしたら、`node scripts/gen-third-party-notices.mjs` で `THIRD-PARTY-NOTICES` を作り直してからタグを打ってください。** このファイルと `LICENSE` は配布物に同梱されます（バンドルのリソースフォルダに入ります）。
 - 成果物はランナーのアーキテクチャ向けです。GitHub の `macos-latest` は Apple Silicon（arm64）のため、`.dmg` も Apple Silicon 向けになります。Intel Mac 向けも配る場合は、`--target universal-apple-darwin` でのユニバーサルビルドを追加してください。
 
 ### 任意のブランチで手動ビルドする
@@ -270,9 +283,11 @@ sView/
 │   ├── src/lib.rs        # フォルダスキャン・自然順ソート・起動ファイル処理・設定とウィンドウ状態（大きさ・位置）の保存
 │   ├── tauri.conf.json   # ウィンドウ設定（フレームレス等）・バンドル設定・バージョン
 │   └── capabilities/     # フロントエンドに許可する API の定義
-├── scripts/              # ビルドスクリプトと、リリース時にタグのバージョンを反映する set-version.mjs
+├── scripts/              # ビルドスクリプト、リリース時にタグのバージョンを反映する set-version.mjs、
+│                         # THIRD-PARTY-NOTICES を作り直す gen-third-party-notices.mjs
 ├── .github/
 │   ├── workflows/build.yml   # PR / main では cargo test、タグでは配布ビルドとリリース
+│   ├── release-notes/        # タグ名と同じ .md を置くとリリースノートに使われる
 │   └── ISSUE_TEMPLATE/       # 不具合報告のテンプレート
 ├── LICENSE               # Commons Clause + MIT
 └── THIRD-PARTY-NOTICES   # 配布バイナリに含まれる第三者ソフトウェアのライセンス表示
@@ -304,4 +319,6 @@ MIT が与える権利から「Sell する権利」だけを取り除いたも�
 
 OSI 承認のオープンソースライセンスではないため、本プロジェクトは「オープンソース」ではなく**ソースコード公開（source-available）**と表現しています。
 
-配布バイナリに含まれる第三者ソフトウェアのライセンス表示は [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES) にあります。
+配布バイナリに含まれる第三者ソフトウェアのライセンス表示は [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES) にあります。この一覧は `node scripts/gen-third-party-notices.mjs` で `cargo metadata` の依存グラフから生成しています。
+
+`LICENSE` と `THIRD-PARTY-NOTICES` はインストールされるアプリにも同梱されます（Windows はインストール先の `resources`、macOS は `sView.app/Contents/Resources/`）。
