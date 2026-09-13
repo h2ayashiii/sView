@@ -28,9 +28,10 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
 | `src-tauri/tauri.conf.json` | Windows, CSP, bundle, file associations |
 | `src-tauri/installer-hooks.nsh` | Windows インストーラ (NSIS) のフック。旧ユーザー単位インストールの後始末 |
 | `src-tauri/capabilities/` | `default.json` (main) and `settings.json` — per-window permissions |
-| `scripts/` | `build.sh` / `build.ps1` — thin `npm install && npm run build` wrappers; `set-version.mjs` — writes a release tag's version into `tauri.conf.json` / `Cargo.toml` / `package.json` |
+| `scripts/` | `build.sh` / `build.ps1` — thin `npm install && npm run build` wrappers; `set-version.mjs` — writes a release tag's version into `tauri.conf.json` / `Cargo.toml` / `package.json`; `gen-third-party-notices.mjs` — regenerates `THIRD-PARTY-NOTICES` from `cargo metadata` |
 | `.github/workflows/build.yml` | Only workflow. `test` job: `cargo test` on `ubuntu-latest`, runs on PRs and pushes to `main` (needs the GTK/WebKit apt packages). `build` / `release` jobs: `cargo test` + `npm run build` for Windows/macOS, **only** on `v*` tags and manual dispatch; tag runs attach the `.dmg` / `.exe` to a GitHub Release |
 | `.github/ISSUE_TEMPLATE/` | Bug-report form (`bug_report.yml`); blank issues are disabled |
+| `.github/release-notes/` | `<tag>.md` here becomes that release's notes; otherwise `--generate-notes` is used |
 
 ## Commands
 
@@ -52,6 +53,9 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   work in a headless container. There are no frontend tests; verify JS changes by reading.
 - Releasing is `git tag vX.Y.Z && git push origin vX.Y.Z`. CI derives the version from the tag
   (`scripts/set-version.mjs`), so there is no need to bump the version in the repo beforehand.
+  Prerelease tags (`v0.1.0-beta.1`) are supported; the leading `v` is stripped before it reaches
+  any manifest. **After changing dependencies, run `node scripts/gen-third-party-notices.mjs`**
+  — `THIRD-PARTY-NOTICES` and `LICENSE` ship inside the bundle via `bundle.resources`.
 - Linux → Windows cross-build requires `--runner cargo-xwin`; Linux → macOS is not possible.
 
 ## Conventions
@@ -120,5 +124,13 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   WebKitGTK already defaults to `~/.local/share/sview` + `~/.cache/sview`, so both return `None`.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
+- `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a
+  parent-directory path under `_up_/` in the bundle, because `resource_relpath()` rewrites `..`.
+- Versions may carry a semver prerelease (`0.1.0-beta.1`): NSIS derives a numeric
+  `VIProductVersion` (`0.1.0.0`) from it and compares real semver for upgrade detection, and
+  `tauri-winres` drops the prerelease from the exe's VERSIONINFO. What is *not* allowed is
+  numeric-only build metadata (`+abc`). On macOS the raw string lands in
+  `CFBundleShortVersionString`, which Apple documents as three period-separated integers —
+  out of spec, effect on directly distributed apps unverified.
 - `src-tauri/gen/` and `src-tauri/target/` are generated and gitignored. `capabilities/*.json`
   reference a schema under `gen/` that does not exist until a build has run.
