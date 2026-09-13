@@ -5,6 +5,10 @@ Tauri 製の軽量クロスプラットフォーム画像ビュアーです。�
 > **0.1.0 はベータ版です。** ひととおり動きますが、実利用での検証はこれからです。
 > おかしなところがあれば [Issue](https://github.com/h2ayashiii/sView/issues) で教えてください。
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/61120f57-3b6c-46e6-9730-cb083d420851" width="800">
+</p>
+
 ## ダウンロード
 
 [リリースページ](https://github.com/h2ayashiii/sView/releases)から、お使いの OS のファイルをダウンロードしてください。
