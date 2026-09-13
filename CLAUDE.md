@@ -26,6 +26,7 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
 | `src-tauri/src/lib.rs` | **All** backend logic + inline `#[cfg(test)] mod tests` |
 | `src-tauri/src/main.rs` | Only calls `sview_lib::run()` |
 | `src-tauri/tauri.conf.json` | Windows, CSP, bundle, file associations |
+| `src-tauri/installer-hooks.nsh` | Windows インストーラ (NSIS) のフック。旧ユーザー単位インストールの後始末 |
 | `src-tauri/capabilities/` | `default.json` (main) and `settings.json` — per-window permissions |
 | `scripts/` | `build.sh` / `build.ps1` — thin `npm install && npm run build` wrappers; `set-version.mjs` — writes a release tag's version into `tauri.conf.json` / `Cargo.toml` / `package.json` |
 | `.github/workflows/build.yml` | Only workflow. `test` job: `cargo test` on `ubuntu-latest`, runs on PRs and pushes to `main` (needs the GTK/WebKit apt packages). `build` / `release` jobs: `cargo test` + `npm run build` for Windows/macOS, **only** on `v*` tags and manual dispatch; tag runs attach the `.dmg` / `.exe` to a GitHub Release |
@@ -105,6 +106,11 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   and a failed `Builder::build()` shows an OS message box instead of panicking.
 - Archives: `MAX_ENTRY_BYTES` (512 MB) guards against zip bombs, and the open archive handle is
   cached with an `(mtime, size)` stamp — don't re-open it naively.
+- The Windows installer is `installMode: "perMachine"`: NSIS gets `RequestExecutionLevel admin`, so it
+  asks for UAC on launch and defaults to `C:\Program Files\sView` (HKLM, all-users shortcuts and
+  file associations). It used to be per-user (`%LOCALAPPDATA%`), so `installer-hooks.nsh` silently
+  uninstalls a leftover per-user install in `NSIS_HOOK_PREINSTALL` — otherwise the HKCU file
+  associations would keep winning over the new HKLM ones. NSIS files must be UTF-8 **with BOM**.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `src-tauri/gen/` and `src-tauri/target/` are generated and gitignored. `capabilities/*.json`

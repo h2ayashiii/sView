@@ -11,7 +11,7 @@ Tauri 製の軽量クロスプラットフォーム画像ビュアーです。�
 
 | OS | ファイル | 説明 |
 | --- | --- | --- |
-| Windows | `sView_<バージョン>_x64-setup.exe` | インストーラ。管理者権限は不要で、`%LOCALAPPDATA%` にインストールします |
+| Windows | `sView_<バージョン>_x64-setup.exe` | インストーラ。`C:\Program Files\sView` に全ユーザー向けでインストールします。起動時に管理者権限（UAC）の確認が出ます |
 | Windows | `sView_<バージョン>_x64-portable.exe` | インストール不要。ダウンロードしてそのまま実行できます |
 | macOS | `sView_<バージョン>_<アーキテクチャ>.dmg` | 開いて `sView.app` をアプリケーションフォルダへドラッグします |
 
@@ -202,7 +202,7 @@ npm run build:debug
 
 | OS | 実行ファイル（インストール不要のポータブル版） | インストーラ |
 | --- | --- | --- |
-| Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/nsis/`（NSIS インストーラ。管理者権限なしで `%LOCALAPPDATA%` にインストールします） |
+| Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/nsis/`（NSIS インストーラ。管理者権限で `C:\Program Files\sView` にインストールします） |
 | macOS | `src-tauri/target/release/bundle/macos/sView.app` | `src-tauri/target/release/bundle/dmg/` |
 
 `bundle/macos/sView.app` と `bundle/dmg/` の `.dmg` の中身は同じものです。`tauri build` はまず `.app` を組み立て、dmg バンドラはその `.app` をそのままディスクイメージに入れるため、`.dmg` を開いて出てくる `sView.app` は `bundle/macos/sView.app` と同一です。
