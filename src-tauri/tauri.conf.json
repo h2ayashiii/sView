@@ -60,6 +60,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD-PARTY-NOTICES": "THIRD-PARTY-NOTICES"
+    },
     "fileAssociations": [
       {
         "ext": ["avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp"],

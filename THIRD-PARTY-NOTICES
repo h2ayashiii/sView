@@ -3,13 +3,14 @@ sView 第三者ソフトウェアのライセンス表示
 
 sView の配布バイナリには、以下のオープンソースソフトウェアが含まれています。
 それぞれの著作権は各プロジェクトの権利者に帰属し、下記のライセンスのもとで
-利用しています。sView 本体のライセンス（Commons Clause + MIT）はリポジトリ
-ルートの LICENSE を参照してください。
+利用しています。sView 本体のライセンス（Commons Clause + MIT）は同梱の
+LICENSE を参照してください。
 
-この一覧は `cargo metadata` の依存グラフから生成しています。対象は配布先である
-Windows / macOS のビルドに入りうる通常依存のみで、ビルド時にしか使わない依存
-（build-dependencies）とテスト用の依存（dev-dependencies）、および Linux 専用の
-依存は除いています。
+この一覧は `cargo metadata` の依存グラフから生成しています（生成スクリプト:
+scripts/gen-third-party-notices.mjs）。対象は配布先である Windows / macOS の
+ビルドに入りうる通常依存のみで、ビルド時にしか使わない依存（build-dependencies）と
+テスト用の依存（dev-dependencies）、および Linux / Android など対象外の
+プラットフォーム専用の依存は除いています。
 
 フロントエンドは素の HTML/CSS/JS で、実行時に読み込む第三者ライブラリはありません
 （npm の依存は Tauri CLI のみで、配布物には含まれません）。画面描画に使う WebView
@@ -25,6 +26,7 @@ Windows / macOS のビルドに入りうる通常依存のみで、ビルド時�
   Unlicense     https://unlicense.org/
   0BSD          https://opensource.org/license/0bsd
   CC0-1.0       https://creativecommons.org/publicdomain/zero/1.0/legalcode
+  MIT-0         https://opensource.org/license/mit-0
 
 「A OR B」と記載されているものは、利用者がいずれかを選択できることを示します。
 
@@ -36,10 +38,10 @@ MPL-2.0 について
 入手できます。
 
 
-依存クレート一覧（295 件）
+依存クレート一覧（297 件）
 ========================================
 
---- MIT OR Apache-2.0  (151 件) ---
+--- MIT OR Apache-2.0  (152 件) ---
 
   anyhow 1.0.104
       https://github.com/dtolnay/anyhow
@@ -151,6 +153,8 @@ MPL-2.0 について
       https://github.com/servo/html5ever
   mime 0.3.17
       https://github.com/hyperium/mime
+  num_threads 0.1.7
+      https://github.com/jhpratt/num_threads
   num-conv 0.2.2
       https://github.com/jhpratt/num-conv
   num-traits 0.2.19
@@ -191,8 +195,6 @@ MPL-2.0 について
       https://github.com/dtolnay/semver
   serde 1.0.229
       https://github.com/serde-rs/serde
-  serde-untagged 0.1.9
-      https://github.com/dtolnay/serde-untagged
   serde_core 1.0.229
       https://github.com/serde-rs/serde
   serde_derive 1.0.229
@@ -209,6 +211,8 @@ MPL-2.0 について
       https://github.com/jonasbb/serde_with/
   serde_with_macros 3.21.0
       https://github.com/jonasbb/serde_with/
+  serde-untagged 0.1.9
+      https://github.com/dtolnay/serde-untagged
   serialize-to-javascript 0.1.2
       https://github.com/chippers/serialize-to-javascript
   serialize-to-javascript-impl 0.1.2
@@ -271,6 +275,38 @@ MPL-2.0 について
       https://github.com/servo/html5ever
   windows 0.61.3
       https://github.com/microsoft/windows-rs
+  windows_aarch64_gnullvm 0.52.6
+      https://github.com/microsoft/windows-rs
+  windows_aarch64_gnullvm 0.53.1
+      https://github.com/microsoft/windows-rs
+  windows_aarch64_msvc 0.52.6
+      https://github.com/microsoft/windows-rs
+  windows_aarch64_msvc 0.53.1
+      https://github.com/microsoft/windows-rs
+  windows_i686_gnu 0.52.6
+      https://github.com/microsoft/windows-rs
+  windows_i686_gnu 0.53.1
+      https://github.com/microsoft/windows-rs
+  windows_i686_gnullvm 0.52.6
+      https://github.com/microsoft/windows-rs
+  windows_i686_gnullvm 0.53.1
+      https://github.com/microsoft/windows-rs
+  windows_i686_msvc 0.52.6
+      https://github.com/microsoft/windows-rs
+  windows_i686_msvc 0.53.1
+      https://github.com/microsoft/windows-rs
+  windows_x86_64_gnu 0.52.6
+      https://github.com/microsoft/windows-rs
+  windows_x86_64_gnu 0.53.1
+      https://github.com/microsoft/windows-rs
+  windows_x86_64_gnullvm 0.52.6
+      https://github.com/microsoft/windows-rs
+  windows_x86_64_gnullvm 0.53.1
+      https://github.com/microsoft/windows-rs
+  windows_x86_64_msvc 0.52.6
+      https://github.com/microsoft/windows-rs
+  windows_x86_64_msvc 0.53.1
+      https://github.com/microsoft/windows-rs
   windows-collections 0.2.0
       https://github.com/microsoft/windows-rs
   windows-core 0.61.2
@@ -311,40 +347,8 @@ MPL-2.0 について
       https://github.com/microsoft/windows-rs
   windows-version 0.1.7
       https://github.com/microsoft/windows-rs
-  windows_aarch64_gnullvm 0.52.6
-      https://github.com/microsoft/windows-rs
-  windows_aarch64_gnullvm 0.53.1
-      https://github.com/microsoft/windows-rs
-  windows_aarch64_msvc 0.52.6
-      https://github.com/microsoft/windows-rs
-  windows_aarch64_msvc 0.53.1
-      https://github.com/microsoft/windows-rs
-  windows_i686_gnu 0.52.6
-      https://github.com/microsoft/windows-rs
-  windows_i686_gnu 0.53.1
-      https://github.com/microsoft/windows-rs
-  windows_i686_gnullvm 0.52.6
-      https://github.com/microsoft/windows-rs
-  windows_i686_gnullvm 0.53.1
-      https://github.com/microsoft/windows-rs
-  windows_i686_msvc 0.52.6
-      https://github.com/microsoft/windows-rs
-  windows_i686_msvc 0.53.1
-      https://github.com/microsoft/windows-rs
-  windows_x86_64_gnu 0.52.6
-      https://github.com/microsoft/windows-rs
-  windows_x86_64_gnu 0.53.1
-      https://github.com/microsoft/windows-rs
-  windows_x86_64_gnullvm 0.52.6
-      https://github.com/microsoft/windows-rs
-  windows_x86_64_gnullvm 0.53.1
-      https://github.com/microsoft/windows-rs
-  windows_x86_64_msvc 0.52.6
-      https://github.com/microsoft/windows-rs
-  windows_x86_64_msvc 0.53.1
-      https://github.com/microsoft/windows-rs
 
---- MIT  (45 件) ---
+--- MIT  (46 件) ---
 
   block2 0.6.2
       https://github.com/madsmtm/objc2
@@ -366,6 +370,8 @@ MPL-2.0 について
       https://github.com/JelteF/derive_more
   dom_query 0.27.0
       https://github.com/niklak/dom_query
+  fern 0.7.1
+      https://github.com/daboross/fern
   generic-array 0.14.7
       https://github.com/fizyk20/generic-array.git
   http-range 0.1.5
@@ -437,7 +443,7 @@ MPL-2.0 について
   zmij 1.0.23
       https://github.com/dtolnay/zmij
 
---- Apache-2.0 OR MIT  (26 件) ---
+--- Apache-2.0 OR MIT  (27 件) ---
 
   bit-set 0.8.0
       https://github.com/contain-rs/bit-set
@@ -476,6 +482,8 @@ MPL-2.0 について
   tauri-plugin-dialog 2.7.2
       https://github.com/tauri-apps/plugins-workspace
   tauri-plugin-fs 2.5.1
+      https://github.com/tauri-apps/plugins-workspace
+  tauri-plugin-log 2.9.1
       https://github.com/tauri-apps/plugins-workspace
   tauri-runtime 2.11.3
       https://github.com/tauri-apps/tauri
@@ -684,11 +692,6 @@ MPL-2.0 について
 
   dunce 1.0.5
       https://gitlab.com/kornelski/dunce
-
---- MIT OR Apache-2.0 OR LGPL-2.1-or-later  (1 件) ---
-
-  r-efi 5.3.0
-      https://github.com/r-efi/r-efi
 
 --- MIT OR Zlib OR Apache-2.0  (1 件) ---
 
