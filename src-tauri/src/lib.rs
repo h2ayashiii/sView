@@ -509,6 +509,46 @@ fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(CONFIG_DIR_NAME))
 }
 
+/// WebView がキャッシュや localStorage を置くフォルダ。
+///
+/// Windows: 指定しないと WebView2 は実行ファイルの隣（`C:\Program Files\sView`）に
+/// `sview.exe.WebView2` を作ろうとして、書き込めずに起動そのものが失敗する。
+/// 明示的に `%LOCALAPPDATA%\sview` を渡す。フォルダ名を bundle ID ではなく
+/// `sview` にしているのは CONFIG_DIR_NAME と同じ理由。
+///
+/// macOS: WKWebView にはデータフォルダを指定する仕組みが無く、置き場所
+/// （`~/Library/WebKit/<bundle ID>` など）は OS が bundle ID から決める。
+/// Linux: WebKitGTK が既定で `~/.local/share/sview` と `~/.cache/sview` を
+/// 使うので、こちらから指定する必要が無い。
+/// どちらも None を返して既定の挙動に任せる
+#[cfg(target_os = "windows")]
+fn webview_data_dir(app: &AppHandle) -> Option<PathBuf> {
+    Some(app.path().local_data_dir().ok()?.join(CONFIG_DIR_NAME))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn webview_data_dir(_app: &AppHandle) -> Option<PathBuf> {
+    None
+}
+
+/// tauri.conf.json のウィンドウ定義から実際のウィンドウを作る。
+/// 定義側を `create: false` にして自前で作っているのは、webview_data_dir を
+/// 渡せるようにするため。ウィンドウの見た目や大きさは tauri.conf.json のまま
+fn create_configured_windows(app: &AppHandle) -> Result<(), String> {
+    let data_dir = webview_data_dir(app);
+    for config in &app.config().app.windows {
+        let mut builder = WebviewWindowBuilder::from_config(app, config)
+            .map_err(|e| format!("ウィンドウ「{}」を作れません: {e}", config.label))?;
+        if let Some(dir) = &data_dir {
+            builder = builder.data_directory(dir.clone());
+        }
+        builder
+            .build()
+            .map_err(|e| format!("ウィンドウ「{}」を作れません: {e}", config.label))?;
+    }
+    Ok(())
+}
+
 /// ウィンドウの大きさと位置を覚えておくファイル（設定本体とは分けて、
 /// 設定ウィンドウの「既定に戻す」で消えないようにする）
 fn window_state_file(app: &AppHandle) -> Result<PathBuf, String> {
@@ -707,14 +747,19 @@ fn save_settings(app: AppHandle, settings: serde_json::Value) -> Result<(), Stri
 /// 設定ウィンドウを作り直す（tauri.conf.json の定義が失われた場合の保険）。
 /// 通常は起動時に非表示で作られたものを使い回すので、ここは通らない
 fn build_settings_window(app: &AppHandle) -> Result<(), String> {
-    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-        .title("sView の設定")
-        .inner_size(470.0, 560.0)
-        .min_inner_size(380.0, 300.0)
-        .resizable(true)
-        .decorations(false)
-        .transparent(true)
-        .center()
+    let mut builder =
+        WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+            .title("sView の設定")
+            .inner_size(470.0, 560.0)
+            .min_inner_size(380.0, 300.0)
+            .resizable(true)
+            .decorations(false)
+            .transparent(true)
+            .center();
+    if let Some(dir) = webview_data_dir(app) {
+        builder = builder.data_directory(dir);
+    }
+    builder
         .build()
         .map(|_| ())
         .map_err(|e| format!("設定ウィンドウを開けません: {e}"))
@@ -921,12 +966,21 @@ pub fn run() {
             if let Err(e) = init_logging(app.handle()) {
                 eprintln!("{e}");
             }
+
             log::info!(
                 "sView {} を起動しました ({} / {})",
                 app.package_info().version,
                 std::env::consts::OS,
                 std::env::consts::ARCH
             );
+
+            // tauri.conf.json のウィンドウは create: false にしてあるので、
+            // ここで作る（WebView のデータフォルダを指定するため）。
+            // 失敗したら起動を諦める（show_fatal_error で理由を出す）
+            if let Err(e) = create_configured_windows(app.handle()) {
+                log::error!("{e}");
+                return Err(e.into());
+            }
 
             if let Some(window) = app.get_webview_window("main") {
                 restore_window_state(&window.as_ref().window());

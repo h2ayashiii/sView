@@ -159,6 +159,18 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 - 異常終了（パニック）したときは、その内容とバックトレースもログに残ります
 - 通信は一切しません。ログは手元にしか残らないので、**不具合を報告するときは内容を確認してから添えてください**
 
+### キャッシュ
+
+sView 自身はキャッシュをディスクに書きませんが、画面の描画に使う OS の WebView が localStorage やキャッシュを置きます。設定やログとは別の場所です。
+
+| OS | 置き場所 |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\sview` |
+| macOS | `~/Library/Caches/io.github.h2ayashiii.sview`、`~/Library/WebKit/io.github.h2ayashiii.sview` |
+| Linux | `~/.cache/sview`、`~/.local/share/sview` |
+
+消してしまっても問題ありません（次回起動時に作り直されます）。macOS だけフォルダ名がアプリの識別子（bundle ID）になっているのは、WKWebView には置き場所を指定する仕組みが無く、OS が bundle ID から決めているためです。
+
 ## 開発環境のセットアップ
 
 必要なもの:

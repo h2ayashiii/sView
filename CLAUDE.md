@@ -111,6 +111,13 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   file associations). It used to be per-user (`%LOCALAPPDATA%`), so `installer-hooks.nsh` silently
   uninstalls a leftover per-user install in `NSIS_HOOK_PREINSTALL` — otherwise the HKCU file
   associations would keep winning over the new HKLM ones. NSIS files must be UTF-8 **with BOM**.
+- The two windows in `tauri.conf.json` are `"create": false`; `create_configured_windows()` builds
+  them from the same config in `setup()`. That detour exists only so `data_directory()` can be set:
+  on Windows an unspecified WebView2 user-data folder is created next to the exe
+  (`C:\Program Files\sView\sview.exe.WebView2`) and the app fails to start. It is pointed at
+  `%LOCALAPPDATA%\sview` (`webview_data_dir()`). macOS (WKWebView) cannot set it — the OS derives
+  `~/Library/WebKit/<bundle id>` and `~/Library/Caches/<bundle id>` from the identifier — and
+  WebKitGTK already defaults to `~/.local/share/sview` + `~/.cache/sview`, so both return `None`.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `src-tauri/gen/` and `src-tauri/target/` are generated and gitignored. `capabilities/*.json`
