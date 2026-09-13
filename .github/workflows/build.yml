@@ -1,10 +1,12 @@
 name: build
 
 on:
-  # 自動で走るのはリリースのときだけ（v から始まるタグを打ったとき）。
-  # main への push / merge では走らない
+  # バンドルビルドが走るのはリリースのとき（v から始まるタグ）と手動実行だけ。
+  # main への push と PR では、下の test job（cargo test のみ）が走る
   push:
+    branches: [main]
     tags: ["v*"]
+  pull_request:
   # それ以外は必要なときだけ手動で実行する
   # （Actions タブ → build → Run workflow、または gh workflow run）
   workflow_dispatch:
@@ -18,8 +20,48 @@ on:
           - windows
           - macos
 
+# 同じ ref で実行が重なったら古い方を止める。
+# タグを打ち直したときに release job が同じタグへ並行して upload するのも防ぐ
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # PR と main への push で走る軽量チェック。バンドルは作らない
+  # （バンドルまで毎回作るとランナー時間とキャッシュを食うため）
+  test:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # cargo test でも tauri crate をリンクするため、GUI の開発パッケージが必要。
+      # 無いと gdk-3.0.pc not found でコケる（コードの問題ではない）
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
   build:
+    # バンドルはタグと手動実行のときだけ。PR / main の push では test だけを走らせる
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
