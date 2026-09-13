@@ -157,7 +157,12 @@ mod tests {
             .unwrap_or_else(|| panic!("目印が見つかりません: {marker}"))
             .1;
         let block = &rest[..rest.find(end).expect("リストの終端が見つかりません")];
-        block.split('"').skip(1).step_by(2).map(String::from).collect()
+        block
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(String::from)
+            .collect()
     }
 
     /// 同じく切り出した範囲から、`key: value` の key だけを集める
