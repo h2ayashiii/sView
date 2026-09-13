@@ -11,7 +11,7 @@ Tauri 製の軽量クロスプラットフォーム画像ビュアーです。�
 
 | OS | ファイル | 説明 |
 | --- | --- | --- |
-| Windows | `sView_<バージョン>_x64-setup.exe` | インストーラ。管理者権限は不要で、`%LOCALAPPDATA%` にインストールします |
+| Windows | `sView_<バージョン>_x64-setup.exe` | インストーラ。`C:\Program Files\sView` に全ユーザー向けでインストールします。起動時に管理者権限（UAC）の確認が出ます |
 | Windows | `sView_<バージョン>_x64-portable.exe` | インストール不要。ダウンロードしてそのまま実行できます |
 | macOS | `sView_<バージョン>_<アーキテクチャ>.dmg` | 開いて `sView.app` をアプリケーションフォルダへドラッグします |
 
@@ -159,6 +159,18 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 - 異常終了（パニック）したときは、その内容とバックトレースもログに残ります
 - 通信は一切しません。ログは手元にしか残らないので、**不具合を報告するときは内容を確認してから添えてください**
 
+### キャッシュ
+
+sView 自身はキャッシュをディスクに書きませんが、画面の描画に使う OS の WebView が localStorage やキャッシュを置きます。設定やログとは別の場所です。
+
+| OS | 置き場所 |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\sview` |
+| macOS | `~/Library/Caches/io.github.h2ayashiii.sview`、`~/Library/WebKit/io.github.h2ayashiii.sview` |
+| Linux | `~/.cache/sview`、`~/.local/share/sview` |
+
+消してしまっても問題ありません（次回起動時に作り直されます）。macOS だけフォルダ名がアプリの識別子（bundle ID）になっているのは、WKWebView には置き場所を指定する仕組みが無く、OS が bundle ID から決めているためです。
+
 ## 開発環境のセットアップ
 
 必要なもの:
@@ -202,7 +214,7 @@ npm run build:debug
 
 | OS | 実行ファイル（インストール不要のポータブル版） | インストーラ |
 | --- | --- | --- |
-| Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/nsis/`（NSIS インストーラ。管理者権限なしで `%LOCALAPPDATA%` にインストールします） |
+| Windows | `src-tauri/target/release/sview.exe` | `src-tauri/target/release/bundle/nsis/`（NSIS インストーラ。管理者権限で `C:\Program Files\sView` にインストールします） |
 | macOS | `src-tauri/target/release/bundle/macos/sView.app` | `src-tauri/target/release/bundle/dmg/` |
 
 `bundle/macos/sView.app` と `bundle/dmg/` の `.dmg` の中身は同じものです。`tauri build` はまず `.app` を組み立て、dmg バンドラはその `.app` をそのままディスクイメージに入れるため、`.dmg` を開いて出てくる `sView.app` は `bundle/macos/sView.app` と同一です。

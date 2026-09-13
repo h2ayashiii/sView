@@ -12,6 +12,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "sView",
         "width": 960,
         "height": 640,
@@ -26,6 +27,7 @@
       },
       {
         "label": "settings",
+        "create": false,
         "title": "sView の設定",
         "url": "settings.html",
         "width": 470,
@@ -81,6 +83,10 @@
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "./installer-hooks.nsh"
       }
     }
   }
