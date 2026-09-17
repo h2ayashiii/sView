@@ -52,8 +52,10 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - `dev` / `build` additionally need a running display and a WebView runtime, so they do not
   work in a headless container. There are no frontend tests; verify JS changes by reading.
 - Releasing is `git tag vX.Y.Z && git push origin vX.Y.Z`. CI derives the version from the tag
-  (`scripts/set-version.mjs`), so there is no need to bump the version in the repo beforehand.
-  Prerelease tags (`v0.1.0-beta.1`) are supported; the leading `v` is stripped before it reaches
+  (`scripts/set-version.mjs`), so there is no need to bump the version in the repo beforehand
+  (a repo that already carries the tag's version is fine too: the script treats "no change" as success).
+  Tags are plain `vX.Y.Z`: no prerelease suffix by policy since 0.1.0 (only `v0.1.0-beta.1` ever
+  had one), although the tooling still accepts it. The leading `v` is stripped before it reaches
   any manifest. **After changing dependencies, run `node scripts/gen-third-party-notices.mjs`**
   — `THIRD-PARTY-NOTICES` and `LICENSE` ship inside the bundle via `bundle.resources`.
 - Linux → Windows cross-build requires `--runner cargo-xwin`; Linux → macOS is not possible.
@@ -132,7 +134,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a
   parent-directory path under `_up_/` in the bundle, because `resource_relpath()` rewrites `..`.
-- Versions may carry a semver prerelease (`0.1.0-beta.1`): NSIS derives a numeric
+- Prerelease suffixes are no longer used, but the tooling still handles them (`0.1.0-beta.1`
+  shipped with one): NSIS derives a numeric
   `VIProductVersion` (`0.1.0.0`) from it and compares real semver for upgrade detection, and
   `tauri-winres` drops the prerelease from the exe's VERSIONINFO. What is *not* allowed is
   numeric-only build metadata (`+abc`). On macOS the raw string lands in
