@@ -102,8 +102,14 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `lib.rs`), **not** in Tauri's `app_config_dir()` — the folder name is deliberately kept
   independent of the bundle identifier. "Reset to defaults" only touches `settings.json`.
   `window.json` holds size and position: the position is restored in both size modes (skipped
-  when it lands on no connected monitor); the size only in "fixed". Logs go to a `logs/`
-  subfolder of the same directory.
+  when it lands on no connected monitor, otherwise clamped into that monitor's work area); the
+  size only in "fixed". In "flexible" mode the first `fit_window_to_image` after startup anchors
+  the window at the saved top-left (`PendingPosition`) instead of keeping the placeholder
+  window's center. Logs go to a `logs/` subfolder of the same directory.
+- `fit_window_to_image` does its position math in **physical** pixels and on the **outer**
+  size. On Windows a frameless window's outer rect is larger than its client rect by the
+  invisible shadow border, so mixing outer and inner sizes drifts the window a few pixels
+  toward the bottom-right on every image. The result is clamped into the monitor's work area.
 - `tauri-plugin-log` is registered from `setup()` via `app.handle().plugin(...)`, not on the
   `Builder`, because the output folder needs an `AppHandle` (`log_dir()` → `config_dir()/logs`).
   A panic hook installed at the top of `run()` logs the panic and a backtrace before aborting,

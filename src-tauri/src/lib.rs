@@ -6,8 +6,8 @@ use std::sync::Mutex;
 
 use tauri::ipc::Response;
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State,
+    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use zip::ZipArchive;
 
@@ -44,6 +44,17 @@ struct OpenArchive {
     zip: ZipArchive<BufReader<File>>,
 }
 struct ArchiveCache(Mutex<Option<OpenArchive>>);
+
+/// 「画像に合わせる」で起動したとき、最初の画像を前回と同じ場所に開くための覚え書き。
+/// restore_window_state が入れ、fit_window_to_image が一度使ったら空にする
+struct RestoredPosition {
+    /// 前回閉じたときのウィンドウの左上（論理ピクセル）
+    saved: (f64, f64),
+    /// 起動時に実際に置いた左上（論理ピクセル）。ここから動いていたら
+    /// ユーザーが動かしたものとみなし、saved には合わせない
+    placed: (f64, f64),
+}
+struct PendingPosition(Mutex<Option<RestoredPosition>>);
 
 #[derive(serde::Serialize)]
 struct ImageList {
@@ -119,6 +130,136 @@ fn natural_cmp(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamp_to_area_keeps_window_inside_the_area() {
+        let area = Area {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1040.0,
+        };
+        // 収まっていればそのまま
+        assert_eq!(
+            clamp_to_area(100.0, 100.0, 800.0, 600.0, &area),
+            (100.0, 100.0)
+        );
+        // 右下にはみ出す → 右端・下端に寄せる
+        assert_eq!(
+            clamp_to_area(1500.0, 800.0, 800.0, 600.0, &area),
+            (1120.0, 440.0)
+        );
+        // 左上にはみ出す
+        assert_eq!(clamp_to_area(-50.0, -20.0, 800.0, 600.0, &area), (0.0, 0.0));
+        // 領域より大きいときは左上を優先する
+        assert_eq!(
+            clamp_to_area(100.0, 100.0, 2500.0, 600.0, &area),
+            (0.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn clamp_to_area_uses_the_area_origin() {
+        // 右側に並べた 2 台目のディスプレイ
+        let area = Area {
+            x: 1920.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 720.0,
+        };
+        assert_eq!(
+            clamp_to_area(3000.0, 500.0, 800.0, 600.0, &area),
+            (2400.0, 120.0)
+        );
+        assert_eq!(
+            clamp_to_area(1800.0, 10.0, 800.0, 600.0, &area),
+            (1920.0, 10.0)
+        );
+    }
+
+    #[test]
+    fn fitted_position_keeps_the_center() {
+        let pos = fitted_position(
+            PhysicalPosition::new(300, 200),
+            PhysicalSize::new(1000, 700),
+            PhysicalSize::new(1000, 700),
+            PhysicalSize::new(600, 300),
+            None,
+            None,
+        );
+        assert_eq!(pos, PhysicalPosition::new(500, 400));
+    }
+
+    #[test]
+    fn fitted_position_does_not_drift_with_hidden_frame() {
+        // Windows の枠なしウィンドウは影のぶん外枠が中身より大きい（ここでは 16 x 8）。
+        // 大きさの違う 2 枚を何度行き来しても左上が元に戻ること（右下へずれていかない）
+        let frame = (16, 8);
+        let a = PhysicalSize::new(1000, 700);
+        let b = PhysicalSize::new(801, 903);
+        let mut pos = PhysicalPosition::new(300, 200);
+        let mut inner = a;
+        for _ in 0..10 {
+            for next in [b, a] {
+                let outer = PhysicalSize::new(inner.width + frame.0, inner.height + frame.1);
+                pos = fitted_position(pos, outer, inner, next, None, None);
+                inner = next;
+            }
+        }
+        assert_eq!(pos, PhysicalPosition::new(300, 200));
+    }
+
+    #[test]
+    fn fitted_position_stays_inside_the_work_area() {
+        // 小さなウィンドウの中心を保ったまま大きな画像に合わせるとはみ出すので、
+        // 作業領域の中へ寄せる
+        let area = Area {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1040.0,
+        };
+        let pos = fitted_position(
+            PhysicalPosition::new(1200, 700),
+            PhysicalSize::new(400, 300),
+            PhysicalSize::new(400, 300),
+            PhysicalSize::new(1600, 900),
+            None,
+            Some(&area),
+        );
+        assert_eq!(pos, PhysicalPosition::new(320, 140));
+    }
+
+    #[test]
+    fn fitted_position_uses_the_anchor_for_the_first_image() {
+        let area = Area {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1040.0,
+        };
+        let default_size = PhysicalSize::new(960, 640);
+        // 前回の左上にそのまま置く
+        let pos = fitted_position(
+            PhysicalPosition::new(0, 0),
+            default_size,
+            default_size,
+            PhysicalSize::new(800, 600),
+            Some(PhysicalPosition::new(500, 300)),
+            Some(&area),
+        );
+        assert_eq!(pos, PhysicalPosition::new(500, 300));
+        // 前回の左上だとはみ出す大きさなら寄せる
+        let pos = fitted_position(
+            PhysicalPosition::new(0, 0),
+            default_size,
+            default_size,
+            PhysicalSize::new(1600, 900),
+            Some(PhysicalPosition::new(500, 300)),
+            Some(&area),
+        );
+        assert_eq!(pos, PhysicalPosition::new(320, 140));
+    }
 
     #[test]
     fn natural_sort_orders_numbers_numerically() {
@@ -612,23 +753,130 @@ fn save_window_state(window: &tauri::Window) {
     }
 }
 
-/// 保存した位置が今つながっているディスプレイのどれかに載っているかを見る。
-/// 前回使っていた外部ディスプレイが外れている場合に、画面外へ開くのを防ぐ
-fn position_is_on_screen(window: &tauri::Window, x: f64, y: f64) -> bool {
-    let Ok(monitors) = window.available_monitors() else {
-        return false;
+/// 画面上の長方形。ディスプレイの範囲や作業領域を表す。
+/// 物理ピクセルか論理ピクセルかは使う側で揃える
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Area {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl Area {
+    fn from_physical(position: PhysicalPosition<i32>, size: PhysicalSize<u32>) -> Self {
+        Self {
+            x: f64::from(position.x),
+            y: f64::from(position.y),
+            width: f64::from(size.width),
+            height: f64::from(size.height),
+        }
+    }
+
+    fn to_logical(self, scale: f64) -> Self {
+        Self {
+            x: self.x / scale,
+            y: self.y / scale,
+            width: self.width / scale,
+            height: self.height / scale,
+        }
+    }
+
+    fn contains(&self, x: f64, y: f64) -> bool {
+        x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
+    }
+}
+
+/// ディスプレイ全体の範囲（物理ピクセル）
+fn monitor_bounds(monitor: &tauri::Monitor) -> Area {
+    Area::from_physical(*monitor.position(), *monitor.size())
+}
+
+/// ディスプレイの作業領域（物理ピクセル）。
+/// タスクバー・メニューバー・Dock を除いた、ウィンドウを置ける範囲
+fn monitor_work_area(monitor: &tauri::Monitor) -> Area {
+    let work_area = monitor.work_area();
+    Area::from_physical(work_area.position, work_area.size)
+}
+
+/// 左上 (x, y)・大きさ (width, height) のウィンドウが area に収まるよう位置をずらす。
+/// area より大きいときは左上を area の左上に合わせる（右下がはみ出す）
+fn clamp_to_area(x: f64, y: f64, width: f64, height: f64, area: &Area) -> (f64, f64) {
+    let x = x.min(area.x + area.width - width).max(area.x);
+    let y = y.min(area.y + area.height - height).max(area.y);
+    (x, y)
+}
+
+/// 保存した位置が載っているディスプレイの作業領域（そのディスプレイの倍率での論理ピクセル）。
+/// 前回使っていた外部ディスプレイが外れている場合は None（画面外へ開くのを防ぐ）
+fn work_area_at(window: &tauri::Window, x: f64, y: f64) -> Option<Area> {
+    let monitors = window.available_monitors().ok()?;
+    monitors
+        .iter()
+        .map(|m| (monitor_bounds(m).to_logical(m.scale_factor()), m))
+        .find(|(bounds, _)| {
+            // 端にぴったり寄せた場合を落とさないよう少しだけ余裕を見る
+            const SLACK: f64 = 8.0;
+            let slack_bounds = Area {
+                x: bounds.x - SLACK,
+                y: bounds.y - SLACK,
+                width: bounds.width + SLACK,
+                height: bounds.height + SLACK,
+            };
+            slack_bounds.contains(x, y)
+        })
+        .map(|(_, m)| monitor_work_area(m).to_logical(m.scale_factor()))
+}
+
+/// 外枠と中身の大きさの差（物理ピクセル）。
+/// Windows の枠なしウィンドウは影のぶん外枠が中身より大きい（macOS では 0）
+fn frame_size(outer: PhysicalSize<u32>, inner: PhysicalSize<u32>) -> (u32, u32) {
+    (
+        outer.width.saturating_sub(inner.width),
+        outer.height.saturating_sub(inner.height),
+    )
+}
+
+/// 中身の大きさを inner から new_inner に変えたあとの、外枠の左上（物理ピクセル）。
+/// anchor があればそこに左上を合わせ（起動直後の 1 枚目）、なければ変更前の中心を保つ。
+/// どちらも、作業領域からはみ出す分は中へ寄せる。
+///
+/// 中心の計算は外枠の大きさで行う。Windows の枠なしウィンドウは外枠（outer）が
+/// 中身（inner）より影のぶん大きく、新しい大きさに同じ差を足さずに中身の大きさで
+/// 中心を求めると、画像を切り替えるたびに差の半分ずつ右下へずれていく
+fn fitted_position(
+    pos: PhysicalPosition<i32>,
+    outer: PhysicalSize<u32>,
+    inner: PhysicalSize<u32>,
+    new_inner: PhysicalSize<u32>,
+    anchor: Option<PhysicalPosition<i32>>,
+    work_area: Option<&Area>,
+) -> PhysicalPosition<i32> {
+    let frame = frame_size(outer, inner);
+    let new_outer = PhysicalSize::new(new_inner.width + frame.0, new_inner.height + frame.1);
+
+    let (x, y) = match anchor {
+        Some(anchor) => (anchor.x, anchor.y),
+        // 整数のまま計算する（論理ピクセルの丸めで少しずつずれないように）
+        None => (
+            pos.x + (outer.width as i32 - new_outer.width as i32) / 2,
+            pos.y + (outer.height as i32 - new_outer.height as i32) / 2,
+        ),
     };
-    monitors.iter().any(|m| {
-        let scale = m.scale_factor();
-        let origin = m.position().to_logical::<f64>(scale);
-        let size = m.size().to_logical::<f64>(scale);
-        // 端にぴったり寄せた場合を落とさないよう少しだけ余裕を見る
-        const SLACK: f64 = 8.0;
-        x >= origin.x - SLACK
-            && y >= origin.y - SLACK
-            && x < origin.x + size.width
-            && y < origin.y + size.height
-    })
+
+    match work_area {
+        Some(area) => {
+            let (x, y) = clamp_to_area(
+                f64::from(x),
+                f64::from(y),
+                f64::from(new_outer.width),
+                f64::from(new_outer.height),
+                area,
+            );
+            PhysicalPosition::new(x as i32, y as i32)
+        }
+        None => PhysicalPosition::new(x, y),
+    }
 }
 
 /// 設定ファイルから文字列項目を 1 つ読む（Rust 側から設定を参照する用）
@@ -641,68 +889,129 @@ fn settings_value(app: &AppHandle, key: &str) -> Option<String> {
 
 /// 起動時に、前回閉じたときのウィンドウを復元する。
 /// 位置は常に、大きさは「固定」のときだけ戻す
-/// （「画像に合わせる」は画像を開くまで既定サイズ）
+/// （「画像に合わせる」は画像を開くまで既定サイズ）。
+/// どちらもウィンドウ全体が作業領域に収まるよう寄せる（ディスプレイの構成が
+/// 変わっていたり、前回より大きく開いたりしたときに画面外へ出さない）。
+/// 「画像に合わせる」では、最初の画像を前回と同じ左上に開けるよう、
+/// 保存した位置を PendingPosition に残しておく
 fn restore_window_state(window: &tauri::Window) {
     let app = window.app_handle();
     let Some(state) = read_window_state(app) else {
         return;
     };
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    let flexible = settings_value(app, "windowSizeMode").as_deref() == Some("flexible");
 
-    if settings_value(app, "windowSizeMode").as_deref() != Some("flexible") {
+    // 中身の大きさ（論理ピクセル）。「固定」で保存した大きさがあればそれにする
+    let mut inner = window
+        .inner_size()
+        .map(|s| s.to_logical::<f64>(scale))
+        .unwrap_or_else(|_| LogicalSize::new(0.0, 0.0));
+    if !flexible {
         if let (Some(width), Some(height)) = (state.width, state.height) {
             if width >= 1.0 && height >= 1.0 {
                 let _ = window.set_size(LogicalSize::new(width, height));
+                inner = LogicalSize::new(width, height);
             }
         }
     }
 
-    if let (Some(x), Some(y)) = (state.x, state.y) {
-        if position_is_on_screen(window, x, y) {
-            let _ = window.set_position(LogicalPosition::new(x, y));
+    let (Some(saved_x), Some(saved_y)) = (state.x, state.y) else {
+        return;
+    };
+    let Some(work_area) = work_area_at(window, saved_x, saved_y) else {
+        return;
+    };
+
+    // 外枠の大きさ = 中身 + 枠（Windows の枠なしウィンドウの影のぶん）
+    let frame = match (window.outer_size(), window.inner_size()) {
+        (Ok(outer), Ok(current)) => frame_size(outer, current),
+        _ => (0, 0),
+    };
+    let outer_width = inner.width + f64::from(frame.0) / scale;
+    let outer_height = inner.height + f64::from(frame.1) / scale;
+    let (x, y) = clamp_to_area(saved_x, saved_y, outer_width, outer_height, &work_area);
+    let _ = window.set_position(LogicalPosition::new(x, y));
+
+    if flexible {
+        if let Ok(mut pending) = app.state::<PendingPosition>().0.lock() {
+            *pending = Some(RestoredPosition {
+                saved: (saved_x, saved_y),
+                placed: (x, y),
+            });
         }
     }
 }
 
 /// ウィンドウを画像の縦横比ぴったりに合わせる（「画像に合わせる」のとき）。
-/// 画面に収まらない画像は、画面の高さの 90% に収まるよう縮める。
-/// 画面からはみ出さないよう横も 90% を上限にし、ウィンドウの中心は動かさない。
+/// 作業領域（タスクバーなどを除いた画面）に収まらない画像は、その 90% に収まるよう縮める。
+/// 大きさを変えても中心は動かさず、作業領域からはみ出す分は中へ寄せる。
+/// 起動して最初の 1 枚だけは、前回閉じたときと同じ左上に合わせる
 #[tauri::command]
-fn fit_window_to_image(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
+fn fit_window_to_image(
+    window: WebviewWindow,
+    pending: State<PendingPosition>,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
     const SCREEN_RATIO: f64 = 0.9;
     if !(width > 0.0 && height > 0.0) {
         return Err("画像サイズを取得できません".to_string());
     }
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
 
-    // 画面（作業領域）に対する上限。取得できない場合は縮小せずそのまま
-    let limit = window
+    // 今のディスプレイの作業領域（物理ピクセル）。取得できない場合は縮小も寄せもしない
+    let work_area = window
         .current_monitor()
         .ok()
         .flatten()
-        .map(|m| {
-            let size = m.size().to_logical::<f64>(m.scale_factor());
-            (size.width * SCREEN_RATIO, size.height * SCREEN_RATIO)
-        })
+        .map(|m| monitor_work_area(&m));
+    let limit = work_area
+        .map(|a| a.to_logical(scale))
+        .map(|a| (a.width * SCREEN_RATIO, a.height * SCREEN_RATIO))
         .unwrap_or((f64::INFINITY, f64::INFINITY));
 
     // 拡大はせず、画面に収まらないときだけ縮める
     let ratio = (limit.1 / height).min(limit.0 / width).min(1.0);
     let w = (width * ratio).max(MIN_WINDOW_SIZE.0);
     let h = (height * ratio).max(MIN_WINDOW_SIZE.1);
+    let new_inner: PhysicalSize<u32> = LogicalSize::new(w, h).to_physical(scale);
 
-    // 変更前の中心を保ったまま大きさだけ変える
-    let center = (|| {
-        let pos = window.outer_position().ok()?.to_logical::<f64>(scale);
-        let size = window.outer_size().ok()?.to_logical::<f64>(scale);
-        Some((pos.x + size.width / 2.0, pos.y + size.height / 2.0))
+    // 変更前の位置と大きさ（位置の計算は物理ピクセルの整数で行う）
+    let before = (|| {
+        let pos = window.outer_position().ok()?;
+        let outer = window.outer_size().ok()?;
+        let inner = window.inner_size().ok()?;
+        Some((pos, outer, inner))
     })();
+    // 起動して最初の 1 枚は前回の左上に合わせる。ただし起動時に置いた場所から
+    // 動いていたら（ユーザーが動かしていたら）そのまま中心を保つ
+    let anchor = pending
+        .0
+        .lock()
+        .ok()
+        .and_then(|mut p| p.take())
+        .and_then(|restored| {
+            const TOLERANCE: i32 = 2;
+            let (pos, _, _) = before?;
+            let placed = LogicalPosition::new(restored.placed.0, restored.placed.1)
+                .to_physical::<i32>(scale);
+            let unmoved =
+                (pos.x - placed.x).abs() <= TOLERANCE && (pos.y - placed.y).abs() <= TOLERANCE;
+            unmoved.then(|| {
+                LogicalPosition::new(restored.saved.0, restored.saved.1).to_physical::<i32>(scale)
+            })
+        });
 
     window
-        .set_size(LogicalSize::new(w, h))
+        .set_size(new_inner)
         .map_err(|e| format!("ウィンドウサイズを変更できません: {e}"))?;
 
-    if let Some((cx, cy)) = center {
-        let _ = window.set_position(LogicalPosition::new(cx - w / 2.0, cy - h / 2.0));
+    if let Some((pos, outer, inner)) = before {
+        let new_pos = fitted_position(pos, outer, inner, new_inner, anchor, work_area.as_ref());
+        let _ = window.set_position(new_pos);
     }
     Ok(())
 }
@@ -991,6 +1300,7 @@ pub fn run() {
         })
         .manage(StartupFile(Mutex::new(startup_file_from_args())))
         .manage(ArchiveCache(Mutex::new(None)))
+        .manage(PendingPosition(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             list_images,
             read_archive_image,
