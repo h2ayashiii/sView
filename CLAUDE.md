@@ -52,7 +52,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - `dev` / `build` additionally need a running display and a WebView runtime, so they do not
   work in a headless container. There are no frontend tests; verify JS changes by reading.
 - Releasing is `git tag vX.Y.Z && git push origin vX.Y.Z`. CI derives the version from the tag
-  (`scripts/set-version.mjs`), so there is no need to bump the version in the repo beforehand.
+  (`scripts/set-version.mjs`), so there is no need to bump the version in the repo beforehand
+  (a repo that already carries the tag's version is fine too: the script treats "no change" as success).
   Prerelease tags (`v0.1.0-beta.1`) are supported; the leading `v` is stripped before it reaches
   any manifest. **After changing dependencies, run `node scripts/gen-third-party-notices.mjs`**
   — `THIRD-PARTY-NOTICES` and `LICENSE` ship inside the bundle via `bundle.resources`.

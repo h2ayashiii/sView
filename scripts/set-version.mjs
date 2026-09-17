@@ -29,16 +29,26 @@ if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
   process.exit(1);
 }
 
+/** version の値を差し替えて保存する。既に同じ値なら何もしない
+ *  （リポジトリ側が先にそのバージョンになっていても失敗にしない） */
+function writeVersion(path, relative, text, pattern) {
+  if (!pattern.test(text)) {
+    throw new Error(`version が見つかりません: ${relative}`);
+  }
+  const next = text.replace(pattern, `$1"${version}"`);
+  if (next === text) {
+    console.log(`${relative}: version = ${version}（変更なし）`);
+    return;
+  }
+  writeFileSync(path, next);
+  console.log(`${relative}: version = ${version}`);
+}
+
 /** JSON は version の値だけを差し替える（整形や並び順は元のまま残す） */
 function patchJson(relative) {
   const path = join(root, relative);
   const text = readFileSync(path, "utf8");
-  const next = text.replace(/("version"\s*:\s*)"[^"]*"/, `$1"${version}"`);
-  if (next === text) {
-    throw new Error(`version を書き換えられませんでした: ${relative}`);
-  }
-  writeFileSync(path, next);
-  console.log(`${relative}: version = ${version}`);
+  writeVersion(path, relative, text, /("version"\s*:\s*)"[^"]*"/);
 }
 
 /** Cargo.toml は [package] の version 行だけを差し替える（依存の version は触らない） */
@@ -52,9 +62,14 @@ function patchCargoToml(relative) {
   const head = text.slice(0, start);
   const pkg = text.slice(start, end);
   const tail = text.slice(end);
-  const nextPkg = pkg.replace(/^(version\s*=\s*)"[^"]*"/m, `$1"${version}"`);
+  const pattern = /^(version\s*=\s*)"[^"]*"/m;
+  if (!pattern.test(pkg)) {
+    throw new Error(`[package] に version がありません: ${relative}`);
+  }
+  const nextPkg = pkg.replace(pattern, `$1"${version}"`);
   if (nextPkg === pkg) {
-    throw new Error(`version を書き換えられませんでした: ${relative}`);
+    console.log(`${relative}: version = ${version}（変更なし）`);
+    return;
   }
   writeFileSync(path, head + nextPkg + tail);
   console.log(`${relative}: version = ${version}`);
