@@ -22,9 +22,28 @@
 
     <!-- マウスを動かしている間だけ表示されるオーバーレイUI -->
     <div id="chrome">
-      <!-- 閉じるボタンは macOS では左上、それ以外では右上（#app.mac で切り替え） -->
+      <!-- ウィンドウ操作ボタン。OS の慣習に合わせて macOS は左上・
+           「閉じる / 最小化 / 最大化」、それ以外は右上・「最小化 / 最大化 / 閉じる」
+           （位置は #app.mac、並び順は CSS の order で切り替える）。
+           アイコンは字形の有無に左右されないよう SVG で描く -->
       <div id="titlebar" data-tauri-drag-region>
-        <button id="btn-close" title="閉じる (Esc)" aria-label="閉じる">&#x2715;</button>
+        <div id="wincontrols">
+          <button id="btn-min" class="wc" title="最小化" aria-label="最小化">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 5h7" /></svg>
+          </button>
+          <button id="btn-max" class="wc" title="最大化" aria-label="最大化">
+            <svg class="i-max" viewBox="0 0 10 10" aria-hidden="true">
+              <rect x="1.5" y="1.5" width="7" height="7" rx="1" />
+            </svg>
+            <svg class="i-restore" viewBox="0 0 10 10" aria-hidden="true">
+              <path d="M3.2 3.2V1.5h5.3v5.3H6.8" />
+              <rect x="1.5" y="3.2" width="5.3" height="5.3" rx="1" />
+            </svg>
+          </button>
+          <button id="btn-close" class="wc" title="閉じる (Esc)" aria-label="閉じる">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6" /></svg>
+          </button>
+        </div>
       </div>
       <button id="nav-prev" class="nav" title="前の画像 (←)" aria-label="前の画像">&#x276E;</button>
       <button id="nav-next" class="nav" title="次の画像 (→)" aria-label="次の画像">&#x276F;</button>
@@ -39,6 +58,22 @@
 
     <!-- 右クリックメニュー（中身は main.js が組み立てる） -->
     <div id="ctxmenu" role="menu" hidden></div>
+
+    <!-- 削除の確認。設定「削除の前に確認する」がオンのときだけ出す -->
+    <div id="confirm" hidden role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <div id="confirm-box">
+        <p id="confirm-title">この画像をゴミ箱へ移動しますか？</p>
+        <p id="confirm-name"></p>
+        <label id="confirm-skip-row">
+          <input type="checkbox" id="confirm-skip" />
+          <span>今後確認しない</span>
+        </label>
+        <div id="confirm-actions">
+          <button id="confirm-cancel" type="button">キャンセル</button>
+          <button id="confirm-ok" type="button" class="danger">ゴミ箱へ移動</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="settings-defs.js"></script>

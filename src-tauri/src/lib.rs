@@ -4,10 +4,11 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::ipc::Response;
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State,
-    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
+    State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use zip::ZipArchive;
 
@@ -56,6 +57,16 @@ struct RestoredPosition {
 }
 struct PendingPosition(Mutex<Option<RestoredPosition>>);
 
+/// 表示中のフォルダの監視。フォルダを開いている間だけ生き、
+/// 書庫を開いたときや閉じたときは None に戻す（= ネイティブの監視も解除される）
+struct Watching {
+    /// 監視中のフォルダ。同じフォルダを開き直したときに張り直さないための目印
+    path: PathBuf,
+    /// drop するとネイティブの監視も解除されるので、持っているだけでよい
+    _watcher: RecommendedWatcher,
+}
+struct FolderWatcher(Mutex<Option<Watching>>);
+
 #[derive(serde::Serialize)]
 struct ImageList {
     /// フォルダの場合は画像のフルパス、書庫の場合は書庫内のエントリ名
@@ -63,6 +74,8 @@ struct ImageList {
     index: usize,
     /// 書庫を開いている場合はその書庫のフルパス
     archive: Option<String>,
+    /// 監視対象のフォルダ（フォルダを開いた場合のみ。書庫では None）
+    dir: Option<String>,
     /// 表示名から取り除く共通フォルダ（書庫のみ。例: "book/"）
     prefix: String,
 }
@@ -281,6 +294,45 @@ mod tests {
         assert!(is_image(Path::new("/x/photo.webp")));
         assert!(!is_image(Path::new("/x/notes.txt")));
         assert!(!is_image(Path::new("/x/noext")));
+    }
+
+    #[test]
+    fn listing_change_only_reacts_to_images_appearing_or_disappearing() {
+        use notify::event::{
+            CreateKind, DataChange, EventKind, ModifyKind, RemoveKind, RenameMode,
+        };
+        let event = |kind, paths: &[&str]| notify::Event {
+            kind,
+            paths: paths.iter().map(PathBuf::from).collect(),
+            attrs: Default::default(),
+        };
+
+        // 画像が増えた・消えた・名前が変わった → 一覧を作り直す
+        assert!(is_listing_change(&event(
+            EventKind::Create(CreateKind::File),
+            &["/x/new.png"]
+        )));
+        assert!(is_listing_change(&event(
+            EventKind::Remove(RemoveKind::File),
+            &["/x/old.jpg"]
+        )));
+        assert!(is_listing_change(&event(
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+            &["/x/a.png", "/x/b.png"]
+        )));
+        // 種類が分からない通知は取りこぼすより拾う
+        assert!(is_listing_change(&event(EventKind::Any, &["/x/new.png"])));
+
+        // 中身だけの書き換えでは枚数も並び順も変わらない
+        assert!(!is_listing_change(&event(
+            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+            &["/x/a.png"]
+        )));
+        // 画像以外は無関係
+        assert!(!is_listing_change(&event(
+            EventKind::Create(CreateKind::File),
+            &["/x/notes.txt"]
+        )));
     }
 
     #[test]
@@ -538,6 +590,7 @@ fn list_archive_images(path: &Path, cache: &ArchiveCache) -> Result<ImageList, S
         images: names,
         index: 0,
         archive: Some(path.to_string_lossy().into_owned()),
+        dir: None,
         prefix,
     })
 }
@@ -591,6 +644,7 @@ fn list_dir_images(dir: &Path, current: Option<&std::ffi::OsStr>) -> Result<Imag
         images,
         index,
         archive: None,
+        dir: Some(dir.to_string_lossy().into_owned()),
         prefix: String::new(),
     })
 }
@@ -627,6 +681,95 @@ fn read_archive_image(
     cache: State<ArchiveCache>,
 ) -> Result<Response, String> {
     read_archive_entry(Path::new(&archive), &entry, &cache).map(Response::new)
+}
+
+/// 表示中の画像を OS のゴミ箱（Windows: ごみ箱 / macOS: ゴミ箱 / Linux: freedesktop の Trash）へ送る。
+/// 完全削除はしないので、取り違えても OS 側から戻せる
+#[tauri::command]
+fn delete_image(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.is_file() {
+        return Err(format!("ファイルが見つかりません: {path}"));
+    }
+    if !is_image(&target) {
+        return Err(format!("画像ファイルではありません: {path}"));
+    }
+    trash::delete(&target).map_err(|e| format!("ゴミ箱へ移動できませんでした: {e}"))?;
+    log::info!("ゴミ箱へ移動しました: {path}");
+    Ok(())
+}
+
+/// 一覧を作り直す必要がある変更かどうか。
+/// 画像の増減（作成・削除・名前の変更）だけを拾い、中身の書き換えは無視する。
+/// 種類を判別できない通知（EventKind::Any）は、取りこぼすより拾う方に倒す
+fn is_listing_change(event: &notify::Event) -> bool {
+    use notify::event::{EventKind, ModifyKind};
+    let kind_matches = matches!(
+        event.kind,
+        EventKind::Any
+            | EventKind::Create(_)
+            | EventKind::Remove(_)
+            | EventKind::Modify(ModifyKind::Name(_))
+    );
+    // 名前の変更では変更前と変更後の両方が入るので、どちらかが画像なら対象
+    kind_matches && event.paths.iter().any(|p| is_image(p))
+}
+
+/// 表示中のフォルダの監視を開始する（`path` が null なら監視をやめる）。
+///
+/// OS のネイティブ通知を使うので、変化が無い間は CPU もディスクも使わない
+/// （ポーリングのように一定間隔で read_dir する方式とはここが違う）。
+/// サブフォルダは見ない（表示対象が同一フォルダ内だけなので）。
+/// 通知は数が多くなりがちなので、実際の再スキャンはフロントエンド側で
+/// 一定時間まとめてから 1 回だけ行う
+#[tauri::command]
+fn watch_folder(
+    app: AppHandle,
+    state: State<FolderWatcher>,
+    path: Option<String>,
+) -> Result<(), String> {
+    let mut current = state
+        .0
+        .lock()
+        .map_err(|_| "監視の状態を取得できません".to_string())?;
+
+    let Some(path) = path else {
+        *current = None;
+        return Ok(());
+    };
+    let dir = PathBuf::from(path);
+    if current.as_ref().is_some_and(|w| w.path == dir) {
+        return Ok(()); // 同じフォルダなら張り直さない
+    }
+    // 先に古い監視を解除してから張り直す（二重に監視しない）
+    *current = None;
+    if !dir.is_dir() {
+        return Err(format!("フォルダが見つかりません: {}", dir.display()));
+    }
+
+    let handle = app.clone();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        match res {
+            Ok(event) if is_listing_change(&event) => {
+                let _ = handle.emit("folder-changed", ());
+            }
+            // 監視できなくなった場合（フォルダごと消えたなど）は記録だけして続ける。
+            // 一覧は R キーで作り直せる
+            Err(e) => log::warn!("フォルダの監視でエラーが発生しました: {e}"),
+            Ok(_) => {}
+        }
+    })
+    .map_err(|e| format!("フォルダを監視できません: {e}"))?;
+
+    watcher
+        .watch(&dir, RecursiveMode::NonRecursive)
+        .map_err(|e| format!("フォルダを監視できません: {e}"))?;
+    log::info!("フォルダの監視を開始しました: {}", dir.display());
+    *current = Some(Watching {
+        path: dir,
+        _watcher: watcher,
+    });
+    Ok(())
 }
 
 /// 起動引数（関連付け起動など）で渡されたファイルを一度だけ返す
@@ -724,8 +867,9 @@ fn save_window_state(window: &tauri::Window) {
     let Ok(scale) = window.scale_factor() else {
         return;
     };
-    // 最小化中は位置も大きさも実際の見た目と違うので触らない
-    if window.is_minimized().unwrap_or(false) {
+    // 最小化中・最大化中は位置も大きさも実際の見た目と違うので触らない
+    // （最大化したまま閉じたときは、最大化する前の姿を覚えたままにする）
+    if window.is_minimized().unwrap_or(false) || window.is_maximized().unwrap_or(false) {
         return;
     }
 
@@ -959,6 +1103,10 @@ fn fit_window_to_image(
     const SCREEN_RATIO: f64 = 0.9;
     if !(width > 0.0 && height > 0.0) {
         return Err("画像サイズを取得できません".to_string());
+    }
+    // 最大化中は画像ごとに大きさを変えない（最大化が勝手に解けてしまう）
+    if window.is_maximized().unwrap_or(false) {
+        return Ok(());
     }
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
 
@@ -1301,6 +1449,7 @@ pub fn run() {
         .manage(StartupFile(Mutex::new(startup_file_from_args())))
         .manage(ArchiveCache(Mutex::new(None)))
         .manage(PendingPosition(Mutex::new(None)))
+        .manage(FolderWatcher(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             list_images,
             read_archive_image,
@@ -1311,7 +1460,9 @@ pub fn run() {
             open_settings_window,
             reveal_in_file_manager,
             open_log_folder,
-            fit_window_to_image
+            fit_window_to_image,
+            delete_image,
+            watch_folder
         ])
         .build(tauri::generate_context!());
 
@@ -1331,7 +1482,6 @@ pub fn run() {
         // macOS: Finder / Dock からファイルを開いたときに届く
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &_event {
-            use tauri::Emitter;
             if let Some(path) = urls
                 .iter()
                 .filter_map(|u| u.to_file_path().ok())

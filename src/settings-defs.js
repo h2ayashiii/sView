@@ -150,6 +150,31 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
+    id: "file",
+    label: "ファイル",
+    items: [
+      {
+        key: "confirmDelete",
+        label: "削除の前に確認する",
+        hint:
+          "Del キーや右クリックメニューから削除するとき、確認のウィンドウを出します。" +
+          "その中の「今後確認しない」をチェックすると、ここもオフになります",
+        type: "toggle",
+        default: true,
+      },
+      {
+        key: "watchFolder",
+        label: "フォルダの変更を自動で取り込む",
+        hint:
+          "表示中のフォルダに画像が増減したとき、開き直さずに一覧へ反映します。" +
+          "OS の通知を使うので、変化が無い間は待っているだけで負荷はかかりません。" +
+          "圧縮フォルダ (zip / cbz) を開いているときは動きません",
+        type: "toggle",
+        default: true,
+      },
+    ],
+  },
+  {
     id: "logs",
     label: "ログ",
     items: [

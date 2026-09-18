@@ -136,27 +136,64 @@ body {
   background: linear-gradient(to bottom, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
 }
 
-#btn-close {
+#wincontrols {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.wc {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 26px;
   height: 22px;
   border: none;
   border-radius: 4px;
   background: transparent;
   color: #cfcfd6;
-  font-size: 11px;
-  line-height: 1;
   cursor: pointer;
 }
 
+.wc svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.wc:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+/* 閉じるだけは押し間違いが分かるよう赤くする */
 #btn-close:hover {
   background: rgba(220, 60, 60, 0.85);
   color: #fff;
 }
 
-/* macOS は閉じるボタンを左上に置く */
+/* 最大化中は「元に戻す」のアイコンに差し替える */
+#btn-max .i-restore,
+#app.maximized #btn-max .i-max {
+  display: none;
+}
+
+#app.maximized #btn-max .i-restore {
+  display: block;
+}
+
+/* macOS はウィンドウ操作ボタンを左上に置き、並びも「閉じる / 最小化 / 最大化」にする */
 #app.mac #titlebar {
   justify-content: flex-start;
+}
+
+#app.mac #btn-close {
+  order: -1;
 }
 
 /* ---- status bar（左: 表示中のファイル / 右: 枚数） ---- */
@@ -317,4 +354,93 @@ body {
   height: 1px;
   margin: 4px 6px;
   background: rgba(255, 255, 255, 0.09);
+}
+
+/* ---- 削除の確認 ----
+   OS のダイアログではなく自前で出す（「今後確認しない」を同じ窓に入れるため）。
+   chrome とは独立して表示するので #chrome の外に置いてある */
+#confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+#confirm[hidden] {
+  display: none;
+}
+
+#confirm-box {
+  width: min(320px, calc(100% - 32px));
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(30, 30, 34, 0.98);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+#confirm-title {
+  color: #e8e8ec;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 消す 1 枚を取り違えないようファイル名を出す（全体のパスは title に入る） */
+#confirm-name {
+  margin-top: 6px;
+  color: #a8a8b0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#confirm-skip-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  color: #c2c2ca;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#confirm-skip {
+  cursor: pointer;
+}
+
+#confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+#confirm-actions button {
+  min-width: 84px;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8e8ec;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#confirm-actions button:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+#confirm-actions .danger {
+  border-color: rgba(220, 60, 60, 0.6);
+  background: rgba(190, 50, 50, 0.85);
+  color: #fff;
+}
+
+#confirm-actions .danger:hover {
+  background: rgba(214, 60, 60, 0.95);
 }

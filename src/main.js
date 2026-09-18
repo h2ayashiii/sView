@@ -1,7 +1,7 @@
 // sView - minimal frameless image viewer
 // withGlobalTauri: true のため window.__TAURI__ からAPIを利用（バンドラ不要）
 const { invoke, convertFileSrc } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
+const { listen, emit } = window.__TAURI__.event;
 const dialog = window.__TAURI__.dialog;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
 
@@ -16,6 +16,11 @@ const chromeEl = document.getElementById("chrome");
 const navPrev = document.getElementById("nav-prev");
 const navNext = document.getElementById("nav-next");
 const ctxmenu = document.getElementById("ctxmenu");
+const btnMax = document.getElementById("btn-max");
+const confirmEl = document.getElementById("confirm");
+const confirmNameEl = document.getElementById("confirm-name");
+const confirmSkipEl = document.getElementById("confirm-skip");
+const confirmOkEl = document.getElementById("confirm-ok");
 
 // 現在の設定（settings-defs.js の既定値で開始し、読み込み後に上書きされる）
 let settings = { ...SETTINGS_DEFAULTS };
@@ -43,6 +48,8 @@ let images = [];
 let index = -1;
 // 書庫を開いている場合はそのフルパス。フォルダの場合は null
 let archivePath = null;
+// フォルダを開いている場合はそのフルパス（監視対象）。書庫の場合は null
+let folderPath = null;
 // 全エントリが共有する先頭フォルダ。表示名からはこの分を取り除く
 let entryPrefix = "";
 // 表示要求の世代。非同期読み込みの結果が古い場合は捨てる
@@ -276,13 +283,26 @@ async function openPath(path, preferredIndex = -1) {
     const res = await invoke("list_images", { path });
     if (res.archive !== archivePath) clearBlobCache();
     archivePath = res.archive ?? null;
+    folderPath = res.dir ?? null;
     entryPrefix = res.prefix ?? "";
     images = res.images;
     index = preferredIndex >= 0 && preferredIndex < images.length ? preferredIndex : res.index;
+    syncWatcher();
     await show();
   } catch (e) {
     showError(e);
   }
+}
+
+// 表示できる画像が無くなったときに、起動直後と同じ「ドロップ待ち」の姿へ戻す
+function clearView() {
+  showToken++;
+  images = [];
+  index = -1;
+  img.removeAttribute("src");
+  setFitMode();
+  placeholder.hidden = false;
+  updateChrome();
 }
 
 function step(delta) {
@@ -309,6 +329,148 @@ async function rescan() {
   } else {
     await openPath(images[index]);
   }
+}
+
+// ---- フォルダの自動追従 ----
+// 監視そのものは Rust 側（OS のネイティブ通知）が行い、ここには「変わった」という
+// 合図だけが届く。変化が無い間は何も走らないので、開いたまま放置しても負荷はかからない。
+//
+// 合図はファイル 1 個のコピーでも複数回届くうえ、届いた時点ではまだ
+// 書き込み途中のことがある。最後の合図から少し待ってから 1 回だけ読み直す
+const RESCAN_DELAY_MS = 800;
+let rescanTimer = null;
+
+let watchFailed = false;
+
+// フォルダを開いている間だけ監視する。書庫のときと設定でオフのときは外す
+function syncWatcher() {
+  const target = !archivePath && settings.watchFolder ? folderPath : null;
+  invoke("watch_folder", { path: target }).catch((e) => {
+    // 監視できなくてもビューア自体は使えるので、知らせるのは 1 回だけにする
+    // （R キーでいつでも読み直せる）
+    if (watchFailed) return;
+    watchFailed = true;
+    showError(`${e}（R キーで読み直せます）`);
+  });
+}
+
+function scheduleRefresh() {
+  clearTimeout(rescanTimer);
+  rescanTimer = setTimeout(() => {
+    rescanTimer = null;
+    refreshFolder();
+  }, RESCAN_DELAY_MS);
+}
+
+// 一覧だけを作り直す。表示中の画像は（消えていない限り）そのまま見続けられる
+async function refreshFolder() {
+  if (archivePath || !folderPath) return;
+  const dir = folderPath;
+  let res;
+  try {
+    res = await invoke("list_images", { path: dir });
+  } catch {
+    // フォルダごと消えた・読めなくなった場合。今の表示はそのまま残す
+    return;
+  }
+  // 読んでいる間に別のものを開いていたら、その結果は捨てる
+  if (archivePath || folderPath !== dir) return;
+
+  const current = index >= 0 ? images[index] : null;
+  const added = res.images.length - images.length;
+  images = res.images;
+
+  const at = current ? images.indexOf(current) : -1;
+  if (at >= 0) {
+    // 表示中の画像は動かさない（前に画像が増えても位置を追いかける）
+    index = at;
+    updateChrome();
+    preloadNeighbors();
+  } else if (!images.length) {
+    clearView();
+  } else {
+    // 表示中の画像が外から消された（または 0 枚のフォルダに画像が増えた）。
+    // 同じ位置＝次の画像へ移る
+    index = Math.min(Math.max(index, 0), images.length - 1);
+    await show();
+  }
+  if (added > 0) showToast(`画像が ${added} 枚増えました`, "notice");
+}
+
+listen("folder-changed", scheduleRefresh);
+
+// ---- 削除 ----
+// 完全削除はせず OS のゴミ箱へ送る。書庫の中身はファイルとして存在しないので対象外
+function canDelete() {
+  return !archivePath && index >= 0 && index < images.length;
+}
+
+let confirmResolve = null;
+
+function closeConfirm(answer) {
+  if (!confirmResolve) return;
+  const done = confirmResolve;
+  confirmResolve = null;
+  confirmEl.hidden = true;
+  done(answer);
+}
+
+// OS の確認ダイアログには「今後確認しない」を同居させられないので自前で出す。
+// 開いている間はキー・ホイール・右クリックをこちらで止める
+function askDeleteConfirm(path) {
+  closeConfirm({ ok: false, skip: false }); // 二重に開かない
+  hideContextMenu();
+  confirmNameEl.textContent = baseName(path);
+  confirmNameEl.title = path;
+  confirmSkipEl.checked = false;
+  confirmEl.hidden = false;
+  confirmOkEl.focus();
+  return new Promise((resolve) => (confirmResolve = resolve));
+}
+
+confirmOkEl.addEventListener("click", () =>
+  closeConfirm({ ok: true, skip: confirmSkipEl.checked })
+);
+document
+  .getElementById("confirm-cancel")
+  .addEventListener("click", () => closeConfirm({ ok: false, skip: false }));
+// 外側（暗い部分）を押したらキャンセル扱いにする
+confirmEl.addEventListener("mousedown", (e) => {
+  if (e.target === confirmEl) closeConfirm({ ok: false, skip: false });
+});
+
+async function deleteCurrent() {
+  if (!canDelete()) {
+    if (archivePath) showToast("圧縮フォルダの中の画像は削除できません", "notice");
+    return;
+  }
+  const path = images[index];
+  if (settings.confirmDelete) {
+    const answer = await askDeleteConfirm(path);
+    if (!answer.ok) return;
+    if (answer.skip) {
+      settings.confirmDelete = false;
+      saveSettings();
+    }
+    // 確認している間に別の画像へ移っていたら、そのときの 1 枚を消さない
+    if (images[index] !== path) return;
+  }
+  try {
+    await invoke("delete_image", { path });
+  } catch (e) {
+    showError(e);
+    return;
+  }
+  // 監視の合図を待たずにその場で一覧から外す
+  // （ネットワークドライブなど監視が効かない場所でも確実に反映する）
+  images.splice(index, 1);
+  if (!images.length) {
+    clearView();
+  } else {
+    if (index >= images.length) index = images.length - 1;
+    await show();
+  }
+  showToast("ゴミ箱へ移動しました", "notice");
 }
 
 async function openDialog() {
@@ -370,10 +532,27 @@ window.addEventListener("blur", hideChrome);
 
 // ---- input: keyboard ----
 window.addEventListener("keydown", (e) => {
+  // 確認ウィンドウが開いている間は、そちらの操作だけを受け付ける。
+  // Enter はフォーカスのあるボタンを押す既定の動きに任せる（誤って「移動」を
+  // 選ばせないため、こちらでは横取りしない）
+  if (!confirmEl.hidden) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeConfirm({ ok: false, skip: false });
+    }
+    return;
+  }
   // 設定を開くショートカット（macOS: Command + , / その他: Ctrl + ,）
   if (e.key === "," && (IS_MAC ? e.metaKey : e.ctrlKey) && !e.altKey) {
     e.preventDefault();
     openSettings();
+    return;
+  }
+  // macOS で「ゴミ箱に入れる」は Command + Delete。この Delete は Backspace として
+  // 届くので、修飾キーで弾く前にここで拾う（単体の Backspace は前の画像のまま）
+  if (IS_MAC && e.key === "Backspace" && e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    deleteCurrent();
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -427,6 +606,10 @@ window.addEventListener("keydown", (e) => {
     case "F":
       toggleFullscreen();
       break;
+    case "Delete":
+      e.preventDefault();
+      deleteCurrent();
+      break;
     case "Escape":
       // メニューが開いているときは、まずそれを閉じる
       if (!ctxmenu.hidden) hideContextMenu();
@@ -441,7 +624,7 @@ window.addEventListener("keydown", (e) => {
 // macOS: マウスにより挙動が異なるが、side button は同じく button 3/4 の
 // mouseup として届く（届かないユーティリティ常駐マウスはキー操作で代替）。
 window.addEventListener("mouseup", (e) => {
-  if (!settings.sideButtons) return;
+  if (!settings.sideButtons || !confirmEl.hidden) return;
   if (e.button === 3) {
     e.preventDefault();
     step(-1);
@@ -458,7 +641,7 @@ window.addEventListener("auxclick", (e) => {
 window.addEventListener(
   "wheel",
   (e) => {
-    if (!images.length) return;
+    if (!images.length || !confirmEl.hidden) return;
     e.preventDefault();
     if (settings.wheelAction === "navigate") {
       wheelNavigate(e.deltaY);
@@ -473,7 +656,7 @@ window.addEventListener(
 // ---- input: pan (zoom mode only) ----
 let panning = null;
 stage.addEventListener("mousedown", (e) => {
-  if (mode !== "zoom" || e.button !== 0) return;
+  if (mode !== "zoom" || e.button !== 0 || !confirmEl.hidden) return;
   panning = { x: e.clientX, y: e.clientY };
 });
 window.addEventListener("mousemove", (e) => {
@@ -489,18 +672,61 @@ window.addEventListener("mouseup", () => (panning = null));
 placeholder.addEventListener("click", openDialog);
 navPrev.addEventListener("click", () => step(-1));
 navNext.addEventListener("click", () => step(1));
+// ---- ウィンドウ操作（最小化 / 最大化 / 閉じる） ----
+// 挙動は OS 任せ。最小化はタスクバー・Dock へ、最大化は作業領域いっぱいに広げ、
+// もう一度押すと元の大きさに戻る
+// 最大化中は画面の隅と食い違うので角は丸めない
+function applyCorners() {
+  const round = settings.roundedCorners && !app.classList.contains("maximized");
+  app.style.borderRadius = round ? "8px" : "0";
+}
+
+function syncMaximized() {
+  appWindow
+    .isMaximized()
+    .then((maximized) => {
+      app.classList.toggle("maximized", maximized);
+      applyCorners();
+      const label = maximized ? "元のサイズに戻す" : "最大化";
+      btnMax.title = label;
+      btnMax.setAttribute("aria-label", label);
+    })
+    .catch(() => {});
+}
+
+document.getElementById("btn-min").addEventListener("click", () => {
+  appWindow.minimize().catch(() => {});
+});
+btnMax.addEventListener("click", () => {
+  appWindow.toggleMaximize().then(syncMaximized).catch(() => {});
+});
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
-// Tauri のドラッグ領域はダブルクリックで最大化するが、最大化は使わないので止める
+// タイトルバーのダブルクリックや OS 側の操作でも最大化の状態は変わるので、
+// 大きさが変わったタイミングで見た目（アイコン）を合わせ直す。
+// ドラッグでのサイズ変更中は何度も届くので、落ち着いてから 1 回だけ確かめる
+let maximizedTimer = null;
+appWindow
+  .onResized(() => {
+    clearTimeout(maximizedTimer);
+    maximizedTimer = setTimeout(syncMaximized, 120);
+  })
+  .catch(() => {});
+syncMaximized();
+
+// Tauri はドラッグ領域のダブルクリックを最大化に割り当てる。
+// OS の慣習どおりタイトルバーだけ通し、画像やステータスバーの上では止める
 window.addEventListener(
   "mousedown",
   (e) => {
-    if (e.detail >= 2 && e.target.closest?.("[data-tauri-drag-region]")) e.stopPropagation();
+    if (e.detail < 2) return;
+    const region = e.target.closest?.("[data-tauri-drag-region]");
+    if (region && !region.closest("#titlebar")) e.stopPropagation();
   },
   true
 );
 window.addEventListener("contextmenu", (e) => {
   e.preventDefault();
-  openContextMenu(e.clientX, e.clientY);
+  if (confirmEl.hidden) openContextMenu(e.clientX, e.clientY);
 });
 
 // ---- drag & drop ----
@@ -533,11 +759,23 @@ function hexToRgba(hex, alpha) {
 
 function applySettings() {
   app.style.background = hexToRgba(settings.backgroundColor, settings.backgroundOpacity / 100);
-  app.style.borderRadius = settings.roundedCorners ? "8px" : "0";
+  applyCorners();
   app.classList.toggle("hide-filename", !settings.showFilename);
   app.classList.toggle("hide-nav", !settings.showNavButtons);
   img.style.imageRendering = settings.imageRendering;
   appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
+  syncWatcher();
+}
+
+// 本体ウィンドウ側から設定を書き換える（削除確認の「今後確認しない」）。
+// 設定ウィンドウが開いていればそちらの表示も合わせる
+async function saveSettings() {
+  try {
+    await invoke("save_settings", { settings });
+    await emit("settings-changed", settings);
+  } catch (e) {
+    showError(e);
+  }
 }
 
 async function openSettings() {
@@ -596,6 +834,13 @@ function buildContextMenu() {
   const hasFile = currentFilePath() !== null;
   return [
     { label: REVEAL_LABEL, disabled: !hasFile, action: revealCurrent },
+    {
+      // 「…」は確認ウィンドウが出るときだけ添える
+      label: settings.confirmDelete ? "ゴミ箱へ移動…" : "ゴミ箱へ移動",
+      accel: "Del",
+      disabled: !canDelete(),
+      action: deleteCurrent,
+    },
     { separator: true },
     { label: "ファイルを開く…", accel: "O", action: openDialog },
     { label: "フォルダを開く…", accel: "D", action: openFolderDialog },

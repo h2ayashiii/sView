@@ -24,6 +24,11 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# フォルダ監視。OS のネイティブ通知（inotify / FSEvents / ReadDirectoryChangesW）を使う
+notify = "8"
+# 削除はゴミ箱へ送る（完全削除はしない）。chrono を使うのはゴミ箱の中身を
+# 一覧する API だけなので、既定機能を切って依存を増やさない
+trash = { version = "5", default-features = false, features = ["coinit_apartmentthreaded"] }
 
 # 軽量化: リリースバイナリを最小化
 [profile.release]
