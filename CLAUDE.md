@@ -10,7 +10,7 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
 `#app.chrome-visible` in `src/main.js`).
 
 - **Backend**: Rust 2021, crate `sview` / lib `sview_lib` (`tauri`, `tauri-plugin-dialog`,
-  `tauri-plugin-log`, `log`, `serde`, `zip`).
+  `tauri-plugin-log`, `log`, `serde`, `zip`, `notify`, `trash`).
 - **Frontend**: plain HTML/CSS/JS. **No framework, no bundler, no TypeScript.**
   `withGlobalTauri: true`, so APIs come from `window.__TAURI__` and scripts load via `<script src>`.
 - Targets: Windows 10/11, macOS 10.15+, Linux.
@@ -81,6 +81,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `src/settings.js`. Keep `settings-defs.js` pure data — `main.js` loads it too.
 - **Add a Rust command** → define it in `lib.rs`, register it in `tauri::generate_handler![...]`
   inside `run()`, and add any needed permission to the right `src-tauri/capabilities/*.json`.
+  Custom commands need no permission entry; only core/plugin APIs called from JS do.
 - **Add a frontend file** → add a `<script>` / `<link>` tag to `index.html` and/or `settings.html`.
   Nothing picks it up automatically.
 
@@ -118,6 +119,22 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   and a failed `Builder::build()` shows an OS message box instead of panicking.
 - Archives: `MAX_ENTRY_BYTES` (512 MB) guards against zip bombs, and the open archive handle is
   cached with an `(mtime, size)` stamp — don't re-open it naively.
+- Folder watching (`watch_folder` / `FolderWatcher`) uses `notify`'s OS-native backends, so it
+  costs nothing while idle — do **not** replace it with polling. Exactly one folder is watched at a
+  time, non-recursively, and only while a folder (not an archive) is open; passing `path: null`
+  drops the watcher. `is_listing_change` filters out content-only writes so a save doesn't
+  rebuild the list. Rust only emits `folder-changed`; the debounce (`RESCAN_DELAY_MS`, 800 ms in
+  `main.js`) and the actual re-listing live in the frontend — that delay also keeps a
+  half-copied file from being listed, so don't shorten it without a reason.
+- Deleting goes through `trash`, never `fs::remove_file` — "削除" in this app always means the
+  OS trash. `main.js` splices the entry out itself instead of waiting for the watcher, because
+  watching fails on some network drives.
+- `main.js` can write `settings.json` too (the "今後確認しない" checkbox → `saveSettings()`), so
+  `settings.js` listens for `settings-changed` and re-renders — but only when the settings window
+  is unfocused, otherwise its own emit echoes back and fights a slider being dragged.
+- Maximizing interacts with the window-size logic: `fit_window_to_image` returns early while
+  maximized (resizing would silently un-maximize), and `save_window_state` skips minimized *and*
+  maximized windows so `window.json` keeps the restored geometry.
 - The Windows installer is `installMode: "perMachine"`: NSIS gets `RequestExecutionLevel admin`, so it
   asks for UAC on launch and defaults to `C:\Program Files\sView` (HKLM, all-users shortcuts and
   file associations). It used to be per-user (`%LOCALAPPDATA%`), so `installer-hooks.nsh` silently

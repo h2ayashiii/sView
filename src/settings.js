@@ -5,6 +5,7 @@ const tauri = window.__TAURI__ ?? {};
 const invoke =
   tauri.core?.invoke ?? (() => Promise.reject(new Error("Tauri API を利用できません")));
 const emit = tauri.event?.emit ?? (() => Promise.resolve());
+const listen = tauri.event?.listen ?? (() => Promise.resolve());
 const settingsWindow = tauri.window?.getCurrentWindow?.() ?? null;
 
 // 閉じても破棄はされず（Rust 側で隠すだけ）、次に開くときは同じウィンドウを使う
@@ -230,6 +231,15 @@ function render() {
   for (const [key, apply] of controls) apply(settings[key]);
   applyTheme();
 }
+
+// 本体ウィンドウ側でも設定は変わる（削除確認の「今後確認しない」）。
+// こちらを操作している間は自分の emit が跳ね返ってくるだけなので、
+// フォーカスが無いときだけ受け取って表示を合わせる
+listen("settings-changed", (event) => {
+  if (document.hasFocus()) return;
+  settings = normalizeSettings(event.payload);
+  render();
+});
 
 document.getElementById("s-reset").addEventListener("click", () => {
   settings = { ...SETTINGS_DEFAULTS };
