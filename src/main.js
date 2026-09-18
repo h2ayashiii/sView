@@ -229,17 +229,38 @@ function onImageReady(run) {
   else img.addEventListener("load", run, { once: true });
 }
 
-// 「画像に合わせる」のとき、余白が出ないようウィンドウを画像の縦横比に合わせる
-async function fitWindowToImage() {
-  if (settings.windowSizeMode !== "flexible") return;
-  if (!img.naturalWidth || !img.naturalHeight) return;
+// 「画像に合わせる」で保つウィンドウの広さ（中身の論理ピクセルの面積）。
+// 画像ごとに変えるのは縦横比だけで、広さはこれを保つので、縦長と横長を
+// 行き来しても大きさの印象が変わらない。0 の間は今のウィンドウの広さを使う
+let fitArea = 0;
+// 自分で set_size した直後の大きさ。手で変えられたのかを見分けるのに使う
+let appliedSize = null;
+
+function fitsToImage() {
+  return settings.windowSizeMode === "image";
+}
+
+// 「画像に合わせる」のとき、余白が出ないようウィンドウを画像の縦横比に合わせる。
+// area を渡すとその広さに、省略すると今の基準（無ければ今のウィンドウ）の広さにする
+async function fitWindowToImage(area) {
+  if (!fitsToImage()) return null;
+  if (!img.naturalWidth || !img.naturalHeight) return null;
+  const want = area > 0 ? area : fitArea || window.innerWidth * window.innerHeight;
   try {
-    await invoke("fit_window_to_image", {
+    const applied = await invoke("fit_window_to_image", {
       width: img.naturalWidth,
       height: img.naturalHeight,
+      area: want,
     });
+    // 最大化中・全画面中は何もせず null が返る。基準も変えない
+    if (applied) {
+      fitArea = want;
+      appliedSize = applied;
+    }
+    return applied;
   } catch (e) {
     showError(e);
+    return null;
   }
 }
 
@@ -701,14 +722,45 @@ btnMax.addEventListener("click", () => {
   appWindow.toggleMaximize().then(syncMaximized).catch(() => {});
 });
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
-// タイトルバーのダブルクリックや OS 側の操作でも最大化の状態は変わるので、
-// 大きさが変わったタイミングで見た目（アイコン）を合わせ直す。
-// ドラッグでのサイズ変更中は何度も届くので、落ち着いてから 1 回だけ確かめる
-let maximizedTimer = null;
+// サイズ変更後の後始末。タイトルバーのダブルクリックや OS 側の操作でも
+// 最大化の状態は変わるので見た目（アイコン）を合わせ直し、「画像に合わせる」では
+// 手で変えられた大きさを画像の縦横比に直す。
+// ドラッグ中は何度も届くので、落ち着いてから 1 回だけ処理する
+const RESIZE_SETTLE_MS = 120;
+// 論理ピクセルと CSS ピクセルの丸め差を吸収する（同じ大きさとみなす幅）
+const SIZE_TOLERANCE = 3;
+let resizeTimer = null;
+let lastSize = { width: window.innerWidth, height: window.innerHeight };
+
+// 手で変えられた辺（変化の割合が大きい方）をそのまま使い、もう一方を
+// 画像の縦横比から決める。その組み合わせの広さを新しい基準にする
+function draggedArea(size) {
+  const aspect = img.naturalWidth / img.naturalHeight;
+  if (!(aspect > 0)) return 0;
+  const dw = Math.abs(size.width - lastSize.width) / Math.max(lastSize.width, 1);
+  const dh = Math.abs(size.height - lastSize.height) / Math.max(lastSize.height, 1);
+  return dw >= dh ? (size.width * size.width) / aspect : size.height * size.height * aspect;
+}
+
+function onResizeSettled() {
+  syncMaximized();
+  const size = { width: window.innerWidth, height: window.innerHeight };
+  // 自分で合わせた結果の通知は、手動のサイズ変更と取り違えないよう読み飛ばす
+  const mine =
+    appliedSize &&
+    Math.abs(appliedSize.width - size.width) <= SIZE_TOLERANCE &&
+    Math.abs(appliedSize.height - size.height) <= SIZE_TOLERANCE;
+  appliedSize = null;
+  // 基準を取り直すのは、前の大きさを覚えているうちに
+  const area = mine ? 0 : draggedArea(size);
+  lastSize = size;
+  if (!mine) fitWindowToImage(area);
+}
+
 appWindow
   .onResized(() => {
-    clearTimeout(maximizedTimer);
-    maximizedTimer = setTimeout(syncMaximized, 120);
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(onResizeSettled, RESIZE_SETTLE_MS);
   })
   .catch(() => {});
 syncMaximized();
@@ -903,8 +955,11 @@ listen("settings-changed", (event) => {
   const previousMode = settings.windowSizeMode;
   settings = normalizeSettings(event.payload);
   applySettings();
-  // 「画像に合わせる」に切り替えた直後は、表示中の画像に合わせておく
-  if (settings.windowSizeMode !== previousMode) fitWindowToImage();
+  // 「画像に合わせる」に切り替えた直後は、今の大きさを基準に縦横比だけ合わせる
+  if (settings.windowSizeMode !== previousMode) {
+    fitArea = 0;
+    fitWindowToImage();
+  }
 });
 
 invoke("load_settings")

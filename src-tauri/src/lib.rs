@@ -275,6 +275,38 @@ mod tests {
     }
 
     #[test]
+    fn sized_to_aspect_keeps_the_area_and_takes_the_ratio_from_the_image() {
+        let limit = (1728.0, 972.0);
+        // 500x500 相当の広さで 16:9 の画像に合わせる → 広さはそのまま、形だけ画像に合う
+        let (w, h) = sized_to_aspect(16.0 / 9.0, 500.0 * 500.0, limit);
+        assert!((w / h - 16.0 / 9.0).abs() < 1e-9);
+        assert!((w * h - 250_000.0).abs() < 1e-6);
+        // 縦長の画像でも広さは変わらない（切り替えても大きさの印象が揃う）
+        let (w, h) = sized_to_aspect(9.0 / 16.0, 500.0 * 500.0, limit);
+        assert!((w / h - 9.0 / 16.0).abs() < 1e-9);
+        assert!((w * h - 250_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sized_to_aspect_shrinks_to_fit_the_screen() {
+        let limit = (1728.0, 972.0);
+        // 画面に収まらない広さを求められたら、縦横比を保ったまま縮める
+        let (w, h) = sized_to_aspect(1.0, 4000.0 * 4000.0, limit);
+        assert!((w - 972.0).abs() < 1e-9);
+        assert!((h - 972.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sized_to_aspect_grows_to_the_minimum_size() {
+        let limit = (1728.0, 972.0);
+        // 小さすぎる指定でも最小サイズは下回らない
+        let (w, h) = sized_to_aspect(1.0, 1.0, limit);
+        assert!(w >= MIN_WINDOW_SIZE.0 - 1e-9);
+        assert!(h >= MIN_WINDOW_SIZE.1 - 1e-9);
+        assert!((w / h - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn natural_sort_orders_numbers_numerically() {
         let mut v = vec!["img10.png", "img2.png", "img1.png", "IMG3.png"];
         v.sort_by(|a, b| natural_cmp(a, b));
@@ -857,8 +889,7 @@ fn read_window_state(app: &AppHandle) -> Option<WindowState> {
 }
 
 /// 前回の続きから開けるよう、閉じるときのウィンドウの位置と大きさを保存する。
-/// 位置はどちらのサイズ設定でも覚えるが、「画像に合わせる」で開いている間の
-/// 大きさは画像都合なので覚えない（前に覚えた大きさをそのまま残す）
+/// どちらのサイズ設定でも両方を覚える（次回は必ずこの大きさ・この場所で開く）
 fn save_window_state(window: &tauri::Window) {
     let app = window.app_handle();
     let Ok(path) = window_state_file(app) else {
@@ -867,9 +898,12 @@ fn save_window_state(window: &tauri::Window) {
     let Ok(scale) = window.scale_factor() else {
         return;
     };
-    // 最小化中・最大化中は位置も大きさも実際の見た目と違うので触らない
-    // （最大化したまま閉じたときは、最大化する前の姿を覚えたままにする）
-    if window.is_minimized().unwrap_or(false) || window.is_maximized().unwrap_or(false) {
+    // 最小化中・最大化中・全画面中は位置も大きさも普段の姿と違うので触らない
+    // （その状態のまま閉じたときは、そうする前の姿を覚えたままにする）
+    if window.is_minimized().unwrap_or(false)
+        || window.is_maximized().unwrap_or(false)
+        || window.is_fullscreen().unwrap_or(false)
+    {
         return;
     }
 
@@ -881,13 +915,11 @@ fn save_window_state(window: &tauri::Window) {
         state.y = Some(pos.y);
     }
 
-    if settings_value(app, "windowSizeMode").as_deref() != Some("flexible") {
-        if let Ok(size) = window.inner_size() {
-            let size = size.to_logical::<f64>(scale);
-            if size.width >= 1.0 && size.height >= 1.0 {
-                state.width = Some(size.width);
-                state.height = Some(size.height);
-            }
+    if let Ok(size) = window.inner_size() {
+        let size = size.to_logical::<f64>(scale);
+        if size.width >= 1.0 && size.height >= 1.0 {
+            state.width = Some(size.width);
+            state.height = Some(size.height);
         }
     }
 
@@ -1031,13 +1063,21 @@ fn settings_value(app: &AppHandle, key: &str) -> Option<String> {
     value.get(key)?.as_str().map(str::to_owned)
 }
 
+/// ウィンドウサイズの設定が「画像に合わせる」か。
+/// "flexible" は 0.1 系までの古い値（settings.json を書き換えずに読めるようにする）
+fn fits_window_to_image(app: &AppHandle) -> bool {
+    matches!(
+        settings_value(app, "windowSizeMode").as_deref(),
+        Some("image") | Some("flexible")
+    )
+}
+
 /// 起動時に、前回閉じたときのウィンドウを復元する。
-/// 位置は常に、大きさは「固定」のときだけ戻す
-/// （「画像に合わせる」は画像を開くまで既定サイズ）。
-/// どちらもウィンドウ全体が作業領域に収まるよう寄せる（ディスプレイの構成が
+/// 大きさも位置も、どちらのサイズ設定でも戻す。
+/// ウィンドウ全体が作業領域に収まるよう寄せる（ディスプレイの構成が
 /// 変わっていたり、前回より大きく開いたりしたときに画面外へ出さない）。
-/// 「画像に合わせる」では、最初の画像を前回と同じ左上に開けるよう、
-/// 保存した位置を PendingPosition に残しておく
+/// 「画像に合わせる」では最初の画像で縦横比を合わせ直すので、そのときも
+/// 前回と同じ左上に置けるよう、保存した位置を PendingPosition に残しておく
 fn restore_window_state(window: &tauri::Window) {
     let app = window.app_handle();
     let Some(state) = read_window_state(app) else {
@@ -1046,19 +1086,15 @@ fn restore_window_state(window: &tauri::Window) {
     let Ok(scale) = window.scale_factor() else {
         return;
     };
-    let flexible = settings_value(app, "windowSizeMode").as_deref() == Some("flexible");
-
-    // 中身の大きさ（論理ピクセル）。「固定」で保存した大きさがあればそれにする
+    // 中身の大きさ（論理ピクセル）。保存した大きさがあればそれにする
     let mut inner = window
         .inner_size()
         .map(|s| s.to_logical::<f64>(scale))
         .unwrap_or_else(|_| LogicalSize::new(0.0, 0.0));
-    if !flexible {
-        if let (Some(width), Some(height)) = (state.width, state.height) {
-            if width >= 1.0 && height >= 1.0 {
-                let _ = window.set_size(LogicalSize::new(width, height));
-                inner = LogicalSize::new(width, height);
-            }
+    if let (Some(width), Some(height)) = (state.width, state.height) {
+        if width >= 1.0 && height >= 1.0 {
+            let _ = window.set_size(LogicalSize::new(width, height));
+            inner = LogicalSize::new(width, height);
         }
     }
 
@@ -1079,7 +1115,7 @@ fn restore_window_state(window: &tauri::Window) {
     let (x, y) = clamp_to_area(saved_x, saved_y, outer_width, outer_height, &work_area);
     let _ = window.set_position(LogicalPosition::new(x, y));
 
-    if flexible {
+    if fits_window_to_image(app) {
         if let Ok(mut pending) = app.state::<PendingPosition>().0.lock() {
             *pending = Some(RestoredPosition {
                 saved: (saved_x, saved_y),
@@ -1089,26 +1125,78 @@ fn restore_window_state(window: &tauri::Window) {
     }
 }
 
-/// ウィンドウを画像の縦横比ぴったりに合わせる（「画像に合わせる」のとき）。
-/// 作業領域（タスクバーなどを除いた画面）に収まらない画像は、その 90% に収まるよう縮める。
+/// 中身の大きさ（論理ピクセル）。フロントエンドへ返し、
+/// 自分が起こしたサイズ変更を見分けるのに使ってもらう
+#[derive(serde::Serialize)]
+struct AppliedSize {
+    width: f64,
+    height: f64,
+}
+
+/// 縦横比 aspect（横 / 縦）と広さ area（論理ピクセルの面積）から、
+/// ウィンドウの中身の大きさを決める。
+/// limit に収まらない場合は縦横比を保ったまま縮め、小さすぎる場合は保ったまま広げる。
+/// 極端な縦横比では両立しないことがあるが、そのときは最小サイズを優先する
+fn sized_to_aspect(aspect: f64, area: f64, limit: (f64, f64)) -> (f64, f64) {
+    let aspect = if aspect > 0.0 { aspect } else { 1.0 };
+    let area = area.max(MIN_WINDOW_SIZE.0 * MIN_WINDOW_SIZE.1);
+
+    // area = width * height かつ aspect = width / height を満たす大きさ
+    let mut width = (area * aspect).sqrt();
+    let mut height = width / aspect;
+
+    let shrink = (limit.0 / width).min(limit.1 / height).min(1.0);
+    width *= shrink;
+    height *= shrink;
+
+    let grow = (MIN_WINDOW_SIZE.0 / width)
+        .max(MIN_WINDOW_SIZE.1 / height)
+        .max(1.0);
+    (width * grow, height * grow)
+}
+
+/// ウィンドウを画像の縦横比に合わせる（「画像に合わせる」のとき）。
+/// 大きさは area（合わせる前の広さ）を保ち、縦横比だけを画像に合わせるので、
+/// 画像を切り替えても、手でサイズを変えたあとも、大きさの印象は変わらない。
+/// 作業領域（タスクバーなどを除いた画面）の 90% に収まらないときは、
+/// 縦横比を保ったまま縮める。
 /// 大きさを変えても中心は動かさず、作業領域からはみ出す分は中へ寄せる。
-/// 起動して最初の 1 枚だけは、前回閉じたときと同じ左上に合わせる
+/// 起動して最初の 1 枚だけは、前回閉じたときと同じ左上に合わせる。
+/// 最大化中・全画面中は大きさを変えず（変えると解けてしまう）、null を返す
 #[tauri::command]
 fn fit_window_to_image(
     window: WebviewWindow,
     pending: State<PendingPosition>,
     width: f64,
     height: f64,
-) -> Result<(), String> {
+    area: f64,
+) -> Result<Option<AppliedSize>, String> {
     const SCREEN_RATIO: f64 = 0.9;
     if !(width > 0.0 && height > 0.0) {
         return Err("画像サイズを取得できません".to_string());
     }
-    // 最大化中は画像ごとに大きさを変えない（最大化が勝手に解けてしまう）
-    if window.is_maximized().unwrap_or(false) {
-        return Ok(());
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return Ok(None);
     }
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
+
+    // 変更前の位置と大きさ（位置の計算は物理ピクセルの整数で行う）
+    let before = (|| {
+        let pos = window.outer_position().ok()?;
+        let outer = window.outer_size().ok()?;
+        let inner = window.inner_size().ok()?;
+        Some((pos, outer, inner))
+    })();
+
+    // 広さが渡されなかったときは今のウィンドウの広さを保つ
+    let area = if area > 0.0 {
+        area
+    } else {
+        before
+            .map(|(_, _, inner)| inner.to_logical::<f64>(scale))
+            .map(|inner| inner.width * inner.height)
+            .unwrap_or(0.0)
+    };
 
     // 今のディスプレイの作業領域（物理ピクセル）。取得できない場合は縮小も寄せもしない
     let work_area = window
@@ -1121,19 +1209,9 @@ fn fit_window_to_image(
         .map(|a| (a.width * SCREEN_RATIO, a.height * SCREEN_RATIO))
         .unwrap_or((f64::INFINITY, f64::INFINITY));
 
-    // 拡大はせず、画面に収まらないときだけ縮める
-    let ratio = (limit.1 / height).min(limit.0 / width).min(1.0);
-    let w = (width * ratio).max(MIN_WINDOW_SIZE.0);
-    let h = (height * ratio).max(MIN_WINDOW_SIZE.1);
+    let (w, h) = sized_to_aspect(width / height, area, limit);
     let new_inner: PhysicalSize<u32> = LogicalSize::new(w, h).to_physical(scale);
 
-    // 変更前の位置と大きさ（位置の計算は物理ピクセルの整数で行う）
-    let before = (|| {
-        let pos = window.outer_position().ok()?;
-        let outer = window.outer_size().ok()?;
-        let inner = window.inner_size().ok()?;
-        Some((pos, outer, inner))
-    })();
     // 起動して最初の 1 枚は前回の左上に合わせる。ただし起動時に置いた場所から
     // 動いていたら（ユーザーが動かしていたら）そのまま中心を保つ
     let anchor = pending
@@ -1153,6 +1231,15 @@ fn fit_window_to_image(
             })
         });
 
+    let applied = new_inner.to_logical::<f64>(scale);
+    // 既に縦横比どおりなら何もしない（自分の set_size で無限に往復しないように）
+    if before.map(|(_, _, inner)| inner) == Some(new_inner) && anchor.is_none() {
+        return Ok(Some(AppliedSize {
+            width: applied.width,
+            height: applied.height,
+        }));
+    }
+
     window
         .set_size(new_inner)
         .map_err(|e| format!("ウィンドウサイズを変更できません: {e}"))?;
@@ -1161,7 +1248,10 @@ fn fit_window_to_image(
         let new_pos = fitted_position(pos, outer, inner, new_inner, anchor, work_area.as_ref());
         let _ = window.set_position(new_pos);
     }
-    Ok(())
+    Ok(Some(AppliedSize {
+        width: applied.width,
+        height: applied.height,
+    }))
 }
 
 /// 設定ファイルの置き場所（OS の設定フォルダ / sview / settings.json）

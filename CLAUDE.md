@@ -104,11 +104,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - Both `settings.json` and `window.json` live in `config_dir()/sview` (`CONFIG_DIR_NAME` in
   `lib.rs`), **not** in Tauri's `app_config_dir()` — the folder name is deliberately kept
   independent of the bundle identifier. "Reset to defaults" only touches `settings.json`.
-  `window.json` holds size and position: the position is restored in both size modes (skipped
-  when it lands on no connected monitor, otherwise clamped into that monitor's work area); the
-  size only in "fixed". In "flexible" mode the first `fit_window_to_image` after startup anchors
-  the window at the saved top-left (`PendingPosition`) instead of keeping the placeholder
-  window's center. Logs go to a `logs/` subfolder of the same directory.
+  `window.json` holds size and position, and **both are restored in both size modes** — the
+  window always reopens where and how it was left (the position is skipped when it lands on no
+  connected monitor, otherwise clamped into that monitor's work area). In "image" mode the first
+  `fit_window_to_image` after startup only corrects the aspect ratio, and anchors the window at
+  the saved top-left (`PendingPosition`) instead of recentering.
+  Logs go to a `logs/` subfolder of the same directory.
 - `fit_window_to_image` does its position math in **physical** pixels and on the **outer**
   size. On Windows a frameless window's outer rect is larger than its client rect by the
   invisible shadow border, so mixing outer and inner sizes drifts the window a few pixels
@@ -132,9 +133,24 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - `main.js` can write `settings.json` too (the "今後確認しない" checkbox → `saveSettings()`), so
   `settings.js` listens for `settings-changed` and re-renders — but only when the settings window
   is unfocused, otherwise its own emit echoes back and fights a slider being dragged.
-- Maximizing interacts with the window-size logic: `fit_window_to_image` returns early while
-  maximized (resizing would silently un-maximize), and `save_window_state` skips minimized *and*
-  maximized windows so `window.json` keeps the restored geometry.
+- `windowSizeMode` is `"free"` or `"image"`; `"fixed"` / `"flexible"` are the 0.1-era values and
+  are still read — `LEGACY_VALUES` in `settings-defs.js` maps them for the frontend, and
+  `fits_window_to_image()` accepts `"flexible"` on the Rust side (Rust reads `settings.json`
+  raw, so it never sees the frontend's mapping).
+- In `"image"` mode only the **aspect ratio** comes from the image; the size does not.
+  `fit_window_to_image` takes an `area` (logical px²) and `sized_to_aspect` turns area + aspect
+  into a size, so paging between portrait and landscape keeps the window equally big. `main.js`
+  holds that area in `fitArea` and updates it only when the user resizes by hand — deriving it
+  from the live window instead would let the 90%-of-screen clamp shrink the window a little on
+  every tall image.
+- Resizing is aspect-locked only after the fact: Tauri has no live resize hook, so `main.js`
+  re-fits once `onResized` goes quiet (`RESIZE_SETTLE_MS`). The command returns the size it
+  applied and the frontend compares it (`appliedSize`, `SIZE_TOLERANCE`) to tell its own
+  `set_size` from a real drag — without that the clamped result would become the new basis.
+- Maximizing and fullscreen interact with the window-size logic: `fit_window_to_image` returns
+  early (`null`) in both states, since resizing would silently drop out of them, and
+  `save_window_state` skips minimized, maximized *and* fullscreen windows so `window.json`
+  keeps the ordinary geometry.
 - The Windows installer is `installMode: "perMachine"`: NSIS gets `RequestExecutionLevel admin`, so it
   asks for UAC on launch and defaults to `C:\Program Files\sView` (HKLM, all-users shortcuts and
   file associations). It used to be per-user (`%LOCALAPPDATA%`), so `installer-hooks.nsh` silently
