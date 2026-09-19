@@ -40,6 +40,41 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
+    id: "window",
+    label: "ウィンドウ",
+    items: [
+      {
+        key: "windowSizeMode",
+        label: "ウィンドウのサイズ",
+        hint:
+          "「自由に変更」は縦横どちらにも自由に広げられ、画像を切り替えても大きさは変わりません。" +
+          "「画像に合わせる」は余白が出ないよう、表示中の画像の縦横比にウィンドウの形を合わせます" +
+          "（端や角をドラッグしても縦横比のまま変わり、大きさは画面の 90% までに収めます）。" +
+          "どちらでも、開いたときの大きさと位置は前回閉じたときのものです。",
+        type: "select",
+        options: [
+          ["free", "自由に変更"],
+          ["image", "画像に合わせる"],
+        ],
+        default: "free",
+      },
+      {
+        key: "roundedCorners",
+        label: "ウィンドウの角を丸くする",
+        hint: "オフにすると四角いウィンドウになります。最大化している間は常に四角です",
+        type: "toggle",
+        default: true,
+      },
+      {
+        key: "alwaysOnTop",
+        label: "常に最前面に表示する",
+        hint: "他のアプリの後ろに隠れなくなります",
+        type: "toggle",
+        default: false,
+      },
+    ],
+  },
+  {
     id: "view",
     label: "表示",
     items: [
@@ -73,41 +108,6 @@ const SETTINGS_SECTIONS = [
         hint: "めくりが速くなりますが、メモリを少し多く使います",
         type: "toggle",
         default: true,
-      },
-    ],
-  },
-  {
-    id: "window",
-    label: "ウィンドウ",
-    items: [
-      {
-        key: "windowSizeMode",
-        label: "ウィンドウのサイズ",
-        hint:
-          "「自由に変更」は縦横どちらにも自由に広げられ、画像を切り替えても大きさは変わりません。" +
-          "「画像に合わせる」は余白が出ないよう、表示中の画像の縦横比にウィンドウの形を合わせます" +
-          "（手でサイズを変えたときも縦横比は保ち、大きい画像は画面の 90% に収めます）。" +
-          "どちらでも、開いたときの大きさと位置は前回閉じたときのものです。",
-        type: "select",
-        options: [
-          ["free", "自由に変更"],
-          ["image", "画像に合わせる"],
-        ],
-        default: "free",
-      },
-      {
-        key: "roundedCorners",
-        label: "ウィンドウの角を丸くする",
-        hint: "オフにすると四角いウィンドウになります。最大化している間は常に四角です",
-        type: "toggle",
-        default: true,
-      },
-      {
-        key: "alwaysOnTop",
-        label: "常に最前面に表示する",
-        hint: "他のアプリの後ろに隠れなくなります",
-        type: "toggle",
-        default: false,
       },
     ],
   },

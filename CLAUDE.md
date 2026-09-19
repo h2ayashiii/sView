@@ -138,19 +138,23 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `fits_window_to_image()` accepts `"flexible"` on the Rust side (Rust reads `settings.json`
   raw, so it never sees the frontend's mapping).
 - In `"image"` mode only the **aspect ratio** comes from the image; the size does not.
-  `fit_window_to_image` takes an `area` (logical px²) and `sized_to_aspect` turns area + aspect
-  into a size, so paging between portrait and landscape keeps the window equally big. `main.js`
-  holds that area in `fitArea` and updates it only when the user resizes by hand — deriving it
-  from the live window instead would let the 90%-of-screen clamp shrink the window a little on
-  every tall image.
-- Resizing is aspect-locked only after the fact: Tauri has no live resize hook, so `main.js`
-  re-fits once `onResized` goes quiet (`RESIZE_SETTLE_MS`). The command returns the size it
-  applied and the frontend compares it (`appliedSize`, `SIZE_TOLERANCE`) to tell its own
-  `set_size` from a real drag — without that the clamped result would become the new basis.
-- Maximizing and fullscreen interact with the window-size logic: `fit_window_to_image` returns
-  early (`null`) in both states, since resizing would silently drop out of them, and
-  `save_window_state` skips minimized, maximized *and* fullscreen windows so `window.json`
-  keeps the ordinary geometry.
+  `sized_to_aspect` turns an area (logical px²) plus the aspect into a size, so paging between
+  portrait and landscape keeps the window equally big. That area lives in `AspectLock` on the
+  Rust side and is rewritten **only** by a real resize — recomputing it from the live window on
+  every fit would let the `SCREEN_RATIO` clamp shrink the window a little on every tall image.
+- The aspect lock is enforced in `WindowEvent::Resized` (`keep_aspect_on_resize`), which also
+  arrives mid-drag, so the window can only be dragged along the image's ratio. Tauri exposes no
+  native aspect hint (no `WM_SIZING` / `setAspectRatio:` / GTK geometry hints), so this is a
+  correct-it-as-it-arrives loop, and two details keep it from misbehaving: write
+  `AspectLock.last` **before** calling `set_size` (on Windows the event can come back
+  synchronously, and a size equal to `last` is how the echo is recognised), and **drop the
+  mutex guard before** `set_size` — holding it across that call deadlocks on the re-entrant
+  event. The frontend only sets the ratio (`set_aspect_lock`, from `syncAspectLock`) and leaves
+  the geometry alone.
+- Maximizing and fullscreen interact with the window-size logic: `fit_window_to_image` and
+  `keep_aspect_on_resize` both return early in those states (and while minimized), since
+  resizing would silently drop out of them, and `save_window_state` skips those windows too so
+  `window.json` keeps the ordinary geometry.
 - The Windows installer is `installMode: "perMachine"`: NSIS gets `RequestExecutionLevel admin`, so it
   asks for UAC on launch and defaults to `C:\Program Files\sView` (HKLM, all-users shortcuts and
   file associations). It used to be per-user (`%LOCALAPPDATA%`), so `installer-hooks.nsh` silently

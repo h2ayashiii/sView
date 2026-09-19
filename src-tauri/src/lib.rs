@@ -57,6 +57,21 @@ struct RestoredPosition {
 }
 struct PendingPosition(Mutex<Option<RestoredPosition>>);
 
+/// 「画像に合わせる」で、ウィンドウを画像の縦横比から外させないための覚え書き。
+/// ドラッグの最中も含め、大きさが変わるたびに参照する
+#[derive(Default)]
+struct AspectState {
+    /// 固定する縦横比（横 / 縦）。None のときは固定しない
+    ratio: Option<f64>,
+    /// 直前に受け取った、または自分で直した大きさ（物理ピクセル）。
+    /// どの辺が引っ張られたかの判断と、自分の set_size の跳ね返りを見分けるのに使う
+    last: PhysicalSize<u32>,
+    /// 画像を切り替えても保つ広さ（論理ピクセルの面積）。
+    /// 手で大きさを変えたときだけ更新する
+    area: f64,
+}
+struct AspectLock(Mutex<AspectState>);
+
 /// 表示中のフォルダの監視。フォルダを開いている間だけ生き、
 /// 書庫を開いたときや閉じたときは None に戻す（= ネイティブの監視も解除される）
 struct Watching {
@@ -285,6 +300,23 @@ mod tests {
         let (w, h) = sized_to_aspect(9.0 / 16.0, 500.0 * 500.0, limit);
         assert!((w / h - 9.0 / 16.0).abs() < 1e-9);
         assert!((w * h - 250_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dragged_area_keeps_the_edge_that_was_pulled() {
+        let limit = (1728.0, 972.0);
+        let ratio = 16.0 / 9.0;
+        let before = LogicalSize::new(800.0, 450.0);
+        // 右端を引っ張った（横だけ変わった）→ 横はそのまま、縦が縦横比で決まる
+        let now = LogicalSize::new(1000.0, 450.0);
+        let (w, h) = sized_to_aspect(ratio, dragged_area(now, before, ratio), limit);
+        assert!((w - 1000.0).abs() < 1e-9);
+        assert!((h - 1000.0 / ratio).abs() < 1e-9);
+        // 下端を引っ張った（縦だけ変わった）→ 縦はそのまま、横が縦横比で決まる
+        let now = LogicalSize::new(800.0, 600.0);
+        let (w, h) = sized_to_aspect(ratio, dragged_area(now, before, ratio), limit);
+        assert!((h - 600.0).abs() < 1e-9);
+        assert!((w - 600.0 * ratio).abs() < 1e-9);
     }
 
     #[test]
@@ -1125,12 +1157,25 @@ fn restore_window_state(window: &tauri::Window) {
     }
 }
 
-/// 中身の大きさ（論理ピクセル）。フロントエンドへ返し、
-/// 自分が起こしたサイズ変更を見分けるのに使ってもらう
-#[derive(serde::Serialize)]
-struct AppliedSize {
-    width: f64,
-    height: f64,
+/// ウィンドウを収める、作業領域に対する割合。
+/// 画面いっぱいにしたいときは最大化や全画面表示を使う
+const SCREEN_RATIO: f64 = 0.9;
+
+/// ウィンドウの大きさの上限（論理ピクセル）。作業領域が分からないときは制限しない
+fn screen_limit(work_area: Option<Area>, scale: f64) -> (f64, f64) {
+    work_area
+        .map(|a| a.to_logical(scale))
+        .map(|a| (a.width * SCREEN_RATIO, a.height * SCREEN_RATIO))
+        .unwrap_or((f64::INFINITY, f64::INFINITY))
+}
+
+/// 今のディスプレイの作業領域（物理ピクセル）。取得できないときは None
+fn current_work_area(window: &tauri::Window) -> Option<Area> {
+    window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| monitor_work_area(&m))
 }
 
 /// 縦横比 aspect（横 / 縦）と広さ area（論理ピクセルの面積）から、
@@ -1155,28 +1200,117 @@ fn sized_to_aspect(aspect: f64, area: f64, limit: (f64, f64)) -> (f64, f64) {
     (width * grow, height * grow)
 }
 
+/// 「画像に合わせる」で、ウィンドウの縦横比を表示中の画像に固定する。
+/// ratio が null のときは解除する（「自由に変更」や、画像を開いていないとき）。
+/// かけ直したときは、そのときのウィンドウの大きさを基準の広さとして覚える
+#[tauri::command]
+fn set_aspect_lock(window: WebviewWindow, lock: State<AspectLock>, ratio: Option<f64>) {
+    let Ok(mut state) = lock.0.lock() else {
+        return;
+    };
+    let Some(ratio) = ratio.filter(|r| *r > 0.0) else {
+        *state = AspectState::default();
+        return;
+    };
+    state.ratio = Some(ratio);
+    if let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) {
+        // 引っ張られた辺を判断する基準。ここから動いた分を見る
+        state.last = size;
+        // 広さは覚えていればそのまま使う（画像ごとに取り直すと、画面に収める
+        // 丸め込みのぶんだけ縦長の画像のたびに少しずつ縮んでしまう）
+        if state.area <= 0.0 {
+            let inner = size.to_logical::<f64>(scale);
+            state.area = inner.width * inner.height;
+        }
+    }
+}
+
+/// 引っ張られた辺（変化の割合が大きい方）と縦横比から、目指す広さを出す。
+/// もう一方の辺はこの広さと縦横比から決まるので、引っ張った辺はそのまま残る
+fn dragged_area(now: LogicalSize<f64>, before: LogicalSize<f64>, ratio: f64) -> f64 {
+    let dw = (now.width - before.width).abs() / before.width.max(1.0);
+    let dh = (now.height - before.height).abs() / before.height.max(1.0);
+    if dw >= dh {
+        now.width * now.width / ratio
+    } else {
+        now.height * now.height * ratio
+    }
+}
+
+/// 大きさが変わるたびに、ウィンドウを画像の縦横比へ引き戻す。
+/// ドラッグの最中も届くので、どの辺・どの角を引っ張っても縦横比のまま変わる
+/// （OS に縦横比を渡す仕組みが Tauri には無いため、届いたその場で直している）。
+/// 引っ張られた辺（変化の割合が大きい方）をそのまま活かし、もう一方をそこから決め、
+/// そのときの大きさを次の画像へ引き継ぐ広さとして覚える
+fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
+    let app = window.app_handle();
+    let lock = app.state::<AspectLock>();
+    let Ok(mut state) = lock.0.lock() else {
+        return;
+    };
+    let Some(ratio) = state.ratio else {
+        return;
+    };
+    // 最小化中・最大化中・全画面中は普段の姿ではないので、覚えている大きさも触らない
+    if window.is_minimized().unwrap_or(false)
+        || window.is_maximized().unwrap_or(false)
+        || window.is_fullscreen().unwrap_or(false)
+    {
+        return;
+    }
+    // 自分で直したぶんの跳ね返り
+    if size == state.last {
+        return;
+    }
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    let now = size.to_logical::<f64>(scale);
+    let before = state.last.to_logical::<f64>(scale);
+    let area = dragged_area(now, before, ratio);
+    let limit = screen_limit(current_work_area(window), scale);
+    let (width, height) = sized_to_aspect(ratio, area, limit);
+    let fixed: PhysicalSize<u32> = LogicalSize::new(width, height).to_physical(scale);
+
+    // 1 ピクセルのずれは OS 側の丸めなので、直しに行かずそのまま受け入れる
+    // （直すたびに丸め直されて、いつまでも往復することがある）
+    if fixed.width.abs_diff(size.width) <= 1 && fixed.height.abs_diff(size.height) <= 1 {
+        state.last = size;
+        state.area = now.width * now.height;
+        return;
+    }
+
+    // set_size より先に覚える。OS によっては set_size がその場で次の
+    // Resized を呼ぶので、跳ね返りだと分かるようにしてから呼ぶ。
+    // ロックも手放しておく（持ったまま呼ぶと、その場で呼ばれたときに止まる）
+    state.last = fixed;
+    state.area = width * height;
+    drop(state);
+
+    let _ = window.set_size(fixed);
+}
+
 /// ウィンドウを画像の縦横比に合わせる（「画像に合わせる」のとき）。
-/// 大きさは area（合わせる前の広さ）を保ち、縦横比だけを画像に合わせるので、
+/// 大きさは set_aspect_lock が覚えている広さを保ち、縦横比だけを画像に合わせるので、
 /// 画像を切り替えても、手でサイズを変えたあとも、大きさの印象は変わらない。
 /// 作業領域（タスクバーなどを除いた画面）の 90% に収まらないときは、
 /// 縦横比を保ったまま縮める。
 /// 大きさを変えても中心は動かさず、作業領域からはみ出す分は中へ寄せる。
 /// 起動して最初の 1 枚だけは、前回閉じたときと同じ左上に合わせる。
-/// 最大化中・全画面中は大きさを変えず（変えると解けてしまう）、null を返す
+/// 最大化中・全画面中は大きさを変えない（変えると解けてしまう）
 #[tauri::command]
 fn fit_window_to_image(
     window: WebviewWindow,
     pending: State<PendingPosition>,
+    lock: State<AspectLock>,
     width: f64,
     height: f64,
-    area: f64,
-) -> Result<Option<AppliedSize>, String> {
-    const SCREEN_RATIO: f64 = 0.9;
+) -> Result<(), String> {
     if !(width > 0.0 && height > 0.0) {
         return Err("画像サイズを取得できません".to_string());
     }
     if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
-        return Ok(None);
+        return Ok(());
     }
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
 
@@ -1188,7 +1322,8 @@ fn fit_window_to_image(
         Some((pos, outer, inner))
     })();
 
-    // 広さが渡されなかったときは今のウィンドウの広さを保つ
+    // 保つべき広さ。まだ覚えていなければ今のウィンドウの広さ
+    let area = lock.0.lock().map(|state| state.area).unwrap_or(0.0);
     let area = if area > 0.0 {
         area
     } else {
@@ -1198,17 +1333,8 @@ fn fit_window_to_image(
             .unwrap_or(0.0)
     };
 
-    // 今のディスプレイの作業領域（物理ピクセル）。取得できない場合は縮小も寄せもしない
-    let work_area = window
-        .current_monitor()
-        .ok()
-        .flatten()
-        .map(|m| monitor_work_area(&m));
-    let limit = work_area
-        .map(|a| a.to_logical(scale))
-        .map(|a| (a.width * SCREEN_RATIO, a.height * SCREEN_RATIO))
-        .unwrap_or((f64::INFINITY, f64::INFINITY));
-
+    let work_area = current_work_area(&window.as_ref().window());
+    let limit = screen_limit(work_area, scale);
     let (w, h) = sized_to_aspect(width / height, area, limit);
     let new_inner: PhysicalSize<u32> = LogicalSize::new(w, h).to_physical(scale);
 
@@ -1231,13 +1357,14 @@ fn fit_window_to_image(
             })
         });
 
-    let applied = new_inner.to_logical::<f64>(scale);
-    // 既に縦横比どおりなら何もしない（自分の set_size で無限に往復しないように）
+    // 覚えている広さは変えない（画面に収めるために縮めても、次の画像で元の広さに戻せる）。
+    // set_size の跳ね返りを手動のサイズ変更と取り違えないよう、先に大きさだけ覚える
+    if let Ok(mut state) = lock.0.lock() {
+        state.last = new_inner;
+    }
+    // 既に縦横比どおりなら何もしない
     if before.map(|(_, _, inner)| inner) == Some(new_inner) && anchor.is_none() {
-        return Ok(Some(AppliedSize {
-            width: applied.width,
-            height: applied.height,
-        }));
+        return Ok(());
     }
 
     window
@@ -1248,10 +1375,7 @@ fn fit_window_to_image(
         let new_pos = fitted_position(pos, outer, inner, new_inner, anchor, work_area.as_ref());
         let _ = window.set_position(new_pos);
     }
-    Ok(Some(AppliedSize {
-        width: applied.width,
-        height: applied.height,
-    }))
+    Ok(())
 }
 
 /// 設定ファイルの置き場所（OS の設定フォルダ / sview / settings.json）
@@ -1486,11 +1610,12 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .on_window_event(|window, event| {
-            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
-                return;
-            };
-            match window.label() {
+        .on_window_event(|window, event| match event {
+            // 「画像に合わせる」のときだけ、ドラッグの最中も縦横比を保つ
+            tauri::WindowEvent::Resized(size) if window.label() == "main" => {
+                keep_aspect_on_resize(window, *size);
+            }
+            tauri::WindowEvent::CloseRequested { api, .. } => match window.label() {
                 // 設定ウィンドウは閉じずに隠す。破棄してしまうと
                 // 開き直すたびに作り直しになり、閉じ忘れるとアプリが残り続ける
                 "settings" => {
@@ -1499,13 +1624,14 @@ pub fn run() {
                 }
                 // 本体を閉じたらアプリごと終了する（非表示の設定ウィンドウが
                 // 残っていても終了できるようにする）。
-                // 閉じる直前の大きさは次回「固定」で開くときのために覚えておく
+                // 閉じる直前の大きさと場所は、次回ここから開くために覚えておく
                 "main" => {
                     save_window_state(window);
                     window.app_handle().exit(0);
                 }
                 _ => {}
-            }
+            },
+            _ => {}
         })
         .setup(|app| {
             // ログの出力先が AppHandle 依存なので、ここで初めて登録できる。
@@ -1539,6 +1665,7 @@ pub fn run() {
         .manage(StartupFile(Mutex::new(startup_file_from_args())))
         .manage(ArchiveCache(Mutex::new(None)))
         .manage(PendingPosition(Mutex::new(None)))
+        .manage(AspectLock(Mutex::new(AspectState::default())))
         .manage(FolderWatcher(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             list_images,
@@ -1551,6 +1678,7 @@ pub fn run() {
             reveal_in_file_manager,
             open_log_folder,
             fit_window_to_image,
+            set_aspect_lock,
             delete_image,
             watch_folder
         ])
