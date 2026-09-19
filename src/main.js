@@ -120,12 +120,43 @@ function setFitMode() {
   img.className = "fit";
   img.style.transform = "";
   img.style.position = "";
+  unfreezeImageSize();
   stage.setAttribute("data-tauri-drag-region", "");
   stage.classList.remove("panning");
 }
 
+// ---- ウィンドウのサイズ変更中は画像を据え置く ----
+// ドラッグの間じゅう画像を拡大縮小し直すと、そのたびに描き直しになって重く、
+// 絵が揺れて見える。手を離してウィンドウの大きさが決まってから合わせ直す
+// （「画像に合わせる」のときだけ。ウィンドウの形が画像と揃っているので、
+// 据え置いても最後に合わせ直せば同じ見た目に落ち着く）
+let frozenSize = false;
+// 画像を切り替えて自分でウィンドウを合わせ直したあと、手で変えたのではないと
+// みなす時間。この間は据え置かず、ウィンドウと一緒に画像も合わせる
+const SELF_RESIZE_MS = 400;
+let selfResizedAt = 0;
+
+function freezeImageSize() {
+  if (frozenSize || mode !== "fit" || !img.naturalWidth) return;
+  const rect = img.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  img.style.width = `${rect.width}px`;
+  img.style.height = `${rect.height}px`;
+  img.classList.add("frozen");
+  frozenSize = true;
+}
+
+function unfreezeImageSize() {
+  frozenSize = false;
+  img.style.width = "";
+  img.style.height = "";
+  img.classList.remove("frozen");
+}
+
 function enterZoomMode() {
   if (mode === "zoom" || !img.src || !img.naturalWidth) return;
+  // 据え置き中なら先に戻す（据え置きの大きさから倍率を出すと二重にかかる）
+  unfreezeImageSize();
   const rect = img.getBoundingClientRect();
   scale = rect.width / img.naturalWidth;
   tx = rect.left;
@@ -229,10 +260,28 @@ function onImageReady(run) {
   else img.addEventListener("load", run, { once: true });
 }
 
-// 「画像に合わせる」のとき、余白が出ないようウィンドウを画像の縦横比に合わせる
+function fitsToImage() {
+  return settings.windowSizeMode === "image";
+}
+
+// 「画像に合わせる」のとき、ウィンドウの縦横比を表示中の画像に固定する。
+// 以後は端や角をドラッグしている最中も Rust 側が縦横比を保つ。
+// 「自由に変更」や画像を開いていないときは解除する
+function syncAspectLock() {
+  const locked = fitsToImage() && index >= 0 && img.naturalWidth && img.naturalHeight;
+  return invoke("set_aspect_lock", {
+    ratio: locked ? img.naturalWidth / img.naturalHeight : null,
+  }).catch(() => {});
+}
+
+// 「画像に合わせる」のとき、余白が出ないようウィンドウを画像の縦横比に合わせる。
+// 大きさ（広さ）は Rust 側が覚えていて、手でサイズを変えたときだけ変わる
 async function fitWindowToImage() {
-  if (settings.windowSizeMode !== "flexible") return;
+  await syncAspectLock();
+  if (!fitsToImage()) return;
   if (!img.naturalWidth || !img.naturalHeight) return;
+  // 自分で変えている間の印。サイズ変更の通知は invoke の前後どちらでも届きうる
+  selfResizedAt = Date.now();
   try {
     await invoke("fit_window_to_image", {
       width: img.naturalWidth,
@@ -241,6 +290,7 @@ async function fitWindowToImage() {
   } catch (e) {
     showError(e);
   }
+  selfResizedAt = Date.now();
 }
 
 // 設定「画像を開いたときの表示」が等倍なら 100% で表示する
@@ -303,6 +353,7 @@ function clearView() {
   setFitMode();
   placeholder.hidden = false;
   updateChrome();
+  syncAspectLock();
 }
 
 function step(delta) {
@@ -701,14 +752,27 @@ btnMax.addEventListener("click", () => {
   appWindow.toggleMaximize().then(syncMaximized).catch(() => {});
 });
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
+// サイズ変更が落ち着いたときの後始末。ドラッグ中は何度も届くので 1 回だけ行う。
 // タイトルバーのダブルクリックや OS 側の操作でも最大化の状態は変わるので、
-// 大きさが変わったタイミングで見た目（アイコン）を合わせ直す。
-// ドラッグでのサイズ変更中は何度も届くので、落ち着いてから 1 回だけ確かめる
-let maximizedTimer = null;
+// 見た目（アイコン）を合わせ直し、「画像に合わせる」では縦横比の基準を
+// 今の大きさに取り直す（ドラッグ中、OS は掴んだときの大きさを基準に
+// 動かし続けるので、終わったところで実際の大きさに戻しておく）。
+// 縦横比を保つこと自体は Rust 側の仕事で、ここでは何もしない
+const RESIZE_SETTLE_MS = 200;
+let resizeTimer = null;
+
+function onResizeSettled() {
+  unfreezeImageSize();
+  syncMaximized();
+  syncAspectLock();
+}
+
 appWindow
   .onResized(() => {
-    clearTimeout(maximizedTimer);
-    maximizedTimer = setTimeout(syncMaximized, 120);
+    // 「画像に合わせる」で手でサイズを変えている間だけ、画像を据え置く
+    if (fitsToImage() && Date.now() - selfResizedAt > SELF_RESIZE_MS) freezeImageSize();
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(onResizeSettled, RESIZE_SETTLE_MS);
   })
   .catch(() => {});
 syncMaximized();
@@ -903,7 +967,7 @@ listen("settings-changed", (event) => {
   const previousMode = settings.windowSizeMode;
   settings = normalizeSettings(event.payload);
   applySettings();
-  // 「画像に合わせる」に切り替えた直後は、表示中の画像に合わせておく
+  // 「画像に合わせる」に切り替えた直後は、今の大きさを基準に縦横比だけ合わせる
   if (settings.windowSizeMode !== previousMode) fitWindowToImage();
 });
 

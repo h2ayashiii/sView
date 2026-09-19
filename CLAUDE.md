@@ -104,11 +104,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - Both `settings.json` and `window.json` live in `config_dir()/sview` (`CONFIG_DIR_NAME` in
   `lib.rs`), **not** in Tauri's `app_config_dir()` — the folder name is deliberately kept
   independent of the bundle identifier. "Reset to defaults" only touches `settings.json`.
-  `window.json` holds size and position: the position is restored in both size modes (skipped
-  when it lands on no connected monitor, otherwise clamped into that monitor's work area); the
-  size only in "fixed". In "flexible" mode the first `fit_window_to_image` after startup anchors
-  the window at the saved top-left (`PendingPosition`) instead of keeping the placeholder
-  window's center. Logs go to a `logs/` subfolder of the same directory.
+  `window.json` holds size and position, and **both are restored in both size modes** — the
+  window always reopens where and how it was left (the position is skipped when it lands on no
+  connected monitor, otherwise clamped into that monitor's work area). In "image" mode the first
+  `fit_window_to_image` after startup only corrects the aspect ratio, and anchors the window at
+  the saved top-left (`PendingPosition`) instead of recentering.
+  Logs go to a `logs/` subfolder of the same directory.
 - `fit_window_to_image` does its position math in **physical** pixels and on the **outer**
   size. On Windows a frameless window's outer rect is larger than its client rect by the
   invisible shadow border, so mixing outer and inner sizes drifts the window a few pixels
@@ -132,9 +133,45 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - `main.js` can write `settings.json` too (the "今後確認しない" checkbox → `saveSettings()`), so
   `settings.js` listens for `settings-changed` and re-renders — but only when the settings window
   is unfocused, otherwise its own emit echoes back and fights a slider being dragged.
-- Maximizing interacts with the window-size logic: `fit_window_to_image` returns early while
-  maximized (resizing would silently un-maximize), and `save_window_state` skips minimized *and*
-  maximized windows so `window.json` keeps the restored geometry.
+- `windowSizeMode` is `"free"` or `"image"`; `"fixed"` / `"flexible"` are the 0.1-era values and
+  are still read — `LEGACY_VALUES` in `settings-defs.js` maps them for the frontend, and
+  `fits_window_to_image()` accepts `"flexible"` on the Rust side (Rust reads `settings.json`
+  raw, so it never sees the frontend's mapping).
+- In `"image"` mode only the **aspect ratio** comes from the image; the size does not.
+  `sized_to_aspect` turns an area (logical px²) plus the aspect into a size, so paging between
+  portrait and landscape keeps the window equally big. That area lives in `AspectLock` on the
+  Rust side and is rewritten **only** by a real resize, never recomputed from the live window —
+  otherwise the one clamp that does exist would shrink the window for good.
+- The "fit on screen" clamp (`screen_limit`, `SCREEN_RATIO` = 95% of the work area) runs **once
+  per launch**: `StartupFit` is consumed by the first `fit_window_to_image`, so a restored window
+  still lands on screen when the monitor setup changed, and nothing fights the user's own size
+  afterwards. A drag (`keep_aspect_on_resize`) is never clamped, so a tall image can end up
+  sized past the bottom of the screen — that is deliberate.
+- The aspect lock is enforced in `WindowEvent::Resized` (`keep_aspect_on_resize`), which also
+  arrives mid-drag, so the window can only be dragged along the image's ratio. Tauri exposes no
+  native aspect hint (no `WM_SIZING` / `setAspectRatio:` / GTK geometry hints), so this is a
+  correct-it-as-it-arrives loop, and two details keep it from misbehaving: write
+  `AspectLock.last` **before** calling `set_size` (on Windows the event can come back
+  synchronously, and a size equal to `last` is how the echo is recognised), and **drop the
+  mutex guard before** `set_size` — holding it across that call deadlocks on the re-entrant
+  event. The frontend only sets the ratio (`set_aspect_lock`, from `syncAspectLock`) and leaves
+  the geometry alone.
+- While a drag is in flight the image keeps its pixel size (`#image.frozen` plus an inline
+  width/height captured on the first resize event) and is re-fitted only once `onResized` goes
+  quiet — re-laying out the image on every frame is what made a drag feel heavy. `setFitMode`
+  and `enterZoomMode` both thaw it, the latter because a zoom factor derived from the frozen
+  size would apply twice. A resize we caused ourselves (`selfResizedAt`, `SELF_RESIZE_MS`) is
+  not frozen, so paging images does not leave the picture a step behind the window.
+- Which edge is being dragged is decided against `AspectLock.reported` — the size the OS last
+  announced — **never** against the size we applied. A drag keeps reporting from the rect the
+  window had when it was grabbed, so it re-sends the other axis unchanged; measuring against our
+  own correction instead makes the axis flip every other event and the window snap back to where
+  the drag started (it looks like "it shrinks but won't grow"). `syncAspectLock` on the
+  resize-settled timer puts the baseline back on the real size once a drag ends.
+- Maximizing and fullscreen interact with the window-size logic: `fit_window_to_image` and
+  `keep_aspect_on_resize` both return early in those states (and while minimized), since
+  resizing would silently drop out of them, and `save_window_state` skips those windows too so
+  `window.json` keeps the ordinary geometry.
 - The Windows installer is `installMode: "perMachine"`: NSIS gets `RequestExecutionLevel admin`, so it
   asks for UAC on launch and defaults to `C:\Program Files\sView` (HKLM, all-users shortcuts and
   file associations). It used to be per-user (`%LOCALAPPDATA%`), so `installer-hooks.nsh` silently

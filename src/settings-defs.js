@@ -24,13 +24,6 @@ const SETTINGS_SECTIONS = [
         default: 97,
       },
       {
-        key: "roundedCorners",
-        label: "ウィンドウの角を丸くする",
-        hint: "オフにすると四角いウィンドウになります",
-        type: "toggle",
-        default: true,
-      },
-      {
         key: "showFilename",
         label: "ファイル名を表示する",
         hint: "マウスを動かしたときに左下へ出るファイル名と、右下の枚数表示です",
@@ -47,13 +40,51 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
+    id: "window",
+    label: "ウィンドウ",
+    items: [
+      {
+        key: "windowSizeMode",
+        label: "ウィンドウのサイズ",
+        hint:
+          "「自由に変更」は縦横どちらにも自由に広げられ、画像を切り替えても大きさは変わりません。" +
+          "「画像に合わせる」は余白が出ないよう、表示中の画像の縦横比にウィンドウの形を合わせます" +
+          "（端や角をドラッグしても縦横比のまま変わります。立ち上げて最初に開くときだけ、" +
+          "画面に収まるよう 95% までに抑えます）。" +
+          "どちらでも、開いたときの大きさと位置は前回閉じたときのものです。",
+        type: "select",
+        options: [
+          ["free", "自由に変更"],
+          ["image", "画像に合わせる"],
+        ],
+        default: "free",
+      },
+      {
+        key: "roundedCorners",
+        label: "ウィンドウの角を丸くする",
+        hint: "オフにすると四角いウィンドウになります。最大化している間は常に四角です",
+        type: "toggle",
+        default: true,
+      },
+      {
+        key: "alwaysOnTop",
+        label: "常に最前面に表示する",
+        hint: "他のアプリの後ろに隠れなくなります",
+        type: "toggle",
+        default: false,
+      },
+    ],
+  },
+  {
     id: "view",
     label: "表示",
     items: [
       {
         key: "startupZoom",
-        label: "画像を開いたときの表示",
-        hint: "「ウィンドウに合わせる」でも、画像がウィンドウより小さい場合は元の大きさのまま表示します",
+        label: "画像を開いたときの表示倍率",
+        hint:
+          "画像を開いた直後の見え方です。「ウィンドウに合わせる」でも、" +
+          "画像がウィンドウより小さい場合は元の大きさのまま表示します",
         type: "select",
         options: [
           ["fit", "ウィンドウに合わせる"],
@@ -78,33 +109,6 @@ const SETTINGS_SECTIONS = [
         hint: "めくりが速くなりますが、メモリを少し多く使います",
         type: "toggle",
         default: true,
-      },
-    ],
-  },
-  {
-    id: "window",
-    label: "ウィンドウ",
-    items: [
-      {
-        key: "windowSizeMode",
-        label: "開いたときのウィンドウサイズ",
-        hint:
-          "「固定」は前回閉じたときの大きさで開き、画像を変えても大きさは変わりません（手動でのサイズ変更は自由です）。" +
-          "「画像に合わせる」は余白が出ないよう画像ごとにウィンドウの大きさを合わせ、大きい画像は画面の高さの 90% に収めます。" +
-          "ウィンドウの位置はどちらでも前回閉じたときの場所で開きます。",
-        type: "select",
-        options: [
-          ["fixed", "固定（前回の大きさ）"],
-          ["flexible", "画像に合わせる"],
-        ],
-        default: "fixed",
-      },
-      {
-        key: "alwaysOnTop",
-        label: "常に最前面に表示する",
-        hint: "他のアプリの後ろに隠れなくなります",
-        type: "toggle",
-        default: false,
       },
     ],
   },
@@ -198,7 +202,19 @@ const SETTINGS_DEFAULTS = Object.fromEntries(
   )
 );
 
+// 選択肢の名前を変えたときの読み替え表（古い settings.json をそのまま読めるようにする）。
+// windowSizeMode: 0.1 系までは "fixed" / "flexible" だった
+const LEGACY_VALUES = {
+  windowSizeMode: { fixed: "free", flexible: "image" },
+};
+
 // 保存値に既定値を補い、欠けたキーのない設定オブジェクトを作る
 function normalizeSettings(raw) {
-  return { ...SETTINGS_DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
+  const settings = { ...SETTINGS_DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
+  for (const [key, table] of Object.entries(LEGACY_VALUES)) {
+    const value = settings[key];
+    // 継承したプロパティ（"constructor" など）を拾わないよう自前の値だけ見る
+    if (Object.prototype.hasOwnProperty.call(table, value)) settings[key] = table[value];
+  }
+  return settings;
 }
