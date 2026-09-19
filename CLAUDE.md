@@ -141,7 +141,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `sized_to_aspect` turns an area (logical px²) plus the aspect into a size, so paging between
   portrait and landscape keeps the window equally big. That area lives in `AspectLock` on the
   Rust side and is rewritten **only** by a real resize — recomputing it from the live window on
-  every fit would let the `SCREEN_RATIO` clamp shrink the window a little on every tall image.
+  every fit would let the work-area clamp shrink the window a little on every tall image.
 - The aspect lock is enforced in `WindowEvent::Resized` (`keep_aspect_on_resize`), which also
   arrives mid-drag, so the window can only be dragged along the image's ratio. Tauri exposes no
   native aspect hint (no `WM_SIZING` / `setAspectRatio:` / GTK geometry hints), so this is a
@@ -151,6 +151,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   mutex guard before** `set_size` — holding it across that call deadlocks on the re-entrant
   event. The frontend only sets the ratio (`set_aspect_lock`, from `syncAspectLock`) and leaves
   the geometry alone.
+- Which edge is being dragged is decided against `AspectLock.reported` — the size the OS last
+  announced — **never** against the size we applied. A drag keeps reporting from the rect the
+  window had when it was grabbed, so it re-sends the other axis unchanged; measuring against our
+  own correction instead makes the axis flip every other event and the window snap back to where
+  the drag started (it looks like "it shrinks but won't grow"). `syncAspectLock` on the
+  resize-settled timer puts the baseline back on the real size once a drag ends.
 - Maximizing and fullscreen interact with the window-size logic: `fit_window_to_image` and
   `keep_aspect_on_resize` both return early in those states (and while minimized), since
   resizing would silently drop out of them, and `save_window_state` skips those windows too so

@@ -63,9 +63,13 @@ struct PendingPosition(Mutex<Option<RestoredPosition>>);
 struct AspectState {
     /// 固定する縦横比（横 / 縦）。None のときは固定しない
     ratio: Option<f64>,
-    /// 直前に受け取った、または自分で直した大きさ（物理ピクセル）。
-    /// どの辺が引っ張られたかの判断と、自分の set_size の跳ね返りを見分けるのに使う
+    /// 自分で直した大きさ（物理ピクセル）。その跳ね返りを見分けるのに使う
     last: PhysicalSize<u32>,
+    /// OS が最後に知らせてきた大きさ（物理ピクセル）。
+    /// ドラッグの最中、OS は掴んだときの大きさを基準に動かし続け、こちらが
+    /// 直した大きさは見ていない。どの辺が引っ張られたかは、実際の大きさではなく
+    /// 「前に知らせてきた大きさ」と比べないと分からない
+    reported: PhysicalSize<u32>,
     /// 画像を切り替えても保つ広さ（論理ピクセルの面積）。
     /// 手で大きさを変えたときだけ更新する
     area: f64,
@@ -1157,15 +1161,12 @@ fn restore_window_state(window: &tauri::Window) {
     }
 }
 
-/// ウィンドウを収める、作業領域に対する割合。
-/// 画面いっぱいにしたいときは最大化や全画面表示を使う
-const SCREEN_RATIO: f64 = 0.9;
-
-/// ウィンドウの大きさの上限（論理ピクセル）。作業領域が分からないときは制限しない
+/// ウィンドウの大きさの上限（論理ピクセル）。画面（タスクバーなどを除いた
+/// 作業領域）からはみ出させないためのもので、作業領域が分からないときは制限しない
 fn screen_limit(work_area: Option<Area>, scale: f64) -> (f64, f64) {
     work_area
         .map(|a| a.to_logical(scale))
-        .map(|a| (a.width * SCREEN_RATIO, a.height * SCREEN_RATIO))
+        .map(|a| (a.width, a.height))
         .unwrap_or((f64::INFINITY, f64::INFINITY))
 }
 
@@ -1215,7 +1216,9 @@ fn set_aspect_lock(window: WebviewWindow, lock: State<AspectLock>, ratio: Option
     state.ratio = Some(ratio);
     if let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) {
         // 引っ張られた辺を判断する基準。ここから動いた分を見る
+        // （ドラッグが終わったあとも呼ばれ、基準を実際の大きさに戻す）
         state.last = size;
+        state.reported = size;
         // 広さは覚えていればそのまま使う（画像ごとに取り直すと、画面に収める
         // 丸め込みのぶんだけ縦長の画像のたびに少しずつ縮んでしまう）
         if state.area <= 0.0 {
@@ -1251,6 +1254,11 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
     let Some(ratio) = state.ratio else {
         return;
     };
+    // 最小化すると 0 を知らせてくる OS があるので、大きさの無い通知は捨てる
+    // （そのまま計算すると、戻したときに最小サイズのウィンドウになってしまう）
+    if size.width == 0 || size.height == 0 {
+        return;
+    }
     // 最小化中・最大化中・全画面中は普段の姿ではないので、覚えている大きさも触らない
     if window.is_minimized().unwrap_or(false)
         || window.is_maximized().unwrap_or(false)
@@ -1266,7 +1274,8 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
         return;
     };
     let now = size.to_logical::<f64>(scale);
-    let before = state.last.to_logical::<f64>(scale);
+    let before = state.reported.to_logical::<f64>(scale);
+    state.reported = size;
     let area = dragged_area(now, before, ratio);
     let limit = screen_limit(current_work_area(window), scale);
     let (width, height) = sized_to_aspect(ratio, area, limit);
@@ -1293,7 +1302,7 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
 /// ウィンドウを画像の縦横比に合わせる（「画像に合わせる」のとき）。
 /// 大きさは set_aspect_lock が覚えている広さを保ち、縦横比だけを画像に合わせるので、
 /// 画像を切り替えても、手でサイズを変えたあとも、大きさの印象は変わらない。
-/// 作業領域（タスクバーなどを除いた画面）の 90% に収まらないときは、
+/// 作業領域（タスクバーなどを除いた画面）に収まらないときは、
 /// 縦横比を保ったまま縮める。
 /// 大きさを変えても中心は動かさず、作業領域からはみ出す分は中へ寄せる。
 /// 起動して最初の 1 枚だけは、前回閉じたときと同じ左上に合わせる。
@@ -1361,6 +1370,7 @@ fn fit_window_to_image(
     // set_size の跳ね返りを手動のサイズ変更と取り違えないよう、先に大きさだけ覚える
     if let Ok(mut state) = lock.0.lock() {
         state.last = new_inner;
+        state.reported = new_inner;
     }
     // 既に縦横比どおりなら何もしない
     if before.map(|(_, _, inner)| inner) == Some(new_inner) && anchor.is_none() {

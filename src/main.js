@@ -718,16 +718,24 @@ btnMax.addEventListener("click", () => {
   appWindow.toggleMaximize().then(syncMaximized).catch(() => {});
 });
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
+// サイズ変更が落ち着いたときの後始末。ドラッグ中は何度も届くので 1 回だけ行う。
 // タイトルバーのダブルクリックや OS 側の操作でも最大化の状態は変わるので、
-// 大きさが変わったタイミングで見た目（アイコン）を合わせ直す。
-// ドラッグでのサイズ変更中は何度も届くので、落ち着いてから 1 回だけ確かめる
-// （縦横比を保つのは Rust 側の仕事で、ここでは何もしない）
-const RESIZE_SETTLE_MS = 120;
+// 見た目（アイコン）を合わせ直し、「画像に合わせる」では縦横比の基準を
+// 今の大きさに取り直す（ドラッグ中、OS は掴んだときの大きさを基準に
+// 動かし続けるので、終わったところで実際の大きさに戻しておく）。
+// 縦横比を保つこと自体は Rust 側の仕事で、ここでは何もしない
+const RESIZE_SETTLE_MS = 200;
 let resizeTimer = null;
+
+function onResizeSettled() {
+  syncMaximized();
+  syncAspectLock();
+}
+
 appWindow
   .onResized(() => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(syncMaximized, RESIZE_SETTLE_MS);
+    resizeTimer = setTimeout(onResizeSettled, RESIZE_SETTLE_MS);
   })
   .catch(() => {});
 syncMaximized();
