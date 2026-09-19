@@ -140,8 +140,13 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - In `"image"` mode only the **aspect ratio** comes from the image; the size does not.
   `sized_to_aspect` turns an area (logical px²) plus the aspect into a size, so paging between
   portrait and landscape keeps the window equally big. That area lives in `AspectLock` on the
-  Rust side and is rewritten **only** by a real resize — recomputing it from the live window on
-  every fit would let the work-area clamp shrink the window a little on every tall image.
+  Rust side and is rewritten **only** by a real resize, never recomputed from the live window —
+  otherwise the one clamp that does exist would shrink the window for good.
+- The "fit on screen" clamp (`screen_limit`, `SCREEN_RATIO` = 95% of the work area) runs **once
+  per launch**: `StartupFit` is consumed by the first `fit_window_to_image`, so a restored window
+  still lands on screen when the monitor setup changed, and nothing fights the user's own size
+  afterwards. A drag (`keep_aspect_on_resize`) is never clamped, so a tall image can end up
+  sized past the bottom of the screen — that is deliberate.
 - The aspect lock is enforced in `WindowEvent::Resized` (`keep_aspect_on_resize`), which also
   arrives mid-drag, so the window can only be dragged along the image's ratio. Tauri exposes no
   native aspect hint (no `WM_SIZING` / `setAspectRatio:` / GTK geometry hints), so this is a

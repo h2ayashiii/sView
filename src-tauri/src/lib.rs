@@ -57,6 +57,11 @@ struct RestoredPosition {
 }
 struct PendingPosition(Mutex<Option<RestoredPosition>>);
 
+/// 画面に収まる大きさへ抑えるのは、立ち上げてから最初にウィンドウを開くときだけ。
+/// true の間がその 1 回で、済ませたら false にして、終了するまで戻さない
+/// （動かしている間は、ユーザーが決めた大きさをそのまま尊重する）
+struct StartupFit(Mutex<bool>);
+
 /// 「画像に合わせる」で、ウィンドウを画像の縦横比から外させないための覚え書き。
 /// ドラッグの最中も含め、大きさが変わるたびに参照する
 #[derive(Default)]
@@ -1161,13 +1166,21 @@ fn restore_window_state(window: &tauri::Window) {
     }
 }
 
-/// ウィンドウの大きさの上限（論理ピクセル）。画面（タスクバーなどを除いた
-/// 作業領域）からはみ出させないためのもので、作業領域が分からないときは制限しない
+/// 立ち上げて最初に開くときの、ウィンドウの大きさの上限（作業領域に対する割合）。
+/// 画面ぎりぎりではなく少し余裕を残す
+const SCREEN_RATIO: f64 = 0.95;
+
+/// 大きさの制限なし（sized_to_aspect の limit に渡す）
+const NO_LIMIT: (f64, f64) = (f64::INFINITY, f64::INFINITY);
+
+/// 立ち上げて最初に開くときの、ウィンドウの大きさの上限（論理ピクセル）。
+/// 画面（タスクバーなどを除いた作業領域）からはみ出させないためのもので、
+/// 作業領域が分からないときは制限しない
 fn screen_limit(work_area: Option<Area>, scale: f64) -> (f64, f64) {
     work_area
         .map(|a| a.to_logical(scale))
-        .map(|a| (a.width, a.height))
-        .unwrap_or((f64::INFINITY, f64::INFINITY))
+        .map(|a| (a.width * SCREEN_RATIO, a.height * SCREEN_RATIO))
+        .unwrap_or(NO_LIMIT)
 }
 
 /// 今のディスプレイの作業領域（物理ピクセル）。取得できないときは None
@@ -1277,8 +1290,8 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
     let before = state.reported.to_logical::<f64>(scale);
     state.reported = size;
     let area = dragged_area(now, before, ratio);
-    let limit = screen_limit(current_work_area(window), scale);
-    let (width, height) = sized_to_aspect(ratio, area, limit);
+    // 手で変えている間は画面に収める判定をしない（引っ張った先で止められない）
+    let (width, height) = sized_to_aspect(ratio, area, NO_LIMIT);
     let fixed: PhysicalSize<u32> = LogicalSize::new(width, height).to_physical(scale);
 
     // 1 ピクセルのずれは OS 側の丸めなので、直しに行かずそのまま受け入れる
@@ -1302,16 +1315,16 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
 /// ウィンドウを画像の縦横比に合わせる（「画像に合わせる」のとき）。
 /// 大きさは set_aspect_lock が覚えている広さを保ち、縦横比だけを画像に合わせるので、
 /// 画像を切り替えても、手でサイズを変えたあとも、大きさの印象は変わらない。
-/// 作業領域（タスクバーなどを除いた画面）に収まらないときは、
-/// 縦横比を保ったまま縮める。
 /// 大きさを変えても中心は動かさず、作業領域からはみ出す分は中へ寄せる。
-/// 起動して最初の 1 枚だけは、前回閉じたときと同じ左上に合わせる。
+/// 立ち上げて最初の 1 枚だけは、作業領域（タスクバーなどを除いた画面）の 95% に
+/// 収まるよう縦横比を保ったまま縮め、前回閉じたときと同じ左上に合わせる。
 /// 最大化中・全画面中は大きさを変えない（変えると解けてしまう）
 #[tauri::command]
 fn fit_window_to_image(
     window: WebviewWindow,
     pending: State<PendingPosition>,
     lock: State<AspectLock>,
+    startup: State<StartupFit>,
     width: f64,
     height: f64,
 ) -> Result<(), String> {
@@ -1343,7 +1356,18 @@ fn fit_window_to_image(
     };
 
     let work_area = current_work_area(&window.as_ref().window());
-    let limit = screen_limit(work_area, scale);
+    // 画面に収めるのは立ち上げて最初の 1 枚だけ。前回のディスプレイ構成が
+    // 変わっていても画面内に開くための保険で、以後は口を出さない
+    let first = startup
+        .0
+        .lock()
+        .map(|mut first| std::mem::replace(&mut *first, false))
+        .unwrap_or(false);
+    let limit = if first {
+        screen_limit(work_area, scale)
+    } else {
+        NO_LIMIT
+    };
     let (w, h) = sized_to_aspect(width / height, area, limit);
     let new_inner: PhysicalSize<u32> = LogicalSize::new(w, h).to_physical(scale);
 
@@ -1676,6 +1700,7 @@ pub fn run() {
         .manage(ArchiveCache(Mutex::new(None)))
         .manage(PendingPosition(Mutex::new(None)))
         .manage(AspectLock(Mutex::new(AspectState::default())))
+        .manage(StartupFit(Mutex::new(true)))
         .manage(FolderWatcher(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             list_images,
