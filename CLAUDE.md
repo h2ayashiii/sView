@@ -156,6 +156,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   mutex guard before** `set_size` — holding it across that call deadlocks on the re-entrant
   event. The frontend only sets the ratio (`set_aspect_lock`, from `syncAspectLock`) and leaves
   the geometry alone.
+- While a drag is in flight the image keeps its pixel size (`#image.frozen` plus an inline
+  width/height captured on the first resize event) and is re-fitted only once `onResized` goes
+  quiet — re-laying out the image on every frame is what made a drag feel heavy. `setFitMode`
+  and `enterZoomMode` both thaw it, the latter because a zoom factor derived from the frozen
+  size would apply twice. A resize we caused ourselves (`selfResizedAt`, `SELF_RESIZE_MS`) is
+  not frozen, so paging images does not leave the picture a step behind the window.
 - Which edge is being dragged is decided against `AspectLock.reported` — the size the OS last
   announced — **never** against the size we applied. A drag keeps reporting from the rect the
   window had when it was grabbed, so it re-sends the other axis unchanged; measuring against our

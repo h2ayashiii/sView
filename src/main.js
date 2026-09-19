@@ -120,12 +120,43 @@ function setFitMode() {
   img.className = "fit";
   img.style.transform = "";
   img.style.position = "";
+  unfreezeImageSize();
   stage.setAttribute("data-tauri-drag-region", "");
   stage.classList.remove("panning");
 }
 
+// ---- ウィンドウのサイズ変更中は画像を据え置く ----
+// ドラッグの間じゅう画像を拡大縮小し直すと、そのたびに描き直しになって重く、
+// 絵が揺れて見える。手を離してウィンドウの大きさが決まってから合わせ直す
+// （「画像に合わせる」のときだけ。ウィンドウの形が画像と揃っているので、
+// 据え置いても最後に合わせ直せば同じ見た目に落ち着く）
+let frozenSize = false;
+// 画像を切り替えて自分でウィンドウを合わせ直したあと、手で変えたのではないと
+// みなす時間。この間は据え置かず、ウィンドウと一緒に画像も合わせる
+const SELF_RESIZE_MS = 400;
+let selfResizedAt = 0;
+
+function freezeImageSize() {
+  if (frozenSize || mode !== "fit" || !img.naturalWidth) return;
+  const rect = img.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  img.style.width = `${rect.width}px`;
+  img.style.height = `${rect.height}px`;
+  img.classList.add("frozen");
+  frozenSize = true;
+}
+
+function unfreezeImageSize() {
+  frozenSize = false;
+  img.style.width = "";
+  img.style.height = "";
+  img.classList.remove("frozen");
+}
+
 function enterZoomMode() {
   if (mode === "zoom" || !img.src || !img.naturalWidth) return;
+  // 据え置き中なら先に戻す（据え置きの大きさから倍率を出すと二重にかかる）
+  unfreezeImageSize();
   const rect = img.getBoundingClientRect();
   scale = rect.width / img.naturalWidth;
   tx = rect.left;
@@ -249,6 +280,8 @@ async function fitWindowToImage() {
   await syncAspectLock();
   if (!fitsToImage()) return;
   if (!img.naturalWidth || !img.naturalHeight) return;
+  // 自分で変えている間の印。サイズ変更の通知は invoke の前後どちらでも届きうる
+  selfResizedAt = Date.now();
   try {
     await invoke("fit_window_to_image", {
       width: img.naturalWidth,
@@ -257,6 +290,7 @@ async function fitWindowToImage() {
   } catch (e) {
     showError(e);
   }
+  selfResizedAt = Date.now();
 }
 
 // 設定「画像を開いたときの表示」が等倍なら 100% で表示する
@@ -728,12 +762,15 @@ const RESIZE_SETTLE_MS = 200;
 let resizeTimer = null;
 
 function onResizeSettled() {
+  unfreezeImageSize();
   syncMaximized();
   syncAspectLock();
 }
 
 appWindow
   .onResized(() => {
+    // 「画像に合わせる」で手でサイズを変えている間だけ、画像を据え置く
+    if (fitsToImage() && Date.now() - selfResizedAt > SELF_RESIZE_MS) freezeImageSize();
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(onResizeSettled, RESIZE_SETTLE_MS);
   })

@@ -55,6 +55,13 @@ body {
   object-fit: contain;
 }
 
+/* ウィンドウをドラッグしている間、画像の大きさを据え置くための状態。
+   大きさは JS が px で入れるので、フィットの上限は外す（.fit より後に置く） */
+#image.frozen {
+  max-width: none;
+  max-height: none;
+}
+
 #placeholder {
   color: #9a9aa2;
   text-align: center;
