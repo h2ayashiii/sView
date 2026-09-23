@@ -96,8 +96,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `IMAGE_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` (`src/main.js`),
   `fileAssociations` (`tauri.conf.json`). The `supported_extensions_stay_in_sync` test reads
   `main.js` and `tauri.conf.json` and fails when they drift, so `cargo test` catches it.
-  The one deliberate difference: `ARCHIVE_EXTS` includes `zip`, but only `cbz` is file-associated
-  (taking `.zip` from archivers would be hostile). `.zip` still opens via drag & drop and `O`.
+  Archives (`ARCHIVE_EXTS`: `zip` / `cbz`) are deliberately **not** file-associated, neither by the
+  installer nor from the settings window; they open via drag & drop, `O` and the command line.
 - Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
   `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
   into `settings.json`.

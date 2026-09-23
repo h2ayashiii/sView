@@ -525,9 +525,15 @@ mod tests {
             archives,
             "main.js の ARCHIVE_EXT_FILTER が ARCHIVE_EXTS とずれています"
         );
-        // 書庫は zip も開けるが、OS の関連付けは cbz だけにしている。
-        // zip を取ると解凍ソフトと取り合いになるため（ドラッグ＆ドロップと O キーでは開ける）
-        assert_eq!(association("Comic Book Archive"), vec!["cbz"]);
+        // 書庫は開けるが OS には関連付けない（ドラッグ＆ドロップと O キーで開く）。
+        // 関連付けは画像の 1 件だけ
+        assert_eq!(
+            conf["bundle"]["fileAssociations"]
+                .as_array()
+                .map(|a| a.len()),
+            Some(1),
+            "tauri.conf.json の fileAssociations は画像の 1 件だけにします"
+        );
     }
 
     #[test]
