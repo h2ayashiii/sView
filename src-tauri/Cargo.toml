@@ -30,6 +30,10 @@ notify = "8"
 # 一覧する API だけなので、既定機能を切って依存を増やさない
 trash = { version = "5", default-features = false, features = ["coinit_apartmentthreaded"] }
 
+# 拡張子の関連付け（Windows のレジストリ操作）
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 # 軽量化: リリースバイナリを最小化
 [profile.release]
 codegen-units = 1

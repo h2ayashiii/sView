@@ -184,6 +184,14 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `%LOCALAPPDATA%\sview` (`webview_data_dir()`). macOS (WKWebView) cannot set it — the OS derives
   `~/Library/WebKit/<bundle id>` and `~/Library/Caches/<bundle id>` from the identifier — and
   WebKitGTK already defaults to `~/.local/share/sview` + `~/.cache/sview`, so both return `None`.
+- File associations from the settings window (`file_association_status` / `apply_file_associations`,
+  `type: "associations"` row in `settings-defs.js`) follow each OS's rules. Windows 8+ forbids apps
+  from setting the default (UserChoice is hash-protected), so `win_assoc` only registers sView in
+  HKCU (`sView.Image` / `sView.ComicBook` ProgIDs, `Capabilities`, `RegisteredApplications`,
+  `OpenWithProgids`) and opens `ms-settings:defaultapps?registeredAppUser=sView` for the user to
+  confirm. macOS sets it directly via `LSSetDefaultRoleHandlerForContentType` (raw FFI in
+  `mac_assoc`); there is no API to unset. Linux reports `supported: false`. The selectable list is
+  `associable_exts()` = `IMAGE_EXTS` + `cbz` (never `zip`).
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a

@@ -166,6 +166,21 @@ fn natural_cmp(a: &str, b: &str) -> Ordering {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn association_exts_are_validated_and_normalized() {
+        assert_eq!(
+            normalize_association_exts(&[".JPG".into(), "png".into(), "jpg".into(), "cbz".into()])
+                .unwrap(),
+            vec!["jpg", "png", "cbz"]
+        );
+        // zip は解凍ソフトと取り合いになるので関連付けできない
+        assert!(normalize_association_exts(&["zip".into()]).is_err());
+        assert!(normalize_association_exts(&["exe".into()]).is_err());
+        assert!(associable_exts()
+            .iter()
+            .all(|e| IMAGE_EXTS.contains(e) || *e == "cbz"));
+    }
+
     use super::*;
 
     #[test]
@@ -1638,6 +1653,416 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
     result.map_err(|e| format!("ファイルマネージャーを開けません: {e}"))
 }
 
+// ---- 拡張子の関連付け ----
+// 設定ウィンドウから、どの拡張子を sView で開くかを選んで OS に登録する。
+// OS ごとに「アプリが勝手に既定を奪えるか」が違うので、それぞれの流儀に従う:
+// - Windows 8 以降は、アプリが既定のアプリを直接書き換えることを OS が認めていない
+//   （UserChoice はハッシュで保護されている）。そこで sView を「この拡張子を開ける
+//   アプリ」として登録し、最後の選択は Windows の「既定のアプリ」画面で本人にしてもらう
+// - macOS は LaunchServices の API で既定のアプリを直接設定できる
+
+/// 関連付けの対象にできる拡張子（画像すべてと cbz）。
+/// zip は解凍ソフトと取り合いになるので選べないようにする（fileAssociations と同じ方針）
+fn associable_exts() -> Vec<&'static str> {
+    let mut exts: Vec<&str> = IMAGE_EXTS.to_vec();
+    exts.push("cbz");
+    exts
+}
+
+#[derive(serde::Serialize)]
+struct AssociationItem {
+    ext: String,
+    /// いま sView がこの拡張子の既定のアプリになっているか（調べられないときは false）
+    associated: bool,
+}
+
+#[derive(serde::Serialize)]
+struct AssociationStatus {
+    /// この OS で関連付けを変更できるか
+    supported: bool,
+    /// "windows" / "macos" / "linux" など
+    platform: String,
+    items: Vec<AssociationItem>,
+}
+
+/// 渡された拡張子を検証し、小文字にそろえる（関連付けできないものはエラー）
+fn normalize_association_exts(exts: &[String]) -> Result<Vec<String>, String> {
+    let allowed = associable_exts();
+    let mut out: Vec<String> = Vec::new();
+    for ext in exts {
+        let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+        if !allowed.contains(&ext.as_str()) {
+            return Err(format!("関連付けできない拡張子です: {ext}"));
+        }
+        if !out.contains(&ext) {
+            out.push(ext);
+        }
+    }
+    Ok(out)
+}
+
+/// 各拡張子の関連付けの状態を返す
+#[tauri::command]
+fn file_association_status(app: AppHandle) -> AssociationStatus {
+    let supported = cfg!(any(target_os = "windows", target_os = "macos"));
+    let items = associable_exts()
+        .into_iter()
+        .map(|ext| AssociationItem {
+            ext: ext.to_string(),
+            associated: supported && is_associated(&app, ext),
+        })
+        .collect();
+    AssociationStatus {
+        supported,
+        platform: std::env::consts::OS.to_string(),
+        items,
+    }
+}
+
+/// 選んだ拡張子を sView に関連付ける。戻り値は設定ウィンドウに出す案内文
+#[tauri::command]
+fn apply_file_associations(app: AppHandle, exts: Vec<String>) -> Result<String, String> {
+    let exts = normalize_association_exts(&exts)?;
+    let message = apply_associations(&app, &exts)?;
+    log::info!("拡張子の関連付けを変更しました: {exts:?}");
+    Ok(message)
+}
+
+#[cfg(target_os = "windows")]
+mod win_assoc {
+    use std::path::PathBuf;
+    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
+    use winreg::RegKey;
+
+    /// 「既定のアプリ」画面や RegisteredApplications に出る名前
+    pub const APP_NAME: &str = "sView";
+    const CAPABILITIES_KEY: &str = r"Software\sView\Capabilities";
+    const PROG_ID_IMAGE: &str = "sView.Image";
+    const PROG_ID_ARCHIVE: &str = "sView.ComicBook";
+
+    fn prog_id(ext: &str) -> &'static str {
+        if ext == "cbz" {
+            PROG_ID_ARCHIVE
+        } else {
+            PROG_ID_IMAGE
+        }
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHChangeNotify(
+            event_id: i32,
+            flags: u32,
+            item1: *const std::ffi::c_void,
+            item2: *const std::ffi::c_void,
+        );
+    }
+
+    fn reg_err(e: std::io::Error) -> String {
+        format!("レジストリに書き込めません: {e}")
+    }
+
+    fn exe_path() -> Result<PathBuf, String> {
+        std::env::current_exe().map_err(|e| format!("sView の場所が分かりません: {e}"))
+    }
+
+    /// ProgID の開くコマンドが sView の exe を指しているか
+    fn prog_id_is_ours(prog_id: &str) -> bool {
+        if prog_id.eq_ignore_ascii_case(PROG_ID_IMAGE)
+            || prog_id.eq_ignore_ascii_case(PROG_ID_ARCHIVE)
+        {
+            return true;
+        }
+        let Some(exe) = exe_path()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()))
+        else {
+            return false;
+        };
+        RegKey::predef(HKEY_CLASSES_ROOT)
+            .open_subkey(format!(r"{prog_id}\shell\open\command"))
+            .and_then(|k| k.get_value::<String, _>(""))
+            .map(|cmd| cmd.to_lowercase().contains(&exe))
+            .unwrap_or(false)
+    }
+
+    /// いまエクスプローラーがこの拡張子に使う ProgID
+    fn current_prog_id(ext: &str) -> Option<String> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let base = format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{ext}");
+        // 本人が「既定のアプリ」で選んだもの（Windows 11 の新しい版は UserChoiceLatest）
+        for sub in ["UserChoiceLatest", "UserChoice"] {
+            if let Ok(id) = hkcu
+                .open_subkey(format!(r"{base}\{sub}"))
+                .and_then(|k| k.get_value::<String, _>("ProgId"))
+            {
+                if !id.is_empty() {
+                    return Some(id);
+                }
+            }
+        }
+        // 選んでいなければ、クラス登録の既定値が使われる
+        RegKey::predef(HKEY_CLASSES_ROOT)
+            .open_subkey(format!(".{ext}"))
+            .and_then(|k| k.get_value::<String, _>(""))
+            .ok()
+            .filter(|id| !id.is_empty())
+    }
+
+    pub fn is_associated(ext: &str) -> bool {
+        current_prog_id(ext).is_some_and(|id| prog_id_is_ours(&id))
+    }
+
+    /// sView を「開けるアプリ」として登録し直す。選ばれなかった拡張子の登録は外す
+    pub fn register(exts: &[String], all: &[&str]) -> Result<(), String> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let exe = exe_path()?;
+        let exe = exe.to_string_lossy();
+
+        // ProgID（開き方）。インストーラーが HKLM に入れたものとは別に、ユーザー単位で持つ
+        for (id, name) in [
+            (PROG_ID_IMAGE, "画像ファイル (sView)"),
+            (PROG_ID_ARCHIVE, "コミック書庫 (sView)"),
+        ] {
+            let (key, _) = hkcu
+                .create_subkey(format!(r"Software\Classes\{id}"))
+                .map_err(reg_err)?;
+            key.set_value("", &name).map_err(reg_err)?;
+            let (icon, _) = key.create_subkey("DefaultIcon").map_err(reg_err)?;
+            icon.set_value("", &format!("\"{exe}\",0"))
+                .map_err(reg_err)?;
+            let (command, _) = key.create_subkey(r"shell\open\command").map_err(reg_err)?;
+            command
+                .set_value("", &format!("\"{exe}\" \"%1\""))
+                .map_err(reg_err)?;
+        }
+
+        // 「既定のアプリ」画面に sView を出すための登録（Capabilities）
+        let (caps, _) = hkcu.create_subkey(CAPABILITIES_KEY).map_err(reg_err)?;
+        caps.set_value("ApplicationName", &APP_NAME)
+            .map_err(reg_err)?;
+        caps.set_value("ApplicationDescription", &"軽量な画像ビューア")
+            .map_err(reg_err)?;
+        // 選ばれなかった拡張子を残さないよう、一覧は作り直す
+        let _ = caps.delete_subkey_all("FileAssociations");
+        let (assoc, _) = caps.create_subkey("FileAssociations").map_err(reg_err)?;
+        for ext in exts {
+            assoc
+                .set_value(format!(".{ext}"), &prog_id(ext))
+                .map_err(reg_err)?;
+        }
+        let (apps, _) = hkcu
+            .create_subkey(r"Software\RegisteredApplications")
+            .map_err(reg_err)?;
+        apps.set_value(APP_NAME, &CAPABILITIES_KEY)
+            .map_err(reg_err)?;
+
+        // 「プログラムから開く」の候補
+        for ext in all {
+            let path = format!(r"Software\Classes\.{ext}\OpenWithProgids");
+            if exts.iter().any(|e| e == ext) {
+                let (key, _) = hkcu.create_subkey(&path).map_err(reg_err)?;
+                key.set_value(prog_id(ext), &"").map_err(reg_err)?;
+            } else if let Ok(key) =
+                hkcu.open_subkey_with_flags(&path, winreg::enums::KEY_ALL_ACCESS)
+            {
+                let _ = key.delete_value(prog_id(ext));
+            }
+        }
+
+        // エクスプローラーに関連付けの変更を知らせる（SHCNE_ASSOCCHANGED / SHCNF_IDLIST）
+        unsafe { SHChangeNotify(0x0800_0000, 0, std::ptr::null(), std::ptr::null()) };
+        Ok(())
+    }
+
+    /// Windows の「既定のアプリ」画面を sView の項目で開く
+    /// （registeredAppUser が効かない古い Windows 10 では、既定のアプリの一覧が開く）
+    pub fn open_default_apps_settings() -> Result<(), String> {
+        std::process::Command::new("explorer")
+            .arg(format!(
+                "ms-settings:defaultapps?registeredAppUser={APP_NAME}"
+            ))
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Windows の設定を開けません: {e}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac_assoc {
+    use std::ffi::{c_char, c_void, CStr};
+
+    type CFStringRef = *const c_void;
+    type OSStatus = i32;
+    const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+    /// kLSRolesAll。Viewer だけにすると、Editor として登録されたアプリが優先されることがある
+    const K_LS_ROLES_ALL: u32 = 0xFFFF_FFFF;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFStringCreateWithBytes(
+            alloc: *const c_void,
+            bytes: *const u8,
+            num_bytes: isize,
+            encoding: u32,
+            is_external_representation: u8,
+        ) -> CFStringRef;
+        fn CFStringGetCString(s: CFStringRef, buf: *mut c_char, size: isize, encoding: u32) -> u8;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        static kUTTagClassFilenameExtension: CFStringRef;
+        fn UTTypeCreatePreferredIdentifierForTag(
+            tag_class: CFStringRef,
+            tag: CFStringRef,
+            conforming_to: CFStringRef,
+        ) -> CFStringRef;
+        fn LSSetDefaultRoleHandlerForContentType(
+            content_type: CFStringRef,
+            role: u32,
+            handler_bundle_id: CFStringRef,
+        ) -> OSStatus;
+        fn LSCopyDefaultRoleHandlerForContentType(
+            content_type: CFStringRef,
+            role: u32,
+        ) -> CFStringRef;
+    }
+
+    /// 解放を忘れないための CFString の入れ物
+    struct CfString(CFStringRef);
+
+    impl CfString {
+        fn new(s: &str) -> Option<Self> {
+            let r = unsafe {
+                CFStringCreateWithBytes(
+                    std::ptr::null(),
+                    s.as_ptr(),
+                    s.len() as isize,
+                    K_CF_STRING_ENCODING_UTF8,
+                    0,
+                )
+            };
+            (!r.is_null()).then_some(CfString(r))
+        }
+
+        fn to_string(&self) -> Option<String> {
+            let mut buf = [0 as c_char; 512];
+            let ok = unsafe {
+                CFStringGetCString(
+                    self.0,
+                    buf.as_mut_ptr(),
+                    buf.len() as isize,
+                    K_CF_STRING_ENCODING_UTF8,
+                )
+            };
+            (ok != 0).then(|| {
+                unsafe { CStr::from_ptr(buf.as_ptr()) }
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        }
+    }
+
+    impl Drop for CfString {
+        fn drop(&mut self) {
+            unsafe { CFRelease(self.0) };
+        }
+    }
+
+    /// 拡張子に対応する UTI（例: jpg → public.jpeg）
+    fn uti_for_ext(ext: &str) -> Option<CfString> {
+        let tag = CfString::new(ext)?;
+        let r = unsafe {
+            UTTypeCreatePreferredIdentifierForTag(
+                kUTTagClassFilenameExtension,
+                tag.0,
+                std::ptr::null(),
+            )
+        };
+        (!r.is_null()).then_some(CfString(r))
+    }
+
+    pub fn is_associated(ext: &str, bundle_id: &str) -> bool {
+        let Some(uti) = uti_for_ext(ext) else {
+            return false;
+        };
+        let r = unsafe { LSCopyDefaultRoleHandlerForContentType(uti.0, K_LS_ROLES_ALL) };
+        if r.is_null() {
+            return false;
+        }
+        CfString(r)
+            .to_string()
+            .is_some_and(|id| id.eq_ignore_ascii_case(bundle_id))
+    }
+
+    pub fn set_default(ext: &str, bundle_id: &str) -> Result<(), String> {
+        let uti = uti_for_ext(ext).ok_or_else(|| format!(".{ext} の種類を特定できません"))?;
+        let bundle = CfString::new(bundle_id).ok_or("バンドル ID を扱えません")?;
+        let status =
+            unsafe { LSSetDefaultRoleHandlerForContentType(uti.0, K_LS_ROLES_ALL, bundle.0) };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(format!(".{ext} を関連付けられません (OSStatus {status})"))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_associated(_app: &AppHandle, ext: &str) -> bool {
+    win_assoc::is_associated(ext)
+}
+
+#[cfg(target_os = "macos")]
+fn is_associated(app: &AppHandle, ext: &str) -> bool {
+    mac_assoc::is_associated(ext, &app.config().identifier)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn is_associated(_app: &AppHandle, _ext: &str) -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn apply_associations(_app: &AppHandle, exts: &[String]) -> Result<String, String> {
+    win_assoc::register(exts, &associable_exts())?;
+    if exts.is_empty() {
+        return Ok("sView の関連付けの登録を外しました".into());
+    }
+    win_assoc::open_default_apps_settings()?;
+    Ok(
+        "sView を登録しました。開いた Windows の設定で、拡張子ごとに既定のアプリを sView にしてください"
+            .into(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn apply_associations(app: &AppHandle, exts: &[String]) -> Result<String, String> {
+    if exts.is_empty() {
+        return Err("関連付ける拡張子を選んでください".into());
+    }
+    let bundle_id = app.config().identifier.clone();
+    let failed: Vec<String> = exts
+        .iter()
+        .filter_map(|ext| mac_assoc::set_default(ext, &bundle_id).err())
+        .collect();
+    if failed.is_empty() {
+        Ok(format!(
+            "{} 種類の拡張子を sView で開くようにしました",
+            exts.len()
+        ))
+    } else {
+        Err(failed.join(" / "))
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn apply_associations(_app: &AppHandle, _exts: &[String]) -> Result<String, String> {
+    Err("この OS では設定画面から関連付けを変更できません".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook();
@@ -1715,7 +2140,9 @@ pub fn run() {
             fit_window_to_image,
             set_aspect_lock,
             delete_image,
-            watch_folder
+            watch_folder,
+            file_association_status,
+            apply_file_associations
         ])
         .build(tauri::generate_context!());
 

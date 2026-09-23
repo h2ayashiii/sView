@@ -366,3 +366,50 @@ button.ghost:disabled {
   opacity: 0.5;
   cursor: default;
 }
+
+/* 拡張子の関連付け: 説明・チェック一覧・ボタンを縦に並べる */
+.row.assoc {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.assoc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 4px 8px;
+}
+
+.assoc-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.assoc-item input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.assoc-mark {
+  color: var(--accent);
+  font-size: 10.5px;
+}
+
+.assoc-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+button.ghost.primary {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.assoc-note:empty {
+  display: none;
+}
