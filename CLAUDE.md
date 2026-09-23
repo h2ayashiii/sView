@@ -96,8 +96,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `IMAGE_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` (`src/main.js`),
   `fileAssociations` (`tauri.conf.json`). The `supported_extensions_stay_in_sync` test reads
   `main.js` and `tauri.conf.json` and fails when they drift, so `cargo test` catches it.
-  The one deliberate difference: `ARCHIVE_EXTS` includes `zip`, but only `cbz` is file-associated
-  (taking `.zip` from archivers would be hostile). `.zip` still opens via drag & drop and `O`.
+  Archives (`ARCHIVE_EXTS`: `zip` / `cbz`) are deliberately **not** file-associated, neither by the
+  installer nor from the settings window; they open via drag & drop, `O` and the command line.
 - Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
   `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
   into `settings.json`.
@@ -184,6 +184,14 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `%LOCALAPPDATA%\sview` (`webview_data_dir()`). macOS (WKWebView) cannot set it — the OS derives
   `~/Library/WebKit/<bundle id>` and `~/Library/Caches/<bundle id>` from the identifier — and
   WebKitGTK already defaults to `~/.local/share/sview` + `~/.cache/sview`, so both return `None`.
+- File associations from the settings window (`file_association_status` / `apply_file_associations`,
+  `type: "associations"` row in `settings-defs.js`) follow each OS's rules. Windows 8+ forbids apps
+  from setting the default (UserChoice is hash-protected), so `win_assoc` only registers sView in
+  HKCU (`sView.Image` ProgID, `Capabilities`, `RegisteredApplications`,
+  `OpenWithProgids`) and opens `ms-settings:defaultapps?registeredAppUser=sView` for the user to
+  confirm. macOS sets it directly via `LSSetDefaultRoleHandlerForContentType` (raw FFI in
+  `mac_assoc`); there is no API to unset. Linux reports `supported: false`. The selectable list is
+  `associable_exts()` = `IMAGE_EXTS` only (archives are deliberately excluded).
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a

@@ -217,13 +217,109 @@ function buildRow(item) {
   return row;
 }
 
+// 拡張子の関連付け。状態は OS から読むので settings には入れない
+function buildAssociationRow(item) {
+  const row = document.createElement("div");
+  row.className = "row assoc";
+
+  const label = document.createElement("div");
+  label.className = "label";
+  label.textContent = item.label;
+  const hint = document.createElement("span");
+  hint.className = "hint";
+  hint.textContent = item.hint ?? "";
+  label.appendChild(hint);
+
+  const grid = document.createElement("div");
+  grid.className = "assoc-grid";
+
+  const actions = document.createElement("div");
+  actions.className = "assoc-actions";
+  const selectAll = document.createElement("button");
+  selectAll.className = "ghost";
+  selectAll.textContent = "すべて選択";
+  const selectNone = document.createElement("button");
+  selectNone.className = "ghost";
+  selectNone.textContent = "すべて解除";
+  const apply = document.createElement("button");
+  apply.className = "ghost primary";
+  apply.textContent = item.buttonLabel ?? "関連付ける";
+  actions.append(selectAll, selectNone, apply);
+
+  // 結果の案内文は長いので、フッターではなくこの行の中に出す
+  const note = document.createElement("span");
+  note.className = "hint assoc-note";
+
+  row.append(label, grid, actions, note);
+
+  const boxes = [];
+  const setAll = (checked) => boxes.forEach((b) => (b.checked = checked));
+  selectAll.addEventListener("click", () => setAll(true));
+  selectNone.addEventListener("click", () => setAll(false));
+
+  const load = async () => {
+    const status = await invoke("file_association_status");
+    grid.replaceChildren();
+    boxes.length = 0;
+    const anyAssociated = status.items.some((i) => i.associated);
+    for (const { ext, associated } of status.items) {
+      const wrap = document.createElement("label");
+      wrap.className = "assoc-item";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = ext;
+      // まだ何も関連付けていなければ、全部を選んだ状態から始める
+      box.checked = anyAssociated ? associated : true;
+      box.disabled = !status.supported;
+      const name = document.createElement("span");
+      name.textContent = `.${ext}`;
+      wrap.append(box, name);
+      if (associated) {
+        const mark = document.createElement("span");
+        mark.className = "assoc-mark";
+        mark.textContent = "✓";
+        mark.title = "いま sView で開きます";
+        wrap.appendChild(mark);
+      }
+      grid.appendChild(wrap);
+      boxes.push(box);
+    }
+    if (!status.supported) {
+      hint.textContent = "この OS では、関連付けは OS の設定で変更してください";
+      for (const b of [selectAll, selectNone, apply]) b.disabled = true;
+    }
+  };
+
+  apply.addEventListener("click", async () => {
+    const exts = boxes.filter((b) => b.checked).map((b) => b.value);
+    apply.disabled = true;
+    note.textContent = "";
+    try {
+      const message = await invoke("apply_file_associations", { exts });
+      note.textContent = message;
+      await load();
+    } catch (e) {
+      setStatus(String(e), true);
+    } finally {
+      apply.disabled = false;
+    }
+  });
+
+  // Windows の設定画面で選び終えて戻ってきたら、状態を読み直す
+  window.addEventListener("focus", () => load().catch(() => {}));
+  load().catch((e) => setStatus(String(e), true));
+  return row;
+}
+
 function build() {
   for (const section of SETTINGS_SECTIONS) {
     const title = document.createElement("div");
     title.className = "section-title";
     title.textContent = section.label;
     body.appendChild(title);
-    for (const item of section.items) body.appendChild(buildRow(item));
+    for (const item of section.items) {
+      body.appendChild(item.type === "associations" ? buildAssociationRow(item) : buildRow(item));
+    }
   }
 }
 

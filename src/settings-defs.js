@@ -179,6 +179,24 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
+    id: "association",
+    label: "関連付け",
+    items: [
+      {
+        // 値は settings.json ではなく OS 側にあるので default を持たない
+        key: "fileAssociations",
+        label: "sView で開くファイルの種類",
+        hint:
+          "チェックした拡張子を、ダブルクリックしたときに sView で開くようにします。" +
+          "Windows では sView を登録したあと「既定のアプリ」の設定画面が開くので、そこで確定してください" +
+          "（Windows はアプリが既定を直接変えることを認めていません）。" +
+          "macOS ではその場で切り替わります。解除するときは Finder の「情報を見る」で別のアプリを選んでください",
+        type: "associations",
+        buttonLabel: "関連付ける",
+      },
+    ],
+  },
+  {
     id: "logs",
     label: "ログ",
     items: [
