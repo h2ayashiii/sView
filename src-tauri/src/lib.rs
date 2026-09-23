@@ -169,16 +169,13 @@ mod tests {
     #[test]
     fn association_exts_are_validated_and_normalized() {
         assert_eq!(
-            normalize_association_exts(&[".JPG".into(), "png".into(), "jpg".into(), "cbz".into()])
-                .unwrap(),
-            vec!["jpg", "png", "cbz"]
+            normalize_association_exts(&[".JPG".into(), "png".into(), "jpg".into()]).unwrap(),
+            vec!["jpg", "png"]
         );
-        // zip は解凍ソフトと取り合いになるので関連付けできない
+        // 書庫は関連付けの対象にしない
         assert!(normalize_association_exts(&["zip".into()]).is_err());
+        assert!(normalize_association_exts(&["cbz".into()]).is_err());
         assert!(normalize_association_exts(&["exe".into()]).is_err());
-        assert!(associable_exts()
-            .iter()
-            .all(|e| IMAGE_EXTS.contains(e) || *e == "cbz"));
     }
 
     use super::*;
@@ -1661,12 +1658,10 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
 //   アプリ」として登録し、最後の選択は Windows の「既定のアプリ」画面で本人にしてもらう
 // - macOS は LaunchServices の API で既定のアプリを直接設定できる
 
-/// 関連付けの対象にできる拡張子（画像すべてと cbz）。
-/// zip は解凍ソフトと取り合いになるので選べないようにする（fileAssociations と同じ方針）
+/// 関連付けの対象にできる拡張子（画像すべて）。
+/// 書庫（zip / cbz）はここでは扱わない
 fn associable_exts() -> Vec<&'static str> {
-    let mut exts: Vec<&str> = IMAGE_EXTS.to_vec();
-    exts.push("cbz");
-    exts
+    IMAGE_EXTS.to_vec()
 }
 
 #[derive(serde::Serialize)]
@@ -1738,15 +1733,6 @@ mod win_assoc {
     pub const APP_NAME: &str = "sView";
     const CAPABILITIES_KEY: &str = r"Software\sView\Capabilities";
     const PROG_ID_IMAGE: &str = "sView.Image";
-    const PROG_ID_ARCHIVE: &str = "sView.ComicBook";
-
-    fn prog_id(ext: &str) -> &'static str {
-        if ext == "cbz" {
-            PROG_ID_ARCHIVE
-        } else {
-            PROG_ID_IMAGE
-        }
-    }
 
     #[link(name = "shell32")]
     extern "system" {
@@ -1768,9 +1754,7 @@ mod win_assoc {
 
     /// ProgID の開くコマンドが sView の exe を指しているか
     fn prog_id_is_ours(prog_id: &str) -> bool {
-        if prog_id.eq_ignore_ascii_case(PROG_ID_IMAGE)
-            || prog_id.eq_ignore_ascii_case(PROG_ID_ARCHIVE)
-        {
+        if prog_id.eq_ignore_ascii_case(PROG_ID_IMAGE) {
             return true;
         }
         let Some(exe) = exe_path()
@@ -1820,10 +1804,7 @@ mod win_assoc {
         let exe = exe.to_string_lossy();
 
         // ProgID（開き方）。インストーラーが HKLM に入れたものとは別に、ユーザー単位で持つ
-        for (id, name) in [
-            (PROG_ID_IMAGE, "画像ファイル (sView)"),
-            (PROG_ID_ARCHIVE, "コミック書庫 (sView)"),
-        ] {
+        for (id, name) in [(PROG_ID_IMAGE, "画像ファイル (sView)")] {
             let (key, _) = hkcu
                 .create_subkey(format!(r"Software\Classes\{id}"))
                 .map_err(reg_err)?;
@@ -1848,7 +1829,7 @@ mod win_assoc {
         let (assoc, _) = caps.create_subkey("FileAssociations").map_err(reg_err)?;
         for ext in exts {
             assoc
-                .set_value(format!(".{ext}"), &prog_id(ext))
+                .set_value(format!(".{ext}"), &PROG_ID_IMAGE)
                 .map_err(reg_err)?;
         }
         let (apps, _) = hkcu
@@ -1862,11 +1843,11 @@ mod win_assoc {
             let path = format!(r"Software\Classes\.{ext}\OpenWithProgids");
             if exts.iter().any(|e| e == ext) {
                 let (key, _) = hkcu.create_subkey(&path).map_err(reg_err)?;
-                key.set_value(prog_id(ext), &"").map_err(reg_err)?;
+                key.set_value(PROG_ID_IMAGE, &"").map_err(reg_err)?;
             } else if let Ok(key) =
                 hkcu.open_subkey_with_flags(&path, winreg::enums::KEY_ALL_ACCESS)
             {
-                let _ = key.delete_value(prog_id(ext));
+                let _ = key.delete_value(PROG_ID_IMAGE);
             }
         }
 
