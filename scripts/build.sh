@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sView リリースビルドスクリプト (macOS / Linux)
+# sView リリースビルドスクリプト (macOS)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

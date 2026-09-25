@@ -846,7 +846,7 @@ fn read_archive_image(
     read_archive_entry(Path::new(&archive), &entry, &cache).map(Response::new)
 }
 
-/// 表示中の画像を OS のゴミ箱（Windows: ごみ箱 / macOS: ゴミ箱 / Linux: freedesktop の Trash）へ送る。
+/// 表示中の画像を OS のゴミ箱（Windows: ごみ箱 / macOS: ゴミ箱）へ送る。
 /// 完全削除はしないので、取り違えても OS 側から戻せる
 #[tauri::command]
 fn delete_image(path: String) -> Result<(), String> {
@@ -965,9 +965,7 @@ fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
 ///
 /// macOS: WKWebView にはデータフォルダを指定する仕組みが無く、置き場所
 /// （`~/Library/WebKit/<bundle ID>` など）は OS が bundle ID から決める。
-/// Linux: WebKitGTK が既定で `~/.local/share/sview` と `~/.cache/sview` を
-/// 使うので、こちらから指定する必要が無い。
-/// どちらも None を返して既定の挙動に任せる
+/// None を返して既定の挙動に任せる
 #[cfg(target_os = "windows")]
 fn webview_data_dir(app: &AppHandle) -> Option<PathBuf> {
     Some(app.path().local_data_dir().ok()?.join(CONFIG_DIR_NAME))
@@ -1659,7 +1657,7 @@ fn show_fatal_error(message: &str) {
         ))
         .status();
 
-    // Linux には共通のダイアログが無いので、stderr への出力だけで済ませる
+    // 対象外の OS（Linux など）は CI でテストをビルドするためだけの分岐
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let _ = text;
 }
@@ -1670,6 +1668,7 @@ fn open_folder(dir: &Path) -> Result<(), String> {
     let command = "explorer";
     #[cfg(target_os = "macos")]
     let command = "open";
+    // 対象外の OS（Linux など）は CI でテストをビルドするためだけの分岐
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let command = "xdg-open";
 
@@ -1692,6 +1691,7 @@ fn open_log_folder(app: AppHandle) -> Result<(), String> {
 /// OS のファイルマネージャーで対象を選択状態にして開く
 #[tauri::command]
 fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     use std::process::Command;
     let target = PathBuf::from(&path);
     if !target.exists() {
@@ -1714,16 +1714,9 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
         .spawn()
         .map(|_| ());
 
+    // 対象外の OS（Linux など）は CI でテストをビルドするためだけの分岐
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let result = {
-        // Linux には選択して開く共通の方法がないので、親フォルダを開く
-        let dir = if target.is_dir() {
-            target.clone()
-        } else {
-            target.parent().unwrap_or(&target).to_path_buf()
-        };
-        Command::new("xdg-open").arg(dir).spawn().map(|_| ())
-    };
+    let result: std::io::Result<()> = Err(std::io::Error::other("この OS には対応していません"));
 
     result.map_err(|e| format!("ファイルマネージャーを開けません: {e}"))
 }
@@ -1751,9 +1744,7 @@ struct AssociationItem {
 
 #[derive(serde::Serialize)]
 struct AssociationStatus {
-    /// この OS で関連付けを変更できるか
-    supported: bool,
-    /// "windows" / "macos" / "linux" など
+    /// "windows" / "macos"
     platform: String,
     items: Vec<AssociationItem>,
 }
@@ -1777,16 +1768,14 @@ fn normalize_association_exts(exts: &[String]) -> Result<Vec<String>, String> {
 /// 各拡張子の関連付けの状態を返す
 #[tauri::command]
 fn file_association_status(app: AppHandle) -> AssociationStatus {
-    let supported = cfg!(any(target_os = "windows", target_os = "macos"));
     let items = associable_exts()
         .into_iter()
         .map(|ext| AssociationItem {
             ext: ext.to_string(),
-            associated: supported && is_associated(&app, ext),
+            associated: is_associated(&app, ext),
         })
         .collect();
     AssociationStatus {
-        supported,
         platform: std::env::consts::OS.to_string(),
         items,
     }
@@ -2079,6 +2068,7 @@ fn is_associated(app: &AppHandle, ext: &str) -> bool {
     mac_assoc::is_associated(ext, &app.config().identifier)
 }
 
+// 対象外の OS（Linux など）は CI でテストをビルドするためだけの分岐
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn is_associated(_app: &AppHandle, _ext: &str) -> bool {
     false
@@ -2117,9 +2107,10 @@ fn apply_associations(app: &AppHandle, exts: &[String]) -> Result<String, String
     }
 }
 
+// 対象外の OS（Linux など）は CI でテストをビルドするためだけの分岐
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn apply_associations(_app: &AppHandle, _exts: &[String]) -> Result<String, String> {
-    Err("この OS では設定画面から関連付けを変更できません".into())
+    Err("この OS には対応していません".into())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

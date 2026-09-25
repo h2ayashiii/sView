@@ -385,8 +385,8 @@ img.addEventListener("error", () => {
 });
 
 // ---- 動画 ----
-// 再生は OS の WebView 任せ（Windows: WebView2 / macOS: WKWebView / Linux: WebKitGTK +
-// GStreamer）。再生できる形式は OS ごとに違い、sView からは増やせない
+// 再生は OS の WebView 任せ（Windows: WebView2 / macOS: WKWebView）。
+// 再生できる形式は OS ごとに違い、sView からは増やせない
 const SEEK_STEP_S = 5;
 // シークバーをつかんでいる間は、再生位置でつまみを動かさない
 let seekDragging = false;
@@ -1063,7 +1063,7 @@ listen("tauri://drag-drop", (event) => {
 // macOS の Dock / Finder からの "Opened" イベント（起動後）
 listen("open-file", (event) => openPath(event.payload));
 
-// CLI 引数 / 関連付け起動（Windows・Linux）、または起動前に届いた macOS の Opened
+// CLI 引数 / 関連付け起動（Windows）、または起動前に届いた macOS の Opened
 invoke("get_startup_file")
   .then((path) => {
     if (path) openPath(path);

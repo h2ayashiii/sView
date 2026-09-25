@@ -13,7 +13,11 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
   `tauri-plugin-log`, `log`, `serde`, `zip`, `notify`, `trash`).
 - **Frontend**: plain HTML/CSS/JS. **No framework, no bundler, no TypeScript.**
   `withGlobalTauri: true`, so APIs come from `window.__TAURI__` and scripts load via `<script src>`.
-- Targets: Windows 10/11, macOS 10.15+, Linux.
+- Targets: Windows 10/11, macOS 10.15+. **Linux is not a target.** It is kept only buildable,
+  because the CI `test` job and cloud containers run `cargo test` on Linux: the
+  `#[cfg(not(any(target_os = "windows", target_os = "macos")))]` branches in `lib.rs` are
+  minimal stubs for that (errors / no-ops), not a supported platform. Don't add Linux-only
+  features or docs.
 
 ## Layout
 
@@ -100,8 +104,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   installer nor from the settings window; they open via drag & drop, `O` and the command line.
   Videos are the same: `VIDEO_EXTS` (`lib.rs`) and `VIDEO_EXT_FILTER` (`main.js`) must match (the
   same test checks it), and they are not in `fileAssociations`.
-- Videos play in a `<video>` element with whatever decoder the OS WebView has (WebView2 / WKWebView /
-  WebKitGTK + GStreamer). **No codec is bundled** — that keeps codec patent licensing out of the
+- Videos play in a `<video>` element with whatever decoder the OS WebView has (WebView2 / WKWebView). **No codec is bundled** — that keeps codec patent licensing out of the
   app — so `VIDEO_EXTS` is limited to containers most WebViews handle (`mp4` / `m4v` / `webm` /
   `mov`); anything the WebView can't decode just shows an error. Videos are listed only from
   folders (`is_media`), never from archives (`read_archive_entry` loads a whole entry into memory).
@@ -195,15 +198,15 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   on Windows an unspecified WebView2 user-data folder is created next to the exe
   (`C:\Program Files\sView\sview.exe.WebView2`) and the app fails to start. It is pointed at
   `%LOCALAPPDATA%\sview` (`webview_data_dir()`). macOS (WKWebView) cannot set it — the OS derives
-  `~/Library/WebKit/<bundle id>` and `~/Library/Caches/<bundle id>` from the identifier — and
-  WebKitGTK already defaults to `~/.local/share/sview` + `~/.cache/sview`, so both return `None`.
+  `~/Library/WebKit/<bundle id>` and `~/Library/Caches/<bundle id>` from the identifier — so it
+  returns `None` there.
 - File associations from the settings window (`file_association_status` / `apply_file_associations`,
   `type: "associations"` row in `settings-defs.js`) follow each OS's rules. Windows 8+ forbids apps
   from setting the default (UserChoice is hash-protected), so `win_assoc` only registers sView in
   HKCU (`sView.Image` ProgID, `Capabilities`, `RegisteredApplications`,
   `OpenWithProgids`) and opens `ms-settings:defaultapps?registeredAppUser=sView` for the user to
   confirm. macOS sets it directly via `LSSetDefaultRoleHandlerForContentType` (raw FFI in
-  `mac_assoc`); there is no API to unset. Linux reports `supported: false`. The selectable list is
+  `mac_assoc`); there is no API to unset. The selectable list is
   `associable_exts()` = `IMAGE_EXTS` only (archives are deliberately excluded).
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
