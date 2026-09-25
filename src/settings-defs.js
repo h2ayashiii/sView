@@ -113,6 +113,46 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
+    id: "video",
+    label: "動画",
+    items: [
+      {
+        key: "videoAutoplay",
+        label: "開いたらすぐ再生する",
+        hint:
+          "オフのときは最初のコマで止まった状態で開きます。Space キーで再生 / 一時停止します。" +
+          "再生できる形式は OS の再生機能によります（mp4 / m4v / webm / mov）",
+        type: "toggle",
+        default: true,
+      },
+      {
+        key: "videoLoop",
+        label: "繰り返し再生する",
+        hint: "最後まで再生したら先頭に戻って続けます",
+        type: "toggle",
+        default: true,
+      },
+      {
+        key: "videoMuted",
+        label: "音を消す",
+        hint: "再生中に M キーや音量ボタンで切り替えた状態もここに保存されます",
+        type: "toggle",
+        default: false,
+      },
+      {
+        key: "videoVolume",
+        label: "音量",
+        hint: "再生中の音量バーで変えた値もここに保存されます",
+        type: "range",
+        min: 0,
+        max: 100,
+        step: 1,
+        unit: "%",
+        default: 100,
+      },
+    ],
+  },
+  {
     id: "input",
     label: "操作",
     items: [
@@ -170,7 +210,7 @@ const SETTINGS_SECTIONS = [
         key: "watchFolder",
         label: "フォルダの変更を自動で取り込む",
         hint:
-          "表示中のフォルダに画像が増減したとき、開き直さずに一覧へ反映します。" +
+          "表示中のフォルダに画像・動画が増減したとき、開き直さずに一覧へ反映します。" +
           "OS の通知を使うので、変化が無い間は待っているだけで負荷はかかりません。" +
           "圧縮フォルダ (zip / cbz) を開いているときは動きません",
         type: "toggle",

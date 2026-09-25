@@ -8,6 +8,14 @@ const appWindow = window.__TAURI__.window.getCurrentWindow();
 const app = document.getElementById("app");
 const stage = document.getElementById("stage");
 const img = document.getElementById("image");
+const video = document.getElementById("video");
+const videobar = document.getElementById("videobar");
+const vbPlay = document.getElementById("vb-play");
+const vbMute = document.getElementById("vb-mute");
+const vbSeek = document.getElementById("vb-seek");
+const vbVolume = document.getElementById("vb-volume");
+const vbTime = document.getElementById("vb-time");
+const vbDuration = document.getElementById("vb-duration");
 const placeholder = document.getElementById("placeholder");
 const errorBox = document.getElementById("error");
 const filenameEl = document.getElementById("filename");
@@ -33,6 +41,9 @@ const IMAGE_EXT_FILTER = [
   "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg",
   "png", "svg", "tif", "tiff", "webp",
 ];
+// 動画は OS の WebView が再生できるものだけ（コーデックは同梱しない）。
+// 書庫の中の動画は一覧に出さない
+const VIDEO_EXT_FILTER = ["mp4", "m4v", "webm", "mov"];
 const ARCHIVE_EXT_FILTER = ["zip", "cbz"];
 
 // blob URL に必要な MIME（拡張子から判定）
@@ -54,6 +65,8 @@ let folderPath = null;
 let entryPrefix = "";
 // 表示要求の世代。非同期読み込みの結果が古い場合は捨てる
 let showToken = 0;
+// 表示中のものが動画なら true（#image の代わりに #video を使う）
+let showingVideo = false;
 
 // ---- 書庫内画像の遅延ロード ----
 // 書庫は一括展開せず、表示するエントリだけを Rust 側から取り出して
@@ -64,6 +77,10 @@ const blobCache = new Map(); // entry -> blob URL（挿入順 = LRU 順）
 function extOf(name) {
   const m = /\.([^.\\/]+)$/.exec(name);
   return m ? m[1].toLowerCase() : "";
+}
+
+function isVideoPath(name) {
+  return VIDEO_EXT_FILTER.includes(extOf(name));
 }
 
 function clearBlobCache() {
@@ -118,6 +135,7 @@ let ty = 0;
 function setFitMode() {
   mode = "fit";
   img.className = "fit";
+  video.className = "fit";
   img.style.transform = "";
   img.style.position = "";
   unfreezeImageSize();
@@ -137,24 +155,28 @@ const SELF_RESIZE_MS = 400;
 let selfResizedAt = 0;
 
 function freezeImageSize() {
-  if (frozenSize || mode !== "fit" || !img.naturalWidth) return;
-  const rect = img.getBoundingClientRect();
+  if (frozenSize || mode !== "fit" || !mediaSize()) return;
+  const el = mediaEl();
+  const rect = el.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
-  img.style.width = `${rect.width}px`;
-  img.style.height = `${rect.height}px`;
-  img.classList.add("frozen");
+  el.style.width = `${rect.width}px`;
+  el.style.height = `${rect.height}px`;
+  el.classList.add("frozen");
   frozenSize = true;
 }
 
 function unfreezeImageSize() {
   frozenSize = false;
-  img.style.width = "";
-  img.style.height = "";
-  img.classList.remove("frozen");
+  for (const el of [img, video]) {
+    el.style.width = "";
+    el.style.height = "";
+    el.classList.remove("frozen");
+  }
 }
 
+// 動画は拡大縮小しない（常にウィンドウに合わせて表示する）
 function enterZoomMode() {
-  if (mode === "zoom" || !img.src || !img.naturalWidth) return;
+  if (mode === "zoom" || showingVideo || !img.src || !img.naturalWidth) return;
   // 据え置き中なら先に戻す（据え置きの大きさから倍率を出すと二重にかかる）
   unfreezeImageSize();
   const rect = img.getBoundingClientRect();
@@ -244,6 +266,8 @@ function preloadNeighbors() {
     // 端で折り返さないので、範囲外は先読みしない
     const i = index + off;
     if (i < 0 || i >= images.length) continue;
+    // 動画は大きいので先読みしない
+    if (!archivePath && isVideoPath(images[i])) continue;
     if (archivePath) {
       // 先読みも 1 件ずつ。失敗しても表示には影響させない
       archiveBlobUrl(images[i]).catch(() => {});
@@ -253,11 +277,30 @@ function preloadNeighbors() {
   }
 }
 
+// 表示中の要素（画像か動画）
+function mediaEl() {
+  return showingVideo ? video : img;
+}
+
+// 表示中の画像・動画の実寸。まだ分からなければ null
+function mediaSize() {
+  const [width, height] = showingVideo
+    ? [video.videoWidth, video.videoHeight]
+    : [img.naturalWidth, img.naturalHeight];
+  return width && height ? { width, height } : null;
+}
+
 // 読み込みが終わってからでないと画像の実寸が分からないので、
 // ウィンドウサイズ合わせと起動時倍率はここでまとめて行う
 function onImageReady(run) {
   if (img.complete && img.naturalWidth) run();
   else img.addEventListener("load", run, { once: true });
+}
+
+// 動画は再生前に大きさ（メタデータ）だけ先に分かる
+function onVideoReady(run) {
+  if (video.readyState >= HTMLMediaElement.HAVE_METADATA) run();
+  else video.addEventListener("loadedmetadata", run, { once: true });
 }
 
 function fitsToImage() {
@@ -268,9 +311,9 @@ function fitsToImage() {
 // 以後は端や角をドラッグしている最中も Rust 側が縦横比を保つ。
 // 「自由に変更」や画像を開いていないときは解除する
 function syncAspectLock() {
-  const locked = fitsToImage() && index >= 0 && img.naturalWidth && img.naturalHeight;
+  const size = fitsToImage() && index >= 0 ? mediaSize() : null;
   return invoke("set_aspect_lock", {
-    ratio: locked ? img.naturalWidth / img.naturalHeight : null,
+    ratio: size ? size.width / size.height : null,
   }).catch(() => {});
 }
 
@@ -279,14 +322,12 @@ function syncAspectLock() {
 async function fitWindowToImage() {
   await syncAspectLock();
   if (!fitsToImage()) return;
-  if (!img.naturalWidth || !img.naturalHeight) return;
+  const size = mediaSize();
+  if (!size) return;
   // 自分で変えている間の印。サイズ変更の通知は invoke の前後どちらでも届きうる
   selfResizedAt = Date.now();
   try {
-    await invoke("fit_window_to_image", {
-      width: img.naturalWidth,
-      height: img.naturalHeight,
-    });
+    await invoke("fit_window_to_image", size);
   } catch (e) {
     showError(e);
   }
@@ -301,9 +342,25 @@ function applyStartupZoom() {
 async function show() {
   if (index < 0 || index >= images.length) return;
   const token = ++showToken;
+  // 前の動画は必ず止めて手放す（再生を続けさせない・ファイルを掴んだままにしない）
+  unloadVideo();
+  // 書庫の中の動画は一覧に出てこないので、動画は常にファイルとして開ける
+  showingVideo = !archivePath && isVideoPath(images[index]);
+  app.classList.toggle("video", showingVideo);
+  video.hidden = !showingVideo;
+  img.hidden = showingVideo;
   setFitMode();
   placeholder.hidden = true;
   updateChrome();
+  if (showingVideo) {
+    img.removeAttribute("src");
+    loadVideo(convertFileSrc(images[index]));
+    onVideoReady(() => {
+      if (token === showToken) fitWindowToImage();
+    });
+    preloadNeighbors();
+    return;
+  }
   try {
     const src = archivePath
       ? await archiveBlobUrl(images[index])
@@ -325,6 +382,155 @@ async function show() {
 
 img.addEventListener("error", () => {
   if (img.src) showError(`読み込みに失敗しました: ${baseName(images[index] ?? "")}`);
+});
+
+// ---- 動画 ----
+// 再生は OS の WebView 任せ（Windows: WebView2 / macOS: WKWebView / Linux: WebKitGTK +
+// GStreamer）。再生できる形式は OS ごとに違い、sView からは増やせない
+const SEEK_STEP_S = 5;
+// シークバーをつかんでいる間は、再生位置でつまみを動かさない
+let seekDragging = false;
+// 自動再生の制限で音を消したことは 1 回だけ知らせる（動画ごとに出すとうるさい）
+let autoplayMuteNoticed = false;
+
+function loadVideo(src) {
+  video.loop = !!settings.videoLoop;
+  video.muted = !!settings.videoMuted;
+  video.volume = videoVolume();
+  video.src = src;
+  syncVideoBar();
+  if (settings.videoAutoplay) playVideo();
+}
+
+// src を外して読み込み直すと、WebView はファイルを手放す
+// （Windows では再生中のファイルをゴミ箱へ送れないことがあるため）
+function unloadVideo() {
+  if (!video.getAttribute("src")) return;
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  seekDragging = false;
+}
+
+function videoVolume() {
+  const v = Number(settings.videoVolume);
+  return Number.isFinite(v) ? Math.min(1, Math.max(0, v / 100)) : 1;
+}
+
+function playVideo() {
+  video.play().catch((e) => {
+    // WebView の自動再生の制限で、音ありの再生だけ止められることがある。
+    // 消音なら許されるので、音を消して再生し直す
+    if (e?.name !== "NotAllowedError" || video.muted) return;
+    video.muted = true;
+    syncVideoBar();
+    video.play().catch(() => {});
+    if (autoplayMuteNoticed) return;
+    autoplayMuteNoticed = true;
+    showToast("自動再生のため音を消しました（M で戻せます）", "notice");
+  });
+}
+
+function togglePlay() {
+  if (!showingVideo) return;
+  if (video.paused || video.ended) playVideo();
+  else video.pause();
+}
+
+// 消音の状態は設定に保存して、次の動画・次回の起動にも持ち越す
+function toggleMute() {
+  if (!showingVideo) return;
+  settings.videoMuted = !video.muted;
+  video.muted = settings.videoMuted;
+  saveSettings();
+}
+
+function seekBy(seconds) {
+  if (!showingVideo || !Number.isFinite(video.duration)) return;
+  video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + seconds));
+  // どこまで動いたかが見えるよう、再生操作を出す
+  showChrome();
+}
+
+function formatTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+function syncVideoBar() {
+  const paused = video.paused || video.ended;
+  videobar.classList.toggle("paused", paused);
+  vbPlay.title = paused ? "再生 (Space)" : "一時停止 (Space)";
+  vbPlay.setAttribute("aria-label", paused ? "再生" : "一時停止");
+  const muted = video.muted || video.volume === 0;
+  videobar.classList.toggle("muted", muted);
+  vbMute.title = muted ? "消音を解除 (M)" : "消音 (M)";
+  vbMute.setAttribute("aria-label", muted ? "消音を解除" : "消音");
+  vbVolume.value = String(Math.round(video.volume * 100));
+  const duration = video.duration;
+  vbDuration.textContent = formatTime(duration);
+  vbTime.textContent = formatTime(video.currentTime);
+  if (!seekDragging) {
+    vbSeek.value = duration > 0 && Number.isFinite(duration)
+      ? String(Math.round((video.currentTime / duration) * 1000))
+      : "0";
+  }
+}
+
+for (const type of ["play", "pause", "ended", "timeupdate", "durationchange", "volumechange", "emptied"]) {
+  video.addEventListener(type, syncVideoBar);
+}
+
+video.addEventListener("error", () => {
+  if (!showingVideo || !video.getAttribute("src")) return;
+  const name = baseName(images[index] ?? "");
+  // 3: デコードできない / 4: 形式に対応していない。どちらも OS 側の再生機能の問題
+  const code = video.error?.code;
+  showError(
+    code === 3 || code === 4
+      ? `この動画は再生できません（OS が対応していない形式です）: ${name}`
+      : `動画を読み込めませんでした: ${name}`
+  );
+});
+
+// ボタンは押したらフォーカスを外す（Space が「ボタンを押す」にならないように）
+vbPlay.addEventListener("click", () => {
+  togglePlay();
+  vbPlay.blur();
+});
+vbMute.addEventListener("click", () => {
+  toggleMute();
+  vbMute.blur();
+});
+
+vbSeek.addEventListener("pointerdown", () => (seekDragging = true));
+vbSeek.addEventListener("input", () => {
+  if (!Number.isFinite(video.duration)) return;
+  video.currentTime = (Number(vbSeek.value) / 1000) * video.duration;
+  vbTime.textContent = formatTime(video.currentTime);
+});
+vbSeek.addEventListener("change", () => {
+  seekDragging = false;
+  vbSeek.blur();
+});
+
+vbVolume.addEventListener("input", () => {
+  video.volume = Number(vbVolume.value) / 100;
+  // 音量を上げたら消音も解く（上げても聞こえないのは分かりにくい）
+  if (video.volume > 0 && video.muted) {
+    video.muted = false;
+    settings.videoMuted = false;
+  }
+});
+// 保存はつまみを離したときだけ（ドラッグ中に何度も書き込まない）
+vbVolume.addEventListener("change", () => {
+  settings.videoVolume = Number(vbVolume.value);
+  saveSettings();
+  vbVolume.blur();
 });
 
 // ---- open / navigate ----
@@ -349,6 +555,11 @@ function clearView() {
   showToken++;
   images = [];
   index = -1;
+  unloadVideo();
+  showingVideo = false;
+  app.classList.remove("video");
+  video.hidden = true;
+  img.hidden = false;
   img.removeAttribute("src");
   setFitMode();
   placeholder.hidden = false;
@@ -445,7 +656,7 @@ async function refreshFolder() {
     index = Math.min(Math.max(index, 0), images.length - 1);
     await show();
   }
-  if (added > 0) showToast(`画像が ${added} 枚増えました`, "notice");
+  if (added > 0) showToast(`ファイルが ${added} 件増えました`, "notice");
 }
 
 listen("folder-changed", scheduleRefresh);
@@ -506,10 +717,15 @@ async function deleteCurrent() {
     // 確認している間に別の画像へ移っていたら、そのときの 1 枚を消さない
     if (images[index] !== path) return;
   }
+  // 再生中の動画はファイルを手放してから送る
+  const wasVideo = showingVideo;
+  unloadVideo();
   try {
     await invoke("delete_image", { path });
   } catch (e) {
     showError(e);
+    // 送れなかったら、止めた動画を表示し直す
+    if (wasVideo && images[index] === path) show();
     return;
   }
   // 監視の合図を待たずにその場で一覧から外す
@@ -529,8 +745,12 @@ async function openDialog() {
     const selected = await dialog.open({
       multiple: false,
       filters: [
-        { name: "画像・圧縮フォルダ", extensions: [...IMAGE_EXT_FILTER, ...ARCHIVE_EXT_FILTER] },
+        {
+          name: "画像・動画・圧縮フォルダ",
+          extensions: [...IMAGE_EXT_FILTER, ...VIDEO_EXT_FILTER, ...ARCHIVE_EXT_FILTER],
+        },
         { name: "画像", extensions: IMAGE_EXT_FILTER },
+        { name: "動画", extensions: VIDEO_EXT_FILTER },
         { name: "圧縮フォルダ (zip / cbz)", extensions: ARCHIVE_EXT_FILTER },
       ],
     });
@@ -582,6 +802,42 @@ document.addEventListener("mouseleave", hideChrome);
 window.addEventListener("blur", hideChrome);
 
 // ---- input: keyboard ----
+// 動画を表示している間だけのキー。処理したら true を返す。
+// ← → は前後のファイルへの移動のまま（Shift を押しているときだけ早送り・巻き戻し）
+function handleVideoKey(e) {
+  switch (e.key) {
+    case " ":
+    case "k":
+    case "K":
+      if (!e.repeat) togglePlay();
+      break;
+    case "m":
+    case "M":
+      if (!e.repeat) toggleMute();
+      break;
+    case "j":
+    case "J":
+      seekBy(-SEEK_STEP_S);
+      break;
+    case "l":
+    case "L":
+      seekBy(SEEK_STEP_S);
+      break;
+    case "ArrowLeft":
+      if (!e.shiftKey) return false;
+      seekBy(-SEEK_STEP_S);
+      break;
+    case "ArrowRight":
+      if (!e.shiftKey) return false;
+      seekBy(SEEK_STEP_S);
+      break;
+    default:
+      return false;
+  }
+  e.preventDefault();
+  return true;
+}
+
 window.addEventListener("keydown", (e) => {
   // 確認ウィンドウが開いている間は、そちらの操作だけを受け付ける。
   // Enter はフォーカスのあるボタンを押す既定の動きに任せる（誤って「移動」を
@@ -607,6 +863,7 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (showingVideo && handleVideoKey(e)) return;
   switch (e.key) {
     case "ArrowRight":
     case "ArrowDown":
@@ -827,6 +1084,9 @@ function applySettings() {
   app.classList.toggle("hide-filename", !settings.showFilename);
   app.classList.toggle("hide-nav", !settings.showNavButtons);
   img.style.imageRendering = settings.imageRendering;
+  video.loop = !!settings.videoLoop;
+  video.volume = videoVolume();
+  video.muted = !!settings.videoMuted;
   appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
   syncWatcher();
 }
@@ -910,8 +1170,30 @@ function buildContextMenu() {
     { label: "フォルダを開く…", accel: "D", action: openFolderDialog },
     { label: "再読み込み", accel: "R", disabled: !hasFile, action: rescan },
     { separator: true },
-    { label: "ウィンドウに合わせる", accel: "0", disabled: !hasFile, action: setFitMode },
-    { label: "等倍 (100%)", accel: "1", disabled: !hasFile, action: () => zoomTo(1) },
+    ...(showingVideo
+      ? [
+          {
+            label: video.paused || video.ended ? "再生" : "一時停止",
+            accel: "Space",
+            action: togglePlay,
+          },
+          { label: video.muted ? "消音を解除" : "消音", accel: "M", action: toggleMute },
+          { separator: true },
+        ]
+      : []),
+    // 動画は常にウィンドウに合わせて表示する（拡大縮小しない）
+    {
+      label: "ウィンドウに合わせる",
+      accel: "0",
+      disabled: !hasFile || showingVideo,
+      action: setFitMode,
+    },
+    {
+      label: "等倍 (100%)",
+      accel: "1",
+      disabled: !hasFile || showingVideo,
+      action: () => zoomTo(1),
+    },
     { label: "全画面表示", accel: "F", action: toggleFullscreen },
     { separator: true },
     { label: "設定…", accel: SETTINGS_ACCEL, action: openSettings },

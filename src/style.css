@@ -42,14 +42,16 @@ body {
   cursor: grabbing;
 }
 
-#image {
+#image,
+#video {
   /* pointer-events を切ることで、クリックが常に #stage（ドラッグ領域）に届く */
   pointer-events: none;
   transform-origin: 0 0;
   image-rendering: auto;
 }
 
-#image.fit {
+#image.fit,
+#video.fit {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
@@ -57,7 +59,8 @@ body {
 
 /* ウィンドウをドラッグしている間、画像の大きさを据え置くための状態。
    大きさは JS が px で入れるので、フィットの上限は外す（.fit より後に置く） */
-#image.frozen {
+#image.frozen,
+#video.frozen {
   max-width: none;
   max-height: none;
 }
@@ -122,9 +125,11 @@ body {
 
 #app.chrome-visible #titlebar,
 #app.chrome-visible #statusbar,
+#app.chrome-visible #videobar,
 #app.chrome-visible .nav,
 #chrome:focus-within #titlebar,
 #chrome:focus-within #statusbar,
+#chrome:focus-within #videobar,
 #chrome:focus-within .nav {
   pointer-events: auto;
 }
@@ -232,6 +237,102 @@ body {
   color: #a8a8b0;
   font-size: 11px;
   white-space: nowrap;
+}
+
+/* ---- 動画の再生操作 ----
+   動画を表示しているとき（#app.video）だけ出す */
+#videobar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 30px;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  /* 下の #statusbar（ドラッグ領域）より手前に置き、操作を奪われないようにする */
+  z-index: 1;
+}
+
+#app.video #videobar {
+  display: flex;
+}
+
+/* ファイル名の帯を隠しているときは、その分だけ下へ寄せて背景の帯を自前で持つ */
+#app.hide-filename #videobar {
+  bottom: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
+}
+
+#app.video:not(.hide-filename) #statusbar {
+  height: 60px;
+  align-items: flex-end;
+  padding-bottom: 8px;
+}
+
+.vb {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #e8e8ec;
+  cursor: pointer;
+}
+
+.vb:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.vb svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#vb-play .i-play {
+  fill: currentColor;
+}
+
+/* 再生中は一時停止、止まっているときは再生のアイコンを出す */
+#videobar:not(.paused) #vb-play .i-play,
+#videobar.paused #vb-play .i-pause,
+#videobar.muted #vb-mute .i-sound,
+#videobar:not(.muted) #vb-mute .i-muted {
+  display: none;
+}
+
+.vb-time {
+  flex-shrink: 0;
+  color: #d6d6dc;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#videobar input[type="range"] {
+  height: 4px;
+  accent-color: #e8e8ec;
+  cursor: pointer;
+}
+
+#vb-seek {
+  flex: 1;
+  min-width: 40px;
+}
+
+#vb-volume {
+  flex-shrink: 0;
+  width: 70px;
 }
 
 .nav {

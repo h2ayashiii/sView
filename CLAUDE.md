@@ -5,7 +5,7 @@ Guidance for coding agents working in this repository.
 ## Overview
 
 sView is a minimal, frameless, cross-platform image viewer built with **Tauri v2**.
-It opens single images, folders, and zip/cbz archives; the overlay UI shows while the mouse
+It opens single images, videos, folders, and zip/cbz archives; the overlay UI shows while the mouse
 moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` toggle
 `#app.chrome-visible` in `src/main.js`).
 
@@ -98,6 +98,19 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `main.js` and `tauri.conf.json` and fails when they drift, so `cargo test` catches it.
   Archives (`ARCHIVE_EXTS`: `zip` / `cbz`) are deliberately **not** file-associated, neither by the
   installer nor from the settings window; they open via drag & drop, `O` and the command line.
+  Videos are the same: `VIDEO_EXTS` (`lib.rs`) and `VIDEO_EXT_FILTER` (`main.js`) must match (the
+  same test checks it), and they are not in `fileAssociations`.
+- Videos play in a `<video>` element with whatever decoder the OS WebView has (WebView2 / WKWebView /
+  WebKitGTK + GStreamer). **No codec is bundled** — that keeps codec patent licensing out of the
+  app — so `VIDEO_EXTS` is limited to containers most WebViews handle (`mp4` / `m4v` / `webm` /
+  `mov`); anything the WebView can't decode just shows an error. Videos are listed only from
+  folders (`is_media`), never from archives (`read_archive_entry` loads a whole entry into memory).
+  They load through the asset protocol, so the CSP needs `media-src` alongside `img-src`.
+  `unloadVideo()` (pause + drop `src` + `load()`) runs before every `show()` and before
+  `delete_image` so the WebView lets go of the file. Videos are always shown fitted (no zoom);
+  `mediaSize()` / `mediaEl()` stand in for `img.naturalWidth` etc. in the window-fit and freeze
+  logic. While a video is shown, `handleVideoKey` takes Space / K (play-pause), M (mute),
+  J / L and Shift+← / → (±5 s); plain ← / → still move between files.
 - Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
   `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
   into `settings.json`.

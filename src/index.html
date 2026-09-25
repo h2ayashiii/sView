@@ -8,12 +8,14 @@
 </head>
 <body>
   <div id="app">
-    <!-- 画像表示ステージ（フィット表示中はウィンドウのドラッグ領域を兼ねる） -->
+    <!-- 画像・動画の表示ステージ（フィット表示中はウィンドウのドラッグ領域を兼ねる）。
+         動画は OS の WebView が持つデコーダで再生する（コーデックは同梱しない） -->
     <div id="stage" data-tauri-drag-region>
       <img id="image" alt="" draggable="false" />
+      <video id="video" hidden playsinline preload="metadata" disablepictureinpicture></video>
       <div id="placeholder">
         <p class="big">sView</p>
-        <p>画像・フォルダ・圧縮フォルダ (zip / cbz) をここにドロップ</p>
+        <p>画像・動画・フォルダ・圧縮フォルダ (zip / cbz) をここにドロップ</p>
         <p class="dim">クリック または <code>O</code> でファイル、<code>D</code> でフォルダを開く</p>
         <p class="dim">← → で移動</p>
       </div>
@@ -47,6 +49,26 @@
       </div>
       <button id="nav-prev" class="nav" title="前の画像 (←)" aria-label="前の画像">&#x276E;</button>
       <button id="nav-next" class="nav" title="次の画像 (→)" aria-label="次の画像">&#x276F;</button>
+      <!-- 動画を表示しているときだけ出す再生操作（ステータスバーのすぐ上）。
+           ウィンドウのドラッグ領域にはしない（シーク操作がウィンドウの移動にならないように） -->
+      <div id="videobar">
+        <button id="vb-play" class="vb" type="button" title="再生 (Space)" aria-label="再生">
+          <svg class="i-play" viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.8v6.4L8.2 5z" /></svg>
+          <svg class="i-pause" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.2 2v6M6.8 2v6" /></svg>
+        </button>
+        <span id="vb-time" class="vb-time">0:00</span>
+        <input id="vb-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="再生位置" />
+        <span id="vb-duration" class="vb-time">0:00</span>
+        <button id="vb-mute" class="vb" type="button" title="消音 (M)" aria-label="消音">
+          <svg class="i-sound" viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M1.5 3.8h1.8L5.6 2v6L3.3 6.2H1.5z" /><path d="M7.2 3.4q1.2 1.6 0 3.2" />
+          </svg>
+          <svg class="i-muted" viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M1.5 3.8h1.8L5.6 2v6L3.3 6.2H1.5z" /><path d="M7 4l2 2M9 4L7 6" />
+          </svg>
+        </button>
+        <input id="vb-volume" type="range" min="0" max="100" step="1" value="100" aria-label="音量" />
+      </div>
       <!-- 表示中のファイル（書庫内はその中のパス）は左下、枚数は右下に出す -->
       <div id="statusbar" data-tauri-drag-region>
         <span id="filename" data-tauri-drag-region></span>
@@ -62,7 +84,7 @@
     <!-- 削除の確認。設定「削除の前に確認する」がオンのときだけ出す -->
     <div id="confirm" hidden role="dialog" aria-modal="true" aria-labelledby="confirm-title">
       <div id="confirm-box">
-        <p id="confirm-title">この画像をゴミ箱へ移動しますか？</p>
+        <p id="confirm-title">このファイルをゴミ箱へ移動しますか？</p>
         <p id="confirm-name"></p>
         <label id="confirm-skip-row">
           <input type="checkbox" id="confirm-skip" />
