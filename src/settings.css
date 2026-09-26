@@ -86,6 +86,67 @@ body {
   color: #fff;
 }
 
+#s-close .i-mac {
+  display: none;
+}
+
+/* macOS は本体と同じく、閉じるボタンを左上の信号機ボタン（直径 12px・標準色）にし、
+   × はカーソルを乗せたときだけ出す。非アクティブの間は灰色にする。
+   タイトルは OS 標準に合わせて中央に置く（左右の余白を揃えて中心をずらさない） */
+#win.mac #s-titlebar {
+  padding: 0 12px;
+}
+
+#win.mac #s-title {
+  text-align: center;
+  padding-right: 22px;
+}
+
+#win.mac #s-close {
+  order: -1;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 0.5px solid #e0443e;
+  border-radius: 50%;
+  background: #ff5f57;
+  color: #4d0000;
+  cursor: default;
+}
+
+#win.mac #s-close .i-other {
+  display: none;
+}
+
+#win.mac #s-close .i-mac {
+  display: block;
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  opacity: 0;
+}
+
+#win.mac #s-close:hover .i-mac {
+  opacity: 1;
+}
+
+#win.mac #s-close:active {
+  filter: brightness(0.85);
+}
+
+#win.mac.inactive #s-close:not(:hover) {
+  background: #4d4d51;
+  border-color: #3c3c40;
+}
+
 /* ---- scrollable body ---- */
 #s-body {
   flex: 1;

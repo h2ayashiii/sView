@@ -8,10 +8,14 @@
 </head>
 <body>
   <div id="win">
-    <!-- 本体と同じく枠なし。上部が独自タイトルバー兼ドラッグ領域 -->
+    <!-- 本体と同じく枠なし。上部が独自タイトルバー兼ドラッグ領域。
+         閉じるボタンは macOS では左上の赤い信号機ボタンにする（#win.mac） -->
     <div id="s-titlebar" data-tauri-drag-region>
       <span id="s-title" data-tauri-drag-region>設定</span>
-      <button id="s-close" title="閉じる (Esc)" aria-label="閉じる">&#x2715;</button>
+      <button id="s-close" title="閉じる (Esc)" aria-label="閉じる">
+        <span class="i-other" aria-hidden="true">&#x2715;</span>
+        <svg class="i-mac" viewBox="0 0 12 12" aria-hidden="true"><path d="M3.6 3.6l4.8 4.8M8.4 3.6l-4.8 4.8" /></svg>
+      </button>
     </div>
 
     <!-- 項目が収まらなくなったらここだけがスクロールする（ページ・タブ分割はしない） -->

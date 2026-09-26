@@ -197,7 +197,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   adds an always-active `NSTrackingArea` to the main window's content view and emits
   `pointer-inside` (bool) and, only while the window is not key, a throttled `pointer-moved`;
   `main.js` feeds both into `showChrome` / `hideChrome`. The window controls are drawn as
-  traffic lights in CSS (`#app.mac`), greyed out via `#app.inactive`.
+  traffic lights in CSS (`#app.mac`), greyed out via `#app.inactive`; the settings window's close
+  button does the same (`#win.mac` / `#win.inactive` in `settings.css`).
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a
