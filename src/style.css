@@ -194,13 +194,77 @@ body {
   display: block;
 }
 
-/* macOS はウィンドウ操作ボタンを左上に置き、並びも「閉じる / 最小化 / 最大化」にする */
+.wc .i-mac {
+  display: none;
+}
+
+/* macOS はウィンドウ操作ボタンを左上に置き、並びも「閉じる / 最小化 / 最大化」にする。
+   見た目も OS 標準の信号機ボタンに寄せる: 直径 12px の円を 8px 間隔で並べ、
+   記号はボタン群にカーソルを乗せたときだけ出す。
+   ウィンドウが非アクティブの間は、乗せるまで灰色にする */
 #app.mac #titlebar {
   justify-content: flex-start;
+  align-items: flex-start;
+  padding: 8px 8px 0;
+}
+
+#app.mac #wincontrols {
+  gap: 8px;
 }
 
 #app.mac #btn-close {
   order: -1;
+}
+
+#app.mac .wc {
+  width: 12px;
+  height: 12px;
+  border: 0.5px solid;
+  border-radius: 50%;
+  cursor: default;
+}
+
+#app.mac #btn-close {
+  background: #ff5f57;
+  border-color: #e0443e;
+  color: #4d0000;
+}
+
+#app.mac #btn-min {
+  background: #febc2e;
+  border-color: #dea123;
+  color: #995700;
+}
+
+#app.mac #btn-max {
+  background: #28c840;
+  border-color: #1aab29;
+  color: #006500;
+}
+
+#app.mac #wincontrols svg:not(.i-mac) {
+  display: none;
+}
+
+#app.mac .wc .i-mac {
+  display: block;
+  width: 12px;
+  height: 12px;
+  stroke-width: 1.3;
+  opacity: 0;
+}
+
+#app.mac #wincontrols:hover .i-mac {
+  opacity: 1;
+}
+
+#app.mac .wc:active {
+  filter: brightness(0.85);
+}
+
+#app.mac.inactive #wincontrols:not(:hover) .wc {
+  background: #4d4d51;
+  border-color: #3c3c40;
 }
 
 /* ---- status bar（左: 表示中のファイル / 右: 枚数） ---- */

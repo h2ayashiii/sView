@@ -145,7 +145,9 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - The "fit on screen" clamp (`screen_limit`, `SCREEN_RATIO` = 95% of the work area) runs **once
   per launch**: `StartupFit` is consumed by the first `fit_window_to_image`, so a restored window
   still lands on screen when the monitor setup changed, and nothing fights the user's own size
-  afterwards. A drag (`keep_aspect_on_resize`) is never clamped, so a tall image can end up
+  afterwards. That first fit also writes its (possibly clamped) area into `AspectLock` —
+  otherwise the second image would jump back to the unclamped area and the window would grow
+  once (easy to hit on small logical screens such as MacBooks, with a portrait image). A drag (`keep_aspect_on_resize`) is never clamped, so a tall image can end up
   sized past the bottom of the screen — that is deliberate.
 - The aspect lock is enforced in `WindowEvent::Resized` (`keep_aspect_on_resize`), which also
   arrives mid-drag, so the window can only be dragged along the image's ratio. Tauri exposes no
@@ -192,6 +194,13 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   confirm. macOS sets it directly via `LSSetDefaultRoleHandlerForContentType` (raw FFI in
   `mac_assoc`); there is no API to unset. Linux reports `supported: false`. The selectable list is
   `associable_exts()` = `IMAGE_EXTS` only (archives are deliberately excluded).
+- macOS: WKWebView only tracks the mouse while its window is key, so an inactive window gets no
+  `mousemove` and leaving the window fires no reliable `mouseleave`. `mac_pointer` (in `lib.rs`)
+  adds an always-active `NSTrackingArea` to the main window's content view and emits
+  `pointer-inside` (bool) and, only while the window is not key, a throttled `pointer-moved`;
+  `main.js` feeds both into `showChrome` / `hideChrome`. The window controls are drawn as
+  traffic lights in CSS (`#app.mac`), greyed out via `#app.inactive`; the settings window's close
+  button does the same (`#win.mac` / `#win.inactive` in `settings.css`).
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a

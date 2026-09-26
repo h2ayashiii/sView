@@ -14,6 +14,18 @@ function closeWindow() {
 }
 
 document.getElementById("s-close").addEventListener("click", closeWindow);
+
+// macOS だけ閉じるボタンを信号機ボタンにする（本体の main.js と同じ判定）。
+// 非アクティブの間は灰色にする
+const winEl = document.getElementById("win");
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+winEl.classList.toggle("mac", IS_MAC);
+function syncActive() {
+  winEl.classList.toggle("inactive", !document.hasFocus());
+}
+window.addEventListener("focus", syncActive);
+window.addEventListener("blur", syncActive);
+syncActive();
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeWindow();
 });
