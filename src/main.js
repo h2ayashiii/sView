@@ -139,7 +139,10 @@ function setFitMode() {
   img.style.transform = "";
   img.style.position = "";
   unfreezeImageSize();
-  stage.setAttribute("data-tauri-drag-region", "");
+  // 動画の上はクリックで再生 / 一時停止にするので、ウィンドウのドラッグ領域にしない
+  // （ドラッグはタイトルバー・ステータスバーで行う）
+  if (showingVideo) stage.removeAttribute("data-tauri-drag-region");
+  else stage.setAttribute("data-tauri-drag-region", "");
   stage.classList.remove("panning");
 }
 
@@ -257,6 +260,9 @@ function updateChrome() {
   counterEl.textContent = `${index + 1} / ${images.length}`;
   navPrev.disabled = index === 0;
   navNext.disabled = index === images.length - 1;
+  // 動画の間は ← → が早送り・巻き戻しになるので、移動のキーは Shift + ← → と示す
+  navPrev.title = showingVideo ? "前のファイル (Shift + ←)" : "前の画像 (←)";
+  navNext.title = showingVideo ? "次のファイル (Shift + →)" : "次の画像 (→)";
   appWindow.setTitle(`${baseName(images[index])} - sView`).catch(() => {});
 }
 
@@ -388,6 +394,11 @@ img.addEventListener("error", () => {
 // 再生は OS の WebView 任せ（Windows: WebView2 / macOS: WKWebView）。
 // 再生できる形式は OS ごとに違い、sView からは増やせない
 const SEEK_STEP_S = 5;
+// ↑ ↓ で変える音量の幅（0〜1）
+const VOLUME_STEP = 0.05;
+// ↑ ↓ を押し続けている間は保存をまとめる（押すたびに settings.json を書かない）
+const VOLUME_SAVE_DELAY_MS = 500;
+let volumeSaveTimer = null;
 // シークバーをつかんでいる間は、再生位置でつまみを動かさない
 let seekDragging = false;
 // 自動再生の制限で音を消したことは 1 回だけ知らせる（動画ごとに出すとうるさい）
@@ -449,6 +460,22 @@ function seekBy(seconds) {
   if (!showingVideo || !Number.isFinite(video.duration)) return;
   video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + seconds));
   // どこまで動いたかが見えるよう、再生操作を出す
+  showChrome();
+}
+
+function changeVolumeBy(delta) {
+  if (!showingVideo) return;
+  const volume = Math.min(1, Math.max(0, Math.round((video.volume + delta) * 100) / 100));
+  video.volume = volume;
+  settings.videoVolume = Math.round(volume * 100);
+  // 音量を上げたら消音も解く（再生バーの音量つまみと同じ扱い）
+  if (delta > 0 && video.muted) {
+    video.muted = false;
+    settings.videoMuted = false;
+  }
+  clearTimeout(volumeSaveTimer);
+  volumeSaveTimer = setTimeout(saveSettings, VOLUME_SAVE_DELAY_MS);
+  // 音量つまみで結果が見えるよう、再生操作を出す
   showChrome();
 }
 
@@ -803,7 +830,8 @@ window.addEventListener("blur", hideChrome);
 
 // ---- input: keyboard ----
 // 動画を表示している間だけのキー。処理したら true を返す。
-// ← → は前後のファイルへの移動のまま（Shift を押しているときだけ早送り・巻き戻し）
+// ← → は早送り・巻き戻し、↑ ↓ は音量。前後のファイルへは Shift + ← → や
+// PageUp / PageDown などで移る
 function handleVideoKey(e) {
   switch (e.key) {
     case " ":
@@ -824,12 +852,18 @@ function handleVideoKey(e) {
       seekBy(SEEK_STEP_S);
       break;
     case "ArrowLeft":
-      if (!e.shiftKey) return false;
-      seekBy(-SEEK_STEP_S);
+      if (e.shiftKey) step(-1);
+      else seekBy(-SEEK_STEP_S);
       break;
     case "ArrowRight":
-      if (!e.shiftKey) return false;
-      seekBy(SEEK_STEP_S);
+      if (e.shiftKey) step(1);
+      else seekBy(SEEK_STEP_S);
+      break;
+    case "ArrowUp":
+      changeVolumeBy(VOLUME_STEP);
+      break;
+    case "ArrowDown":
+      changeVolumeBy(-VOLUME_STEP);
       break;
     default:
       return false;
@@ -975,6 +1009,19 @@ window.addEventListener("mousemove", (e) => {
   applyTransform();
 });
 window.addEventListener("mouseup", () => (panning = null));
+
+// ---- input: 動画のクリックで再生 / 一時停止 ----
+// 開いていたメニューを閉じるための押下では切り替えない
+let pressClosedMenu = false;
+let stageClickArmed = false;
+stage.addEventListener("mousedown", (e) => {
+  stageClickArmed = e.button === 0 && !pressClosedMenu;
+});
+stage.addEventListener("click", (e) => {
+  // ダブルクリックの 2 回目は数えない（2 回切り替わって元に戻らないように）
+  if (!showingVideo || !stageClickArmed || e.detail > 1 || !confirmEl.hidden) return;
+  togglePlay();
+});
 
 // ---- misc UI ----
 placeholder.addEventListener("click", openDialog);
@@ -1240,7 +1287,8 @@ function openContextMenu(x, y) {
 }
 
 window.addEventListener("mousedown", (e) => {
-  if (!ctxmenu.hidden && !ctxmenu.contains(e.target)) hideContextMenu();
+  pressClosedMenu = !ctxmenu.hidden && !ctxmenu.contains(e.target);
+  if (pressClosedMenu) hideContextMenu();
 }, true);
 window.addEventListener("blur", hideContextMenu);
 window.addEventListener("resize", hideContextMenu);

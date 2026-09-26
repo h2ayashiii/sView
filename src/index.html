@@ -57,7 +57,7 @@
           <svg class="i-pause" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.2 2v6M6.8 2v6" /></svg>
         </button>
         <span id="vb-time" class="vb-time">0:00</span>
-        <input id="vb-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="再生位置" />
+        <input id="vb-seek" type="range" min="0" max="1000" step="1" value="0" title="再生位置 (← →)" aria-label="再生位置" />
         <span id="vb-duration" class="vb-time">0:00</span>
         <button id="vb-mute" class="vb" type="button" title="消音 (M)" aria-label="消音">
           <svg class="i-sound" viewBox="0 0 10 10" aria-hidden="true">
@@ -67,7 +67,7 @@
             <path d="M1.5 3.8h1.8L5.6 2v6L3.3 6.2H1.5z" /><path d="M7 4l2 2M9 4L7 6" />
           </svg>
         </button>
-        <input id="vb-volume" type="range" min="0" max="100" step="1" value="100" aria-label="音量" />
+        <input id="vb-volume" type="range" min="0" max="100" step="1" value="100" title="音量 (↑ ↓)" aria-label="音量" />
       </div>
       <!-- 表示中のファイル（書庫内はその中のパス）は左下、枚数は右下に出す -->
       <div id="statusbar" data-tauri-drag-region>

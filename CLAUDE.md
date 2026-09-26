@@ -113,7 +113,10 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `delete_image` so the WebView lets go of the file. Videos are always shown fitted (no zoom);
   `mediaSize()` / `mediaEl()` stand in for `img.naturalWidth` etc. in the window-fit and freeze
   logic. While a video is shown, `handleVideoKey` takes Space / K (play-pause), M (mute),
-  J / L and Shift+← / → (±5 s); plain ← / → still move between files.
+  ← / → and J / L (±5 s), ↑ / ↓ (volume ±5 %, saved after a 500 ms pause) and Shift+← / →
+  (previous / next file). A click on the video toggles play-pause, so `setFitMode` leaves
+  `#stage` without `data-tauri-drag-region` while a video is shown (the window drags from the
+  title bar / status bar instead).
 - Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
   `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
   into `settings.json`.
