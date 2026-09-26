@@ -1997,6 +1997,126 @@ mod mac_assoc {
     }
 }
 
+/// macOS: メインウィンドウへのカーソルの出入りと移動をフロントエンドへ知らせる。
+///
+/// WKWebView 自身の追跡範囲は「キーウィンドウのときだけ」有効なので、ウィンドウが
+/// 非アクティブだと mousemove が届かず、アクティブでも外へ出たときの mouseleave が
+/// 当てにならない（Windows の WebView2 はどちらも届く）。そこで content view に
+/// 常時有効な NSTrackingArea を足し、出入りは `pointer-inside`（bool）、
+/// 非アクティブ中の移動は `pointer-moved` として送る。アクティブ中の移動は
+/// WebView の mousemove が届くので送らない
+#[cfg(target_os = "macos")]
+mod mac_pointer {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, NSObject};
+    use objc2::{
+        define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
+    };
+    use objc2_app_kit::{NSEvent, NSTrackingArea, NSTrackingAreaOptions, NSWindow};
+    use objc2_foundation::NSRect;
+    use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+
+    /// 非アクティブ中の移動を送る最短間隔（表示を出し直すだけなので粗くてよい）
+    const MOVE_INTERVAL: Duration = Duration::from_millis(100);
+
+    struct Ivars {
+        app: AppHandle,
+        window: Retained<NSWindow>,
+        last_move: Cell<Option<Instant>>,
+    }
+
+    define_class!(
+        #[unsafe(super(NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "SViewPointerTracker"]
+        #[ivars = Ivars]
+        struct PointerTracker;
+
+        impl PointerTracker {
+            #[unsafe(method(mouseEntered:))]
+            fn mouse_entered(&self, _event: &NSEvent) {
+                self.emit_inside(true);
+            }
+
+            #[unsafe(method(mouseExited:))]
+            fn mouse_exited(&self, _event: &NSEvent) {
+                self.emit_inside(false);
+            }
+
+            #[unsafe(method(mouseMoved:))]
+            fn mouse_moved(&self, _event: &NSEvent) {
+                let ivars = self.ivars();
+                if ivars.window.isKeyWindow() {
+                    return;
+                }
+                let now = Instant::now();
+                if ivars
+                    .last_move
+                    .get()
+                    .is_some_and(|t| now.duration_since(t) < MOVE_INTERVAL)
+                {
+                    return;
+                }
+                ivars.last_move.set(Some(now));
+                let _ = ivars.app.emit_to("main", "pointer-moved", ());
+            }
+        }
+    );
+
+    impl PointerTracker {
+        fn emit_inside(&self, inside: bool) {
+            self.ivars().last_move.set(None);
+            let _ = self.ivars().app.emit_to("main", "pointer-inside", inside);
+        }
+    }
+
+    /// メインウィンドウに追跡範囲を取り付ける。setup() から（メインスレッドで）呼ぶ
+    pub fn install(window: &WebviewWindow) -> Result<(), String> {
+        let mtm = MainThreadMarker::new().ok_or("メインスレッド以外から呼ばれました")?;
+        let ptr = window
+            .ns_window()
+            .map_err(|e| format!("NSWindow を取得できません: {e}"))?;
+        // SAFETY: Tauri が返すのは生きている NSWindow へのポインタ
+        let ns_window = unsafe { Retained::retain(ptr.cast::<NSWindow>()) }
+            .ok_or("NSWindow を取得できません")?;
+        let view = ns_window
+            .contentView()
+            .ok_or("ウィンドウの content view がありません")?;
+
+        let tracker = PointerTracker::alloc(mtm).set_ivars(Ivars {
+            app: window.app_handle().clone(),
+            window: ns_window,
+            last_move: Cell::new(None),
+        });
+        let tracker: Retained<PointerTracker> = unsafe { msg_send![super(tracker), init] };
+
+        // InVisibleRect: 範囲はビューの見えている部分に自動で追従する（rect は無視される）
+        let options = NSTrackingAreaOptions::MouseEnteredAndExited
+            | NSTrackingAreaOptions::MouseMoved
+            | NSTrackingAreaOptions::ActiveAlways
+            | NSTrackingAreaOptions::InVisibleRect;
+        let owner: &AnyObject = &tracker;
+        // SAFETY: owner は mouseEntered: / mouseExited: / mouseMoved: を実装している
+        let area = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                NSTrackingArea::alloc(),
+                NSRect::ZERO,
+                options,
+                Some(owner),
+                None,
+            )
+        };
+        view.addTrackingArea(&area);
+        // NSTrackingArea は owner を保持しない。メインウィンドウはアプリと同じだけ
+        // 生きるので、owner はわざと解放しない
+        std::mem::forget(tracker);
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn is_associated(_app: &AppHandle, ext: &str) -> bool {
     win_assoc::is_associated(ext)
@@ -2103,6 +2223,11 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 restore_window_state(&window.as_ref().window());
+                // 失敗しても表示の自動非表示が待ち時間頼みになるだけなので起動は続ける
+                #[cfg(target_os = "macos")]
+                if let Err(e) = mac_pointer::install(&window) {
+                    log::warn!("カーソルの追跡を開始できません: {e}");
+                }
                 // サイズを整えてから見せる（起動直後のちらつきを避ける）
                 let _ = window.show();
             }

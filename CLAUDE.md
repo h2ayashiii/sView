@@ -192,6 +192,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   confirm. macOS sets it directly via `LSSetDefaultRoleHandlerForContentType` (raw FFI in
   `mac_assoc`); there is no API to unset. Linux reports `supported: false`. The selectable list is
   `associable_exts()` = `IMAGE_EXTS` only (archives are deliberately excluded).
+- macOS: WKWebView only tracks the mouse while its window is key, so an inactive window gets no
+  `mousemove` and leaving the window fires no reliable `mouseleave`. `mac_pointer` (in `lib.rs`)
+  adds an always-active `NSTrackingArea` to the main window's content view and emits
+  `pointer-inside` (bool) and, only while the window is not key, a throttled `pointer-moved`;
+  `main.js` feeds both into `showChrome` / `hideChrome`. The window controls are drawn as
+  traffic lights in CSS (`#app.mac`), greyed out via `#app.inactive`.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a

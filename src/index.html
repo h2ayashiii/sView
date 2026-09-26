@@ -25,11 +25,13 @@
       <!-- ウィンドウ操作ボタン。OS の慣習に合わせて macOS は左上・
            「閉じる / 最小化 / 最大化」、それ以外は右上・「最小化 / 最大化 / 閉じる」
            （位置は #app.mac、並び順は CSS の order で切り替える）。
-           アイコンは字形の有無に左右されないよう SVG で描く -->
+           アイコンは字形の有無に左右されないよう SVG で描く。macOS では
+           i-mac（信号機ボタンの上に出す記号）だけを使う -->
       <div id="titlebar" data-tauri-drag-region>
         <div id="wincontrols">
           <button id="btn-min" class="wc" title="最小化" aria-label="最小化">
             <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 5h7" /></svg>
+            <svg class="i-mac" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.8 6h6.4" /></svg>
           </button>
           <button id="btn-max" class="wc" title="最大化" aria-label="最大化">
             <svg class="i-max" viewBox="0 0 10 10" aria-hidden="true">
@@ -39,9 +41,11 @@
               <path d="M3.2 3.2V1.5h5.3v5.3H6.8" />
               <rect x="1.5" y="3.2" width="5.3" height="5.3" rx="1" />
             </svg>
+            <svg class="i-mac" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2.8v6.4M2.8 6h6.4" /></svg>
           </button>
           <button id="btn-close" class="wc" title="閉じる (Esc)" aria-label="閉じる">
             <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6" /></svg>
+            <svg class="i-mac" viewBox="0 0 12 12" aria-hidden="true"><path d="M3.6 3.6l4.8 4.8M8.4 3.6l-4.8 4.8" /></svg>
           </button>
         </div>
       </div>

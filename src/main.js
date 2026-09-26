@@ -577,9 +577,28 @@ function showChrome() {
 
 window.addEventListener("mousemove", showChrome);
 window.addEventListener("mousedown", showChrome);
-// ウィンドウの外へ出たら待たずに消す
+// ウィンドウの外へ出たら待たずに消す。WebKit は document への mouseleave を
+// 出さないので、行き先のない mouseout（relatedTarget が null）でも拾う
 document.addEventListener("mouseleave", hideChrome);
+document.addEventListener("mouseout", (e) => {
+  if (!e.relatedTarget) hideChrome();
+});
 window.addEventListener("blur", hideChrome);
+
+// macOS の WKWebView はウィンドウがアクティブなときしかカーソルを追わないので、
+// 非アクティブ中の移動や外へ出たことは Rust 側（mac_pointer）から知らせてもらう
+if (IS_MAC) {
+  listen("pointer-inside", (e) => (e.payload ? showChrome() : hideChrome()));
+  listen("pointer-moved", showChrome);
+}
+
+// 非アクティブの間はウィンドウ操作ボタンを灰色にする（macOS の見た目）
+function syncActive() {
+  app.classList.toggle("inactive", !document.hasFocus());
+}
+window.addEventListener("focus", syncActive);
+window.addEventListener("blur", syncActive);
+syncActive();
 
 // ---- input: keyboard ----
 window.addEventListener("keydown", (e) => {

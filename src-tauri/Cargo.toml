@@ -34,6 +34,13 @@ trash = { version = "5", default-features = false, features = ["coinit_apartment
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 
+# macOS: 非アクティブなウィンドウでもカーソルの出入り・移動を拾う（NSTrackingArea）。
+# tauri / tao が使っているのと同じ版に合わせる
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSEvent", "NSResponder", "NSTrackingArea", "NSView", "NSWindow"] }
+
 # 軽量化: リリースバイナリを最小化
 [profile.release]
 codegen-units = 1
