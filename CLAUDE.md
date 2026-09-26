@@ -145,7 +145,9 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - The "fit on screen" clamp (`screen_limit`, `SCREEN_RATIO` = 95% of the work area) runs **once
   per launch**: `StartupFit` is consumed by the first `fit_window_to_image`, so a restored window
   still lands on screen when the monitor setup changed, and nothing fights the user's own size
-  afterwards. A drag (`keep_aspect_on_resize`) is never clamped, so a tall image can end up
+  afterwards. That first fit also writes its (possibly clamped) area into `AspectLock` —
+  otherwise the second image would jump back to the unclamped area and the window would grow
+  once (easy to hit on small logical screens such as MacBooks, with a portrait image). A drag (`keep_aspect_on_resize`) is never clamped, so a tall image can end up
   sized past the bottom of the screen — that is deliberate.
 - The aspect lock is enforced in `WindowEvent::Resized` (`keep_aspect_on_resize`), which also
   arrives mid-drag, so the window can only be dragged along the image's ratio. Tauri exposes no
