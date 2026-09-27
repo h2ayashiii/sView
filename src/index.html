@@ -53,8 +53,10 @@
            上段にシークバー、下段は左に再生時間・中央に再生ボタン類・右に音量。
            ウィンドウのドラッグ領域にはしない（シーク操作がウィンドウの移動にならないように） -->
       <div id="videobar">
+        <!-- シークバー・音量つまみにカーソルを乗せたときの時刻 / 音量の表示 -->
+        <div id="vb-tip" hidden></div>
         <div class="vb-top">
-          <input id="vb-seek" type="range" min="0" max="1000" step="1" value="0" title="再生位置 (← →)" aria-label="再生位置" />
+          <input id="vb-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="再生位置" />
         </div>
         <div class="vb-bottom">
           <div class="vb-left">
@@ -81,7 +83,7 @@
                 <path d="M1.5 3.8h1.8L5.6 2v6L3.3 6.2H1.5z" /><path d="M7 4l2 2M9 4L7 6" />
               </svg>
             </button>
-            <input id="vb-volume" type="range" min="0" max="100" step="1" value="100" title="音量 (↑ ↓)" aria-label="音量" />
+            <input id="vb-volume" type="range" min="0" max="100" step="1" value="100" aria-label="音量" />
           </div>
         </div>
       </div>

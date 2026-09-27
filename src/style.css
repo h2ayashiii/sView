@@ -380,6 +380,28 @@ body {
   margin: 0;
 }
 
+/* シークバー・音量つまみに乗せたときの吹き出し。対象のすぐ上に出す
+   （位置は main.js が left / top で入れる） */
+#vb-tip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  transform: translateX(-50%);
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.85);
+  color: #e8e8ec;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+#vb-tip[hidden] {
+  display: none;
+}
+
 /* 狭いウィンドウでは音量つまみを省く（消音ボタンと ↑ ↓ キーは使える） */
 @media (max-width: 320px) {
   #vb-volume {

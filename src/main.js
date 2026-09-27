@@ -18,6 +18,7 @@ const vbSeek = document.getElementById("vb-seek");
 const vbVolume = document.getElementById("vb-volume");
 const vbTime = document.getElementById("vb-time");
 const vbDuration = document.getElementById("vb-duration");
+const vbTip = document.getElementById("vb-tip");
 const placeholder = document.getElementById("placeholder");
 const errorBox = document.getElementById("error");
 const filenameEl = document.getElementById("filename");
@@ -555,6 +556,64 @@ vbSeek.addEventListener("input", () => {
 vbSeek.addEventListener("change", () => {
   seekDragging = false;
   vbSeek.blur();
+  // バーの外で離したときは吹き出しも消す
+  if (!vbSeek.matches(":hover")) hideVideoTip();
+});
+
+// ---- シークバー・音量つまみに乗せたときの吹き出し ----
+// シークバーはカーソル位置の時刻、音量つまみは今の音量を出す。
+// つまみの幅の分だけ端が内側に寄るので、位置の計算から除く（WebView の標準のつまみでおよそ 16px）
+const RANGE_THUMB_PX = 16;
+let volumeHover = false;
+
+// anchor（シークバー / 音量つまみ）のすぐ上、横は clientX に合わせる（カードからははみ出さない）
+function showVideoTip(text, clientX, anchor) {
+  vbTip.textContent = text;
+  vbTip.hidden = false;
+  const card = videobar.getBoundingClientRect();
+  const half = vbTip.offsetWidth / 2;
+  const x = Math.min(card.width - half, Math.max(half, clientX - card.left));
+  vbTip.style.left = `${x}px`;
+  vbTip.style.top = `${anchor.getBoundingClientRect().top - card.top - vbTip.offsetHeight - 4}px`;
+}
+
+function hideVideoTip() {
+  vbTip.hidden = true;
+}
+
+function rangeRatioAt(input, clientX) {
+  const r = input.getBoundingClientRect();
+  const track = r.width - RANGE_THUMB_PX;
+  if (track <= 0) return 0;
+  return Math.min(1, Math.max(0, (clientX - r.left - RANGE_THUMB_PX / 2) / track));
+}
+
+function showVolumeTip() {
+  const r = vbVolume.getBoundingClientRect();
+  if (!r.width) return;
+  const x = r.left + RANGE_THUMB_PX / 2 + video.volume * (r.width - RANGE_THUMB_PX);
+  const percent = Math.round(video.volume * 100);
+  showVideoTip(video.muted ? `消音中（音量 ${percent}%）` : `音量 ${percent}%`, x, vbVolume);
+}
+
+vbSeek.addEventListener("pointermove", (e) => {
+  if (!Number.isFinite(video.duration) || !(video.duration > 0)) return;
+  showVideoTip(formatTime(rangeRatioAt(vbSeek, e.clientX) * video.duration), e.clientX, vbSeek);
+});
+vbSeek.addEventListener("pointerleave", () => {
+  if (!seekDragging) hideVideoTip();
+});
+vbVolume.addEventListener("pointerenter", () => {
+  volumeHover = true;
+  showVolumeTip();
+});
+vbVolume.addEventListener("pointerleave", () => {
+  volumeHover = false;
+  hideVideoTip();
+});
+// つまみを動かしたとき・↑ ↓ や M で変えたときも、乗せている間は表示を追従させる
+video.addEventListener("volumechange", () => {
+  if (volumeHover) showVolumeTip();
 });
 
 vbVolume.addEventListener("input", () => {
@@ -826,6 +885,7 @@ function hideChrome() {
   // ボタンをクリックするとフォーカスが残り、:focus-within で出たままになるので外す
   if (chromeEl.contains(document.activeElement)) document.activeElement.blur();
   app.classList.remove("chrome-visible");
+  hideVideoTip();
 }
 
 function showChrome() {
