@@ -184,10 +184,12 @@ function enterZoomMode() {
   if (mode === "zoom" || showingVideo || !img.src || !img.naturalWidth) return;
   // 据え置き中なら先に戻す（据え置きの大きさから倍率を出すと二重にかかる）
   unfreezeImageSize();
+  // フィット表示の <img> は箱がウィンドウ全体で、絵は object-fit: contain で中に収まっている。
+  // 箱ではなく実際に描かれている絵の大きさと位置から倍率を出す
   const rect = img.getBoundingClientRect();
-  scale = rect.width / img.naturalWidth;
-  tx = rect.left;
-  ty = rect.top;
+  scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+  tx = rect.left + (rect.width - img.naturalWidth * scale) / 2;
+  ty = rect.top + (rect.height - img.naturalHeight * scale) / 2;
   mode = "zoom";
   img.className = "";
   img.style.position = "absolute";
