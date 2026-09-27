@@ -17,6 +17,11 @@ const IMAGE_EXTS: &[&str] = &[
     "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp",
 ];
 
+/// 対応する動画拡張子（小文字で比較）。
+/// デコードは OS の WebView に任せる（コーデックは同梱しない）ので、
+/// どの OS の WebView でもおおむね再生できるコンテナだけに絞っている
+const VIDEO_EXTS: &[&str] = &["m4v", "mov", "mp4", "webm"];
+
 /// 対応する書庫（圧縮フォルダ）拡張子
 const ARCHIVE_EXTS: &[&str] = &["cbz", "zip"];
 
@@ -113,6 +118,15 @@ fn has_ext(path: &Path, exts: &[&str]) -> bool {
 
 fn is_image(path: &Path) -> bool {
     has_ext(path, IMAGE_EXTS)
+}
+
+fn is_video(path: &Path) -> bool {
+    has_ext(path, VIDEO_EXTS)
+}
+
+/// フォルダで一覧に並べるもの（画像と動画）。書庫の中の動画は対象外
+fn is_media(path: &Path) -> bool {
+    is_image(path) || is_video(path)
 }
 
 fn is_archive(path: &Path) -> bool {
@@ -382,6 +396,49 @@ mod tests {
     }
 
     #[test]
+    fn video_extension_detection() {
+        assert!(is_video(Path::new("/x/clip.MP4")));
+        assert!(is_video(Path::new("/x/clip.webm")));
+        assert!(!is_video(Path::new("/x/clip.avi")));
+        assert!(!is_video(Path::new("/x/photo.png")));
+        assert!(is_media(Path::new("/x/clip.mov")));
+        assert!(is_media(Path::new("/x/photo.png")));
+        assert!(!is_media(Path::new("/x/notes.txt")));
+    }
+
+    /// フォルダでは画像と動画を混ぜて自然順に並べ、それ以外は外す
+    #[test]
+    fn folder_listing_mixes_images_and_videos() {
+        let dir = std::env::temp_dir().join(format!("sview-media-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "a10.png",
+            "a2.mp4",
+            "a1.jpg",
+            "a3.webm",
+            "notes.txt",
+            "a4.avi",
+        ] {
+            fs::write(dir.join(name), b"x").unwrap();
+        }
+        let list = list_dir_images(&dir, Some(std::ffi::OsStr::new("a3.webm"))).unwrap();
+        let names: Vec<String> = list
+            .images
+            .iter()
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, vec!["a1.jpg", "a2.mp4", "a3.webm", "a10.png"]);
+        assert_eq!(list.index, 2);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn listing_change_only_reacts_to_images_appearing_or_disappearing() {
         use notify::event::{
             CreateKind, DataChange, EventKind, ModifyKind, RemoveKind, RenameMode,
@@ -413,7 +470,12 @@ mod tests {
             EventKind::Modify(ModifyKind::Data(DataChange::Content)),
             &["/x/a.png"]
         )));
-        // 画像以外は無関係
+        // 動画も一覧に並ぶので対象
+        assert!(is_listing_change(&event(
+            EventKind::Create(CreateKind::File),
+            &["/x/new.mp4"]
+        )));
+        // 画像・動画以外は無関係
         assert!(!is_listing_change(&event(
             EventKind::Create(CreateKind::File),
             &["/x/notes.txt"]
@@ -519,6 +581,13 @@ mod tests {
             "tauri.conf.json の fileAssociations が IMAGE_EXTS とずれています"
         );
 
+        // 動画は開けるが OS には関連付けない（書庫と同じ扱い）
+        assert_eq!(
+            sorted(quoted_items(&main_js, "const VIDEO_EXT_FILTER = [", ']')),
+            sorted(VIDEO_EXTS.to_vec()),
+            "main.js の VIDEO_EXT_FILTER が VIDEO_EXTS とずれています"
+        );
+
         let archives = sorted(ARCHIVE_EXTS.to_vec());
         assert_eq!(
             sorted(quoted_items(&main_js, "const ARCHIVE_EXT_FILTER = [", ']')),
@@ -555,7 +624,7 @@ mod tests {
         assert_eq!(common_dir_prefix(&[]), "");
     }
 
-    /// 画像2枚とテキスト1枚を含む zip を作り、一覧と単体取り出しを確認する
+    /// 画像3枚とテキスト・動画各1件を含む zip を作り、一覧と単体取り出しを確認する
     #[test]
     fn archive_listing_and_single_entry_read() {
         use std::io::Write;
@@ -570,6 +639,8 @@ mod tests {
                 ("b/img10.png", "ten"),
                 ("b/img2.png", "two"),
                 ("readme.txt", "nope"),
+                // 書庫の中の動画は一覧に出さない（丸ごとメモリに読む方式なので）
+                ("b/clip.mp4", "video"),
             ] {
                 w.start_file(name, opts).unwrap();
                 w.write_all(body.as_bytes()).unwrap();
@@ -600,6 +671,7 @@ mod tests {
         assert!(read_archive_entry(&path, "b/none.png", &cache).is_err());
         // 画像以外は取り出せない
         assert!(read_archive_entry(&path, "readme.txt", &cache).is_err());
+        assert!(read_archive_entry(&path, "b/clip.mp4", &cache).is_err());
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -712,7 +784,7 @@ fn list_dir_images(dir: &Path, current: Option<&std::ffi::OsStr>) -> Result<Imag
         .map_err(|e| format!("フォルダを読めません: {e}"))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.is_file() && is_image(p))
+        .filter(|p| p.is_file() && is_media(p))
         .collect();
 
     entries.sort_by(|x, y| {
@@ -754,7 +826,7 @@ fn list_images(path: String, cache: State<ArchiveCache>) -> Result<ImageList, St
     if is_archive(&target) {
         return list_archive_images(&target, &cache);
     }
-    if !is_image(&target) {
+    if !is_media(&target) {
         return Err(format!("対応していないファイル形式です: {path}"));
     }
     let dir = target
@@ -774,7 +846,7 @@ fn read_archive_image(
     read_archive_entry(Path::new(&archive), &entry, &cache).map(Response::new)
 }
 
-/// 表示中の画像を OS のゴミ箱（Windows: ごみ箱 / macOS: ゴミ箱 / Linux: freedesktop の Trash）へ送る。
+/// 表示中の画像を OS のゴミ箱（Windows: ごみ箱 / macOS: ゴミ箱）へ送る。
 /// 完全削除はしないので、取り違えても OS 側から戻せる
 #[tauri::command]
 fn delete_image(path: String) -> Result<(), String> {
@@ -782,8 +854,8 @@ fn delete_image(path: String) -> Result<(), String> {
     if !target.is_file() {
         return Err(format!("ファイルが見つかりません: {path}"));
     }
-    if !is_image(&target) {
-        return Err(format!("画像ファイルではありません: {path}"));
+    if !is_media(&target) {
+        return Err(format!("画像・動画ファイルではありません: {path}"));
     }
     trash::delete(&target).map_err(|e| format!("ゴミ箱へ移動できませんでした: {e}"))?;
     log::info!("ゴミ箱へ移動しました: {path}");
@@ -791,7 +863,7 @@ fn delete_image(path: String) -> Result<(), String> {
 }
 
 /// 一覧を作り直す必要がある変更かどうか。
-/// 画像の増減（作成・削除・名前の変更）だけを拾い、中身の書き換えは無視する。
+/// 画像・動画の増減（作成・削除・名前の変更）だけを拾い、中身の書き換えは無視する。
 /// 種類を判別できない通知（EventKind::Any）は、取りこぼすより拾う方に倒す
 fn is_listing_change(event: &notify::Event) -> bool {
     use notify::event::{EventKind, ModifyKind};
@@ -802,8 +874,8 @@ fn is_listing_change(event: &notify::Event) -> bool {
             | EventKind::Remove(_)
             | EventKind::Modify(ModifyKind::Name(_))
     );
-    // 名前の変更では変更前と変更後の両方が入るので、どちらかが画像なら対象
-    kind_matches && event.paths.iter().any(|p| is_image(p))
+    // 名前の変更では変更前と変更後の両方が入るので、どちらかが画像・動画なら対象
+    kind_matches && event.paths.iter().any(|p| is_media(p))
 }
 
 /// 表示中のフォルダの監視を開始する（`path` が null なら監視をやめる）。
@@ -893,9 +965,7 @@ fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
 ///
 /// macOS: WKWebView にはデータフォルダを指定する仕組みが無く、置き場所
 /// （`~/Library/WebKit/<bundle ID>` など）は OS が bundle ID から決める。
-/// Linux: WebKitGTK が既定で `~/.local/share/sview` と `~/.cache/sview` を
-/// 使うので、こちらから指定する必要が無い。
-/// どちらも None を返して既定の挙動に任せる
+/// None を返して既定の挙動に任せる
 #[cfg(target_os = "windows")]
 fn webview_data_dir(app: &AppHandle) -> Option<PathBuf> {
     Some(app.path().local_data_dir().ok()?.join(CONFIG_DIR_NAME))
@@ -1593,7 +1663,7 @@ fn show_fatal_error(message: &str) {
         ))
         .status();
 
-    // Linux には共通のダイアログが無いので、stderr への出力だけで済ませる
+    // 対象外の OS（Linux など）は CI でテストをビルドするためだけの分岐
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let _ = text;
 }
@@ -1604,6 +1674,7 @@ fn open_folder(dir: &Path) -> Result<(), String> {
     let command = "explorer";
     #[cfg(target_os = "macos")]
     let command = "open";
+    // 対象外の OS（Linux など）は CI でテストをビルドするためだけの分岐
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let command = "xdg-open";
 
@@ -1626,6 +1697,7 @@ fn open_log_folder(app: AppHandle) -> Result<(), String> {
 /// OS のファイルマネージャーで対象を選択状態にして開く
 #[tauri::command]
 fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     use std::process::Command;
     let target = PathBuf::from(&path);
     if !target.exists() {
@@ -1648,16 +1720,9 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
         .spawn()
         .map(|_| ());
 
+    // 対象外の OS（Linux など）は CI でテストをビルドするためだけの分岐
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let result = {
-        // Linux には選択して開く共通の方法がないので、親フォルダを開く
-        let dir = if target.is_dir() {
-            target.clone()
-        } else {
-            target.parent().unwrap_or(&target).to_path_buf()
-        };
-        Command::new("xdg-open").arg(dir).spawn().map(|_| ())
-    };
+    let result: std::io::Result<()> = Err(std::io::Error::other("この OS には対応していません"));
 
     result.map_err(|e| format!("ファイルマネージャーを開けません: {e}"))
 }
@@ -1685,9 +1750,7 @@ struct AssociationItem {
 
 #[derive(serde::Serialize)]
 struct AssociationStatus {
-    /// この OS で関連付けを変更できるか
-    supported: bool,
-    /// "windows" / "macos" / "linux" など
+    /// "windows" / "macos"
     platform: String,
     items: Vec<AssociationItem>,
 }
@@ -1711,16 +1774,14 @@ fn normalize_association_exts(exts: &[String]) -> Result<Vec<String>, String> {
 /// 各拡張子の関連付けの状態を返す
 #[tauri::command]
 fn file_association_status(app: AppHandle) -> AssociationStatus {
-    let supported = cfg!(any(target_os = "windows", target_os = "macos"));
     let items = associable_exts()
         .into_iter()
         .map(|ext| AssociationItem {
             ext: ext.to_string(),
-            associated: supported && is_associated(&app, ext),
+            associated: is_associated(&app, ext),
         })
         .collect();
     AssociationStatus {
-        supported,
         platform: std::env::consts::OS.to_string(),
         items,
     }
@@ -2133,6 +2194,7 @@ fn is_associated(app: &AppHandle, ext: &str) -> bool {
     mac_assoc::is_associated(ext, &app.config().identifier)
 }
 
+// 対象外の OS（Linux など）は CI でテストをビルドするためだけの分岐
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn is_associated(_app: &AppHandle, _ext: &str) -> bool {
     false
@@ -2171,9 +2233,10 @@ fn apply_associations(app: &AppHandle, exts: &[String]) -> Result<String, String
     }
 }
 
+// 対象外の OS（Linux など）は CI でテストをビルドするためだけの分岐
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn apply_associations(_app: &AppHandle, _exts: &[String]) -> Result<String, String> {
-    Err("この OS では設定画面から関連付けを変更できません".into())
+    Err("この OS には対応していません".into())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

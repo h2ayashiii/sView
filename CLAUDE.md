@@ -5,7 +5,7 @@ Guidance for coding agents working in this repository.
 ## Overview
 
 sView is a minimal, frameless, cross-platform image viewer built with **Tauri v2**.
-It opens single images, folders, and zip/cbz archives; the overlay UI shows while the mouse
+It opens single images, videos, folders, and zip/cbz archives; the overlay UI shows while the mouse
 moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` toggle
 `#app.chrome-visible` in `src/main.js`).
 
@@ -13,7 +13,11 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
   `tauri-plugin-log`, `log`, `serde`, `zip`, `notify`, `trash`).
 - **Frontend**: plain HTML/CSS/JS. **No framework, no bundler, no TypeScript.**
   `withGlobalTauri: true`, so APIs come from `window.__TAURI__` and scripts load via `<script src>`.
-- Targets: Windows 10/11, macOS 10.15+, Linux.
+- Targets: Windows 10/11, macOS 10.15+. **Linux is not a target.** It is kept only buildable,
+  because the CI `test` job and cloud containers run `cargo test` on Linux: the
+  `#[cfg(not(any(target_os = "windows", target_os = "macos")))]` branches in `lib.rs` are
+  minimal stubs for that (errors / no-ops), not a supported platform. Don't add Linux-only
+  features or docs.
 
 ## Layout
 
@@ -98,6 +102,24 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `main.js` and `tauri.conf.json` and fails when they drift, so `cargo test` catches it.
   Archives (`ARCHIVE_EXTS`: `zip` / `cbz`) are deliberately **not** file-associated, neither by the
   installer nor from the settings window; they open via drag & drop, `O` and the command line.
+  Videos are the same: `VIDEO_EXTS` (`lib.rs`) and `VIDEO_EXT_FILTER` (`main.js`) must match (the
+  same test checks it), and they are not in `fileAssociations`.
+- Videos play in a `<video>` element with whatever decoder the OS WebView has (WebView2 / WKWebView). **No codec is bundled** — that keeps codec patent licensing out of the
+  app — so `VIDEO_EXTS` is limited to containers most WebViews handle (`mp4` / `m4v` / `webm` /
+  `mov`); anything the WebView can't decode just shows an error. Videos are listed only from
+  folders (`is_media`), never from archives (`read_archive_entry` loads a whole entry into memory).
+  They load through the asset protocol, so the CSP needs `media-src` alongside `img-src`.
+  `unloadVideo()` (pause + drop `src` + `load()`) runs before every `show()` and before
+  `delete_image` so the WebView lets go of the file. Videos are always shown fitted (no zoom);
+  `mediaSize()` / `mediaEl()` stand in for `img.naturalWidth` etc. in the window-fit and freeze
+  logic. While a video is shown, `handleVideoKey` takes Space / K (play-pause), M (mute),
+  ← / → and J / L (±5 s), ↑ / ↓ (volume ±5 %, saved after a 500 ms pause) and Shift+← / →
+  (previous / next file). `setFitMode` leaves `#stage` without
+  `data-tauri-drag-region` while a video is shown — with it, the OS move loop starts on mousedown and
+  the release never reaches the WebView, so a click could not be told apart. Instead a press that moves
+  `VIDEO_DRAG_THRESHOLD_PX` calls `appWindow.startDragging()`, and one released within
+  `VIDEO_CLICK_MS` without moving toggles play-pause. The playback controls are the `#videobar` card (seek bar on top; time /
+  ±5 s + play / mute + volume below) inside `#chrome`, so they show and hide with the rest of the chrome.
 - Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
   `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
   into `settings.json`.
@@ -184,15 +206,15 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   on Windows an unspecified WebView2 user-data folder is created next to the exe
   (`C:\Program Files\sView\sview.exe.WebView2`) and the app fails to start. It is pointed at
   `%LOCALAPPDATA%\sview` (`webview_data_dir()`). macOS (WKWebView) cannot set it — the OS derives
-  `~/Library/WebKit/<bundle id>` and `~/Library/Caches/<bundle id>` from the identifier — and
-  WebKitGTK already defaults to `~/.local/share/sview` + `~/.cache/sview`, so both return `None`.
+  `~/Library/WebKit/<bundle id>` and `~/Library/Caches/<bundle id>` from the identifier — so it
+  returns `None` there.
 - File associations from the settings window (`file_association_status` / `apply_file_associations`,
   `type: "associations"` row in `settings-defs.js`) follow each OS's rules. Windows 8+ forbids apps
   from setting the default (UserChoice is hash-protected), so `win_assoc` only registers sView in
   HKCU (`sView.Image` ProgID, `Capabilities`, `RegisteredApplications`,
   `OpenWithProgids`) and opens `ms-settings:defaultapps?registeredAppUser=sView` for the user to
   confirm. macOS sets it directly via `LSSetDefaultRoleHandlerForContentType` (raw FFI in
-  `mac_assoc`); there is no API to unset. Linux reports `supported: false`. The selectable list is
+  `mac_assoc`); there is no API to unset. The selectable list is
   `associable_exts()` = `IMAGE_EXTS` only (archives are deliberately excluded).
 - macOS: WKWebView only tracks the mouse while its window is key, so an inactive window gets no
   `mousemove` and leaving the window fires no reliable `mouseleave`. `mac_pointer` (in `lib.rs`)

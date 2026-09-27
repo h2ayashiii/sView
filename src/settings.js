@@ -282,7 +282,6 @@ function buildAssociationRow(item) {
       box.value = ext;
       // まだ何も関連付けていなければ、全部を選んだ状態から始める
       box.checked = anyAssociated ? associated : true;
-      box.disabled = !status.supported;
       const name = document.createElement("span");
       name.textContent = `.${ext}`;
       wrap.append(box, name);
@@ -295,10 +294,6 @@ function buildAssociationRow(item) {
       }
       grid.appendChild(wrap);
       boxes.push(box);
-    }
-    if (!status.supported) {
-      hint.textContent = "この OS では、関連付けは OS の設定で変更してください";
-      for (const b of [selectAll, selectNone, apply]) b.disabled = true;
     }
   };
 
