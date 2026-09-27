@@ -116,7 +116,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   ← / → and J / L (±5 s), ↑ / ↓ (volume ±5 %, saved after a 500 ms pause) and Shift+← / →
   (previous / next file). A click on the video toggles play-pause, so `setFitMode` leaves
   `#stage` without `data-tauri-drag-region` while a video is shown (the window drags from the
-  title bar / status bar instead).
+  title bar / status bar instead). The playback controls are the `#videobar` card (seek bar on top; time /
+  ±5 s + play / mute + volume below) inside `#chrome`, so they show and hide with the rest of the chrome.
 - Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
   `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
   into `settings.json`.

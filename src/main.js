@@ -12,6 +12,8 @@ const video = document.getElementById("video");
 const videobar = document.getElementById("videobar");
 const vbPlay = document.getElementById("vb-play");
 const vbMute = document.getElementById("vb-mute");
+const vbBack = document.getElementById("vb-back");
+const vbFwd = document.getElementById("vb-fwd");
 const vbSeek = document.getElementById("vb-seek");
 const vbVolume = document.getElementById("vb-volume");
 const vbTime = document.getElementById("vb-time");
@@ -532,6 +534,14 @@ vbPlay.addEventListener("click", () => {
 vbMute.addEventListener("click", () => {
   toggleMute();
   vbMute.blur();
+});
+vbBack.addEventListener("click", () => {
+  seekBy(-SEEK_STEP_S);
+  vbBack.blur();
+});
+vbFwd.addEventListener("click", () => {
+  seekBy(SEEK_STEP_S);
+  vbFwd.blur();
 });
 
 vbSeek.addEventListener("pointerdown", () => (seekDragging = true));

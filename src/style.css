@@ -97,6 +97,7 @@ body {
   font-size: 12px;
   max-width: 90%;
   white-space: nowrap;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -240,17 +241,22 @@ body {
 }
 
 /* ---- 動画の再生操作 ----
-   動画を表示しているとき（#app.video）だけ出す */
+   動画を表示しているとき（#app.video）だけ、下部中央にカードとして出す。
+   上段: シークバー / 下段: 左に再生時間・中央に再生ボタン類・右に音量 */
 #videobar {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 30px;
+  left: 50%;
+  bottom: 38px;
+  transform: translateX(-50%);
+  width: min(560px, calc(100% - 24px));
   display: none;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  padding: 0 10px;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(20, 20, 24, 0.8);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
   /* 下の #statusbar（ドラッグ領域）より手前に置き、操作を奪われないようにする */
   z-index: 1;
 }
@@ -259,16 +265,36 @@ body {
   display: flex;
 }
 
-/* ファイル名の帯を隠しているときは、その分だけ下へ寄せて背景の帯を自前で持つ */
+/* ファイル名の帯を隠しているときは、その分だけ下へ寄せる */
 #app.hide-filename #videobar {
-  bottom: 0;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
+  bottom: 10px;
 }
 
-#app.video:not(.hide-filename) #statusbar {
-  height: 60px;
-  align-items: flex-end;
-  padding-bottom: 8px;
+.vb-top {
+  display: flex;
+  align-items: center;
+  height: 16px;
+}
+
+/* 中央の列を本当に中央に置くため、左右の列は同じ幅 (1fr) にする */
+.vb-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.vb-left,
+.vb-center,
+.vb-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.vb-right {
+  justify-content: flex-end;
 }
 
 .vb {
@@ -299,8 +325,21 @@ body {
   stroke-linejoin: round;
 }
 
-#vb-play .i-play {
+#vb-play .i-play,
+#vb-back svg,
+#vb-fwd svg {
   fill: currentColor;
+}
+
+/* 再生ボタンは主役なので少し大きくする */
+#vb-play {
+  width: 34px;
+  height: 28px;
+}
+
+#vb-play svg {
+  width: 15px;
+  height: 15px;
 }
 
 /* 再生中は一時停止、止まっているときは再生のアイコンを出す */
@@ -317,6 +356,8 @@ body {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #videobar input[type="range"] {
@@ -327,12 +368,28 @@ body {
 
 #vb-seek {
   flex: 1;
-  min-width: 40px;
+  min-width: 0;
+  margin: 0;
 }
 
 #vb-volume {
-  flex-shrink: 0;
-  width: 70px;
+  flex: 0 1 80px;
+  min-width: 0;
+  margin: 0;
+}
+
+/* 狭いウィンドウでは音量つまみを省く（消音ボタンと ↑ ↓ キーは使える） */
+@media (max-width: 320px) {
+  #vb-volume {
+    display: none;
+  }
+}
+
+/* さらに狭いと再生時間も入りきらないので省く（再生位置はシークバーで分かる） */
+@media (max-width: 260px) {
+  .vb-left .vb-time {
+    display: none;
+  }
 }
 
 .nav {

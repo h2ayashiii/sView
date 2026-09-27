@@ -49,25 +49,41 @@
       </div>
       <button id="nav-prev" class="nav" title="前の画像 (←)" aria-label="前の画像">&#x276E;</button>
       <button id="nav-next" class="nav" title="次の画像 (→)" aria-label="次の画像">&#x276F;</button>
-      <!-- 動画を表示しているときだけ出す再生操作（ステータスバーのすぐ上）。
+      <!-- 動画を表示しているときだけ出す再生操作（下部中央のカード）。
+           上段にシークバー、下段は左に再生時間・中央に再生ボタン類・右に音量。
            ウィンドウのドラッグ領域にはしない（シーク操作がウィンドウの移動にならないように） -->
       <div id="videobar">
-        <button id="vb-play" class="vb" type="button" title="再生 (Space)" aria-label="再生">
-          <svg class="i-play" viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.8v6.4L8.2 5z" /></svg>
-          <svg class="i-pause" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.2 2v6M6.8 2v6" /></svg>
-        </button>
-        <span id="vb-time" class="vb-time">0:00</span>
-        <input id="vb-seek" type="range" min="0" max="1000" step="1" value="0" title="再生位置 (← →)" aria-label="再生位置" />
-        <span id="vb-duration" class="vb-time">0:00</span>
-        <button id="vb-mute" class="vb" type="button" title="消音 (M)" aria-label="消音">
-          <svg class="i-sound" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M1.5 3.8h1.8L5.6 2v6L3.3 6.2H1.5z" /><path d="M7.2 3.4q1.2 1.6 0 3.2" />
-          </svg>
-          <svg class="i-muted" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M1.5 3.8h1.8L5.6 2v6L3.3 6.2H1.5z" /><path d="M7 4l2 2M9 4L7 6" />
-          </svg>
-        </button>
-        <input id="vb-volume" type="range" min="0" max="100" step="1" value="100" title="音量 (↑ ↓)" aria-label="音量" />
+        <div class="vb-top">
+          <input id="vb-seek" type="range" min="0" max="1000" step="1" value="0" title="再生位置 (← →)" aria-label="再生位置" />
+        </div>
+        <div class="vb-bottom">
+          <div class="vb-left">
+            <span class="vb-time"><span id="vb-time">0:00</span> / <span id="vb-duration">0:00</span></span>
+          </div>
+          <div class="vb-center">
+            <button id="vb-back" class="vb" type="button" title="5 秒戻る (←)" aria-label="5 秒戻る">
+              <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M5 2.5L1.5 5 5 7.5zM8.5 2.5L5 5l3.5 2.5z" /></svg>
+            </button>
+            <button id="vb-play" class="vb" type="button" title="再生 (Space)" aria-label="再生">
+              <svg class="i-play" viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.8v6.4L8.2 5z" /></svg>
+              <svg class="i-pause" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.2 2v6M6.8 2v6" /></svg>
+            </button>
+            <button id="vb-fwd" class="vb" type="button" title="5 秒進む (→)" aria-label="5 秒進む">
+              <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 2.5L5 5 1.5 7.5zM5 2.5L8.5 5 5 7.5z" /></svg>
+            </button>
+          </div>
+          <div class="vb-right">
+            <button id="vb-mute" class="vb" type="button" title="消音 (M)" aria-label="消音">
+              <svg class="i-sound" viewBox="0 0 10 10" aria-hidden="true">
+                <path d="M1.5 3.8h1.8L5.6 2v6L3.3 6.2H1.5z" /><path d="M7.2 3.4q1.2 1.6 0 3.2" />
+              </svg>
+              <svg class="i-muted" viewBox="0 0 10 10" aria-hidden="true">
+                <path d="M1.5 3.8h1.8L5.6 2v6L3.3 6.2H1.5z" /><path d="M7 4l2 2M9 4L7 6" />
+              </svg>
+            </button>
+            <input id="vb-volume" type="range" min="0" max="100" step="1" value="100" title="音量 (↑ ↓)" aria-label="音量" />
+          </div>
+        </div>
       </div>
       <!-- 表示中のファイル（書庫内はその中のパス）は左下、枚数は右下に出す -->
       <div id="statusbar" data-tauri-drag-region>
