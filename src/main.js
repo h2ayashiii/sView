@@ -1020,17 +1020,37 @@ window.addEventListener("mousemove", (e) => {
 });
 window.addEventListener("mouseup", () => (panning = null));
 
-// ---- input: 動画のクリックで再生 / 一時停止 ----
+// ---- input: 動画の上の押下（すぐ離すと再生 / 一時停止、押したまま動かすとウィンドウ移動） ----
+// 動画表示中の #stage はドラッグ領域にしない（setFitMode）。付けたままだと押した瞬間に
+// OS のウィンドウ移動が始まり、離したことが WebView に届かずクリックと区別できないため。
+// 代わりに一定以上動いたところで自分で startDragging() を呼ぶ
+const VIDEO_DRAG_THRESHOLD_PX = 4;
+const VIDEO_CLICK_MS = 350;
 // 開いていたメニューを閉じるための押下では切り替えない
 let pressClosedMenu = false;
-let stageClickArmed = false;
+let videoPress = null;
 stage.addEventListener("mousedown", (e) => {
-  stageClickArmed = e.button === 0 && !pressClosedMenu;
-});
-stage.addEventListener("click", (e) => {
+  videoPress = null;
   // ダブルクリックの 2 回目は数えない（2 回切り替わって元に戻らないように）
-  if (!showingVideo || !stageClickArmed || e.detail > 1 || !confirmEl.hidden) return;
-  togglePlay();
+  if (!showingVideo || e.button !== 0 || e.detail > 1 || pressClosedMenu || !confirmEl.hidden) return;
+  videoPress = { x: e.clientX, y: e.clientY, t: performance.now() };
+});
+window.addEventListener("mousemove", (e) => {
+  if (!videoPress) return;
+  if (!(e.buttons & 1)) {
+    videoPress = null;
+    return;
+  }
+  if (Math.hypot(e.clientX - videoPress.x, e.clientY - videoPress.y) < VIDEO_DRAG_THRESHOLD_PX) return;
+  videoPress = null;
+  appWindow.startDragging().catch(() => {});
+});
+window.addEventListener("mouseup", (e) => {
+  if (e.button !== 0 || !videoPress) return;
+  const quick = performance.now() - videoPress.t <= VIDEO_CLICK_MS;
+  videoPress = null;
+  // 長く押して動かさずに離したときは何もしない
+  if (quick && showingVideo) togglePlay();
 });
 
 // ---- misc UI ----
