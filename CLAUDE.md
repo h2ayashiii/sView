@@ -28,6 +28,9 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
 | `src/settings-defs.js` | `SETTINGS_SECTIONS` (single source of truth) + `SETTINGS_DEFAULTS` |
 | `src/settings.js` / `settings.html` | Settings window, UI generated from `SETTINGS_SECTIONS` |
 | `src-tauri/src/lib.rs` | **All** backend logic + inline `#[cfg(test)] mod tests` |
+| `README.md` | Entry point only: overview, download, first launch, short usage, links. Detailed behaviour goes in `docs/` |
+| `docs/` | `architecture.md`, `development.md` (build / CI / release), `specs/*.md` (one file per feature, Japanese). Update the matching spec when behaviour changes |
+| `CHANGELOG.md` | Per-version change summary; add to `未リリース` with user-visible changes |
 | `src-tauri/src/main.rs` | Only calls `sview_lib::run()` |
 | `src-tauri/tauri.conf.json` | Windows, CSP, bundle, file associations |
 | `src-tauri/installer-hooks.nsh` | Windows インストーラ (NSIS) のフック。旧ユーザー単位インストールの後始末 |
