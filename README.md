@@ -78,9 +78,7 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 | ファイル | 内容 |
 | --- | --- |
 | [docs/specs/controls.md](docs/specs/controls.md) | 開き方・キーボード・マウス・右クリックメニュー |
-| [docs/specs/folder-and-archive.md](docs/specs/folder-and-archive.md) | フォルダ・圧縮フォルダの探索範囲と読み込み |
-| [docs/specs/folder-watch.md](docs/specs/folder-watch.md) | フォルダの変更への追従 |
-| [docs/specs/delete.md](docs/specs/delete.md) | 画像の削除（ゴミ箱への移動） |
+| [docs/specs/files.md](docs/specs/files.md) | フォルダ・圧縮フォルダの探索範囲と読み込み、フォルダの変更への追従、画像の削除 |
 | [docs/specs/video.md](docs/specs/video.md) | 動画の再生と対応形式 |
 | [docs/specs/window-size.md](docs/specs/window-size.md) | ウィンドウサイズの挙動と保存 |
 | [docs/specs/settings.md](docs/specs/settings.md) | 設定項目・ログ・キャッシュの置き場所 |
