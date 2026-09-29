@@ -22,6 +22,17 @@ const IMAGE_EXTS: &[&str] = &[
 /// どの OS の WebView でもおおむね再生できるコンテナだけに絞っている
 const VIDEO_EXTS: &[&str] = &["m4v", "mov", "mp4", "webm"];
 
+/// 対応する音楽拡張子（小文字で比較）。
+/// 動画と同じく再生は OS の WebView に任せる（コーデックは同梱しない）
+const AUDIO_EXTS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav"];
+
+/// 音楽ファイルと同じフォルダに置かれたジャケット画像とみなすファイル名（拡張子を除く・小文字）。
+/// 埋め込みのアートワークが無いときだけ使う
+const COVER_STEMS: &[&str] = &["cover", "folder", "front", "album", "albumart"];
+
+/// アートワークとして読む画像の上限（埋め込み・同じフォルダの画像とも）
+const MAX_ARTWORK_BYTES: u64 = 64 * 1024 * 1024;
+
 /// 対応する書庫（圧縮フォルダ）拡張子
 const ARCHIVE_EXTS: &[&str] = &["cbz", "zip"];
 
@@ -73,6 +84,10 @@ struct StartupFit(Mutex<bool>);
 struct AspectState {
     /// 固定する縦横比（横 / 縦）。None のときは固定しない
     ratio: Option<f64>,
+    /// 縦横比に含めない固定の余白（論理ピクセルの横・縦）。音楽のアートワークの周りの
+    /// 余白や曲名の帯のように、ウィンドウの大きさによらず一定の部分。
+    /// 縦横比はウィンドウからこの分を除いた残りに対して保つ
+    extra: (f64, f64),
     /// 自分で直した大きさ（物理ピクセル）。その跳ね返りを見分けるのに使う
     last: PhysicalSize<u32>,
     /// OS が最後に知らせてきた大きさ（物理ピクセル）。
@@ -124,9 +139,13 @@ fn is_video(path: &Path) -> bool {
     has_ext(path, VIDEO_EXTS)
 }
 
-/// フォルダで一覧に並べるもの（画像と動画）。書庫の中の動画は対象外
+fn is_audio(path: &Path) -> bool {
+    has_ext(path, AUDIO_EXTS)
+}
+
+/// フォルダで一覧に並べるもの（画像・動画・音楽）。書庫の中の動画・音楽は対象外
 fn is_media(path: &Path) -> bool {
-    is_image(path) || is_video(path)
+    is_image(path) || is_video(path) || is_audio(path)
 }
 
 fn is_archive(path: &Path) -> bool {
@@ -328,11 +347,11 @@ mod tests {
     fn sized_to_aspect_keeps_the_area_and_takes_the_ratio_from_the_image() {
         let limit = (1728.0, 972.0);
         // 500x500 相当の広さで 16:9 の画像に合わせる → 広さはそのまま、形だけ画像に合う
-        let (w, h) = sized_to_aspect(16.0 / 9.0, 500.0 * 500.0, limit);
+        let (w, h) = sized_to_aspect(16.0 / 9.0, (0.0, 0.0), 500.0 * 500.0, limit);
         assert!((w / h - 16.0 / 9.0).abs() < 1e-9);
         assert!((w * h - 250_000.0).abs() < 1e-6);
         // 縦長の画像でも広さは変わらない（切り替えても大きさの印象が揃う）
-        let (w, h) = sized_to_aspect(9.0 / 16.0, 500.0 * 500.0, limit);
+        let (w, h) = sized_to_aspect(9.0 / 16.0, (0.0, 0.0), 500.0 * 500.0, limit);
         assert!((w / h - 9.0 / 16.0).abs() < 1e-9);
         assert!((w * h - 250_000.0).abs() < 1e-6);
     }
@@ -344,21 +363,54 @@ mod tests {
         let before = LogicalSize::new(800.0, 450.0);
         // 右端を引っ張った（横だけ変わった）→ 横はそのまま、縦が縦横比で決まる
         let now = LogicalSize::new(1000.0, 450.0);
-        let (w, h) = sized_to_aspect(ratio, dragged_area(now, before, ratio), limit);
+        let (w, h) = sized_to_aspect(
+            ratio,
+            (0.0, 0.0),
+            dragged_area(now, before, ratio, (0.0, 0.0)),
+            limit,
+        );
         assert!((w - 1000.0).abs() < 1e-9);
         assert!((h - 1000.0 / ratio).abs() < 1e-9);
         // 下端を引っ張った（縦だけ変わった）→ 縦はそのまま、横が縦横比で決まる
         let now = LogicalSize::new(800.0, 600.0);
-        let (w, h) = sized_to_aspect(ratio, dragged_area(now, before, ratio), limit);
+        let (w, h) = sized_to_aspect(
+            ratio,
+            (0.0, 0.0),
+            dragged_area(now, before, ratio, (0.0, 0.0)),
+            limit,
+        );
         assert!((h - 600.0).abs() < 1e-9);
         assert!((w - 600.0 * ratio).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sized_to_aspect_keeps_the_ratio_outside_the_fixed_margin() {
+        let limit = (1728.0, 972.0);
+        // 音楽: アートワークの周りの余白（横 56、縦 186）はウィンドウの大きさによらず一定。
+        // 縦横比は余白を除いた部分で保ち、広さはウィンドウ全体で保つ
+        let extra = (56.0, 186.0);
+        for aspect in [1.0, 2.0 / 3.0, 16.0 / 9.0] {
+            let (w, h) = sized_to_aspect(aspect, extra, 500.0 * 700.0, limit);
+            assert!(((w - extra.0) / (h - extra.1) - aspect).abs() < 1e-9);
+            assert!((w * h - 350_000.0).abs() < 1e-6);
+        }
+        // 横を引っ張ったら横はそのまま、縦は余白を除いた部分の縦横比で決まる
+        let before = LogicalSize::new(500.0, 700.0);
+        let now = LogicalSize::new(600.0, 700.0);
+        let (w, h) = sized_to_aspect(1.0, extra, dragged_area(now, before, 1.0, extra), limit);
+        assert!((w - 600.0).abs() < 1e-6);
+        assert!((h - (600.0 - 56.0 + 186.0)).abs() < 1e-6);
+        // 画面に収めるときも、余白を除いた部分の縦横比は崩さない
+        let (w, h) = sized_to_aspect(1.0, extra, 4000.0 * 4000.0, limit);
+        assert!(w <= limit.0 + 1e-9 && h <= limit.1 + 1e-9);
+        assert!(((w - extra.0) / (h - extra.1) - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn sized_to_aspect_shrinks_to_fit_the_screen() {
         let limit = (1728.0, 972.0);
         // 画面に収まらない広さを求められたら、縦横比を保ったまま縮める
-        let (w, h) = sized_to_aspect(1.0, 4000.0 * 4000.0, limit);
+        let (w, h) = sized_to_aspect(1.0, (0.0, 0.0), 4000.0 * 4000.0, limit);
         assert!((w - 972.0).abs() < 1e-9);
         assert!((h - 972.0).abs() < 1e-9);
     }
@@ -367,7 +419,7 @@ mod tests {
     fn sized_to_aspect_grows_to_the_minimum_size() {
         let limit = (1728.0, 972.0);
         // 小さすぎる指定でも最小サイズは下回らない
-        let (w, h) = sized_to_aspect(1.0, 1.0, limit);
+        let (w, h) = sized_to_aspect(1.0, (0.0, 0.0), 1.0, limit);
         assert!(w >= MIN_WINDOW_SIZE.0 - 1e-9);
         assert!(h >= MIN_WINDOW_SIZE.1 - 1e-9);
         assert!((w / h - 1.0).abs() < 1e-9);
@@ -406,7 +458,88 @@ mod tests {
         assert!(!is_media(Path::new("/x/notes.txt")));
     }
 
-    /// フォルダでは画像と動画を混ぜて自然順に並べ、それ以外は外す
+    #[test]
+    fn audio_extension_detection() {
+        assert!(is_audio(Path::new("/x/song.MP3")));
+        assert!(is_audio(Path::new("/x/song.flac")));
+        assert!(is_audio(Path::new("/x/song.m4a")));
+        assert!(!is_audio(Path::new("/x/song.wma")));
+        assert!(!is_audio(Path::new("/x/clip.mp4")));
+        assert!(is_media(Path::new("/x/song.ogg")));
+    }
+
+    /// 埋め込みのアートワークが無いときは、同じフォルダのジャケット画像を
+    /// COVER_STEMS の順（cover → folder → …）で選ぶ。大文字小文字は問わない
+    #[test]
+    fn folder_artwork_prefers_cover_names_in_order() {
+        let dir = std::env::temp_dir().join(format!("sview-cover-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("01 song.mp3");
+        fs::write(&song, b"x").unwrap();
+        assert_eq!(folder_artwork(&song), None);
+        fs::write(dir.join("booklet.jpg"), b"booklet").unwrap();
+        assert_eq!(folder_artwork(&song), None);
+        fs::write(dir.join("Folder.JPG"), b"folder").unwrap();
+        assert_eq!(folder_artwork(&song).as_deref(), Some(&b"folder"[..]));
+        fs::write(dir.join("cover.png"), b"cover").unwrap();
+        assert_eq!(folder_artwork(&song).as_deref(), Some(&b"cover"[..]));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// タグに埋め込まれたアートワークと曲名を読める。表紙（CoverFront）を優先する
+    #[test]
+    fn reads_embedded_tags_and_artwork() {
+        use lofty::config::WriteOptions;
+        use lofty::picture::{MimeType, Picture, PictureType};
+        use lofty::prelude::*;
+        use lofty::tag::{Tag, TagType};
+
+        let dir = std::env::temp_dir().join(format!("sview-embed-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("song.mp3");
+        // MPEG-1 Layer III / 128 kbps / 44.1 kHz のフレーム（中身は無音でよい）を並べる
+        let mut frame = vec![0xFF, 0xFB, 0x90, 0x00];
+        frame.resize(417, 0);
+        fs::write(&song, frame.repeat(4)).unwrap();
+        // 同じフォルダのジャケット画像より、埋め込みの方を先に使う
+        fs::write(dir.join("cover.jpg"), b"folder cover").unwrap();
+
+        let mut tag = Tag::new(TagType::Id3v2);
+        tag.set_title("曲名".to_string());
+        tag.set_artist("アーティスト".to_string());
+        let picture = |kind, data: &[u8]| {
+            Picture::unchecked(data.to_vec())
+                .pic_type(kind)
+                .mime_type(MimeType::Png)
+                .build()
+        };
+        tag.push_picture(picture(PictureType::Other, b"other"));
+        tag.push_picture(picture(PictureType::CoverFront, b"front"));
+        tag.save_to_path(&song, WriteOptions::default()).unwrap();
+
+        let path = song.to_string_lossy().into_owned();
+        let info = audio_info(path).unwrap();
+        assert_eq!(info.title.as_deref(), Some("曲名"));
+        assert_eq!(info.artist.as_deref(), Some("アーティスト"));
+        assert_eq!(info.album, None);
+        assert_eq!(embedded_artwork(&song).as_deref(), Some(&b"front"[..]));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// タグの無い（壊れた）音楽ファイルでもエラーにせず、空の情報を返す
+    #[test]
+    fn audio_info_tolerates_missing_tags() {
+        let dir = std::env::temp_dir().join(format!("sview-tag-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("broken.mp3");
+        fs::write(&song, b"not really an mp3").unwrap();
+        let info = audio_info(song.to_string_lossy().into_owned()).unwrap();
+        assert_eq!((info.title, info.artist, info.album), (None, None, None));
+        assert!(audio_info(dir.join("x.png").to_string_lossy().into_owned()).is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// フォルダでは画像・動画・音楽を混ぜて自然順に並べ、それ以外は外す
     #[test]
     fn folder_listing_mixes_images_and_videos() {
         let dir = std::env::temp_dir().join(format!("sview-media-test-{}", std::process::id()));
@@ -418,6 +551,8 @@ mod tests {
             "a3.webm",
             "notes.txt",
             "a4.avi",
+            "a5.mp3",
+            "a6.wma",
         ] {
             fs::write(dir.join(name), b"x").unwrap();
         }
@@ -433,7 +568,10 @@ mod tests {
                     .into_owned()
             })
             .collect();
-        assert_eq!(names, vec!["a1.jpg", "a2.mp4", "a3.webm", "a10.png"]);
+        assert_eq!(
+            names,
+            vec!["a1.jpg", "a2.mp4", "a3.webm", "a5.mp3", "a10.png"]
+        );
         assert_eq!(list.index, 2);
         fs::remove_dir_all(&dir).ok();
     }
@@ -586,6 +724,12 @@ mod tests {
             sorted(quoted_items(&main_js, "const VIDEO_EXT_FILTER = [", ']')),
             sorted(VIDEO_EXTS.to_vec()),
             "main.js の VIDEO_EXT_FILTER が VIDEO_EXTS とずれています"
+        );
+        // 音楽も動画と同じく、開けるが OS には関連付けない
+        assert_eq!(
+            sorted(quoted_items(&main_js, "const AUDIO_EXT_FILTER = [", ']')),
+            sorted(AUDIO_EXTS.to_vec()),
+            "main.js の AUDIO_EXT_FILTER が AUDIO_EXTS とずれています"
         );
 
         let archives = sorted(ARCHIVE_EXTS.to_vec());
@@ -855,15 +999,124 @@ fn delete_image(path: String) -> Result<(), String> {
         return Err(format!("ファイルが見つかりません: {path}"));
     }
     if !is_media(&target) {
-        return Err(format!("画像・動画ファイルではありません: {path}"));
+        return Err(format!("画像・動画・音楽ファイルではありません: {path}"));
     }
     trash::delete(&target).map_err(|e| format!("ゴミ箱へ移動できませんでした: {e}"))?;
     log::info!("ゴミ箱へ移動しました: {path}");
     Ok(())
 }
 
+/// 音楽ファイルのタグ情報（表示用）。読めない項目は None
+#[derive(serde::Serialize, Default)]
+struct AudioInfo {
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+}
+
+/// 音楽ファイルのタグを読む。音声の長さなどは要らないので、タグだけを読む。
+/// 形式は拡張子ではなく中身から判定する（拡張子と中身が食い違うファイルもあるため）
+fn read_audio_tags(path: &Path) -> Option<lofty::file::TaggedFile> {
+    use lofty::config::ParseOptions;
+    use lofty::probe::Probe;
+    let read = || -> Result<lofty::file::TaggedFile, Box<dyn std::error::Error>> {
+        Ok(Probe::open(path)?
+            .guess_file_type()?
+            .options(ParseOptions::new().read_properties(false))
+            .read()?)
+    };
+    read()
+        .map_err(|e| log::warn!("音楽ファイルのタグを読めません ({}): {e}", path.display()))
+        .ok()
+}
+
+/// 前後の空白を除き、空なら None にする
+fn non_empty(text: Option<std::borrow::Cow<'_, str>>) -> Option<String> {
+    text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+}
+
+/// 音楽ファイルの曲名・アーティスト・アルバム名を返す。
+/// タグが無い・読めないときもエラーにはせず、空の情報を返す（再生はできるため）
+#[tauri::command]
+fn audio_info(path: String) -> Result<AudioInfo, String> {
+    use lofty::prelude::*;
+    let target = PathBuf::from(&path);
+    if !target.is_file() || !is_audio(&target) {
+        return Err(format!("音楽ファイルではありません: {path}"));
+    }
+    let Some(file) = read_audio_tags(&target) else {
+        return Ok(AudioInfo::default());
+    };
+    // 主となるタグを先に見て、足りない項目はほかのタグで補う
+    let mut info = AudioInfo::default();
+    for tag in file.primary_tag().into_iter().chain(file.tags()) {
+        info.title = info.title.or_else(|| non_empty(tag.title()));
+        info.artist = info.artist.or_else(|| non_empty(tag.artist()));
+        info.album = info.album.or_else(|| non_empty(tag.album()));
+    }
+    Ok(info)
+}
+
+/// タグに埋め込まれたアートワーク。表紙（CoverFront）を優先し、無ければ最初の 1 枚
+fn embedded_artwork(path: &Path) -> Option<Vec<u8>> {
+    use lofty::picture::PictureType;
+    use lofty::prelude::*;
+    let file = read_audio_tags(path)?;
+    let pictures: Vec<_> = file
+        .tags()
+        .iter()
+        .flat_map(|t| t.pictures())
+        .filter(|p| !p.data().is_empty() && p.data().len() as u64 <= MAX_ARTWORK_BYTES)
+        .collect();
+    pictures
+        .iter()
+        .find(|p| p.pic_type() == PictureType::CoverFront)
+        .or_else(|| pictures.first())
+        .map(|p| p.data().to_vec())
+}
+
+/// 同じフォルダにあるジャケット画像（cover.jpg / folder.png など）。
+/// 候補が複数あれば COVER_STEMS の順に選ぶ
+fn folder_artwork(path: &Path) -> Option<Vec<u8>> {
+    let dir = path.parent()?;
+    let mut candidates: Vec<(usize, PathBuf)> = fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && is_image(p) && !has_ext(p, &["svg"]))
+        .filter_map(|p| {
+            let stem = p.file_stem()?.to_str()?.to_ascii_lowercase();
+            let rank = COVER_STEMS.iter().position(|s| *s == stem)?;
+            Some((rank, p))
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().find_map(|(_, p)| {
+        let size = fs::metadata(&p).ok()?.len();
+        if size == 0 || size > MAX_ARTWORK_BYTES {
+            return None;
+        }
+        fs::read(&p).ok()
+    })
+}
+
+/// 音楽ファイルのアートワークをバイト列のまま返す（IPC の raw payload で転送）。
+/// 埋め込みが無ければ同じフォルダのジャケット画像を探し、それも無ければ空を返す
+/// （そのときはフロントエンドが既定の絵を出す）
+#[tauri::command]
+fn audio_artwork(path: String) -> Result<Response, String> {
+    let target = PathBuf::from(&path);
+    if !target.is_file() || !is_audio(&target) {
+        return Err(format!("音楽ファイルではありません: {path}"));
+    }
+    let bytes = embedded_artwork(&target)
+        .or_else(|| folder_artwork(&target))
+        .unwrap_or_default();
+    Ok(Response::new(bytes))
+}
+
 /// 一覧を作り直す必要がある変更かどうか。
-/// 画像・動画の増減（作成・削除・名前の変更）だけを拾い、中身の書き換えは無視する。
+/// 画像・動画・音楽の増減（作成・削除・名前の変更）だけを拾い、中身の書き換えは無視する。
 /// 種類を判別できない通知（EventKind::Any）は、取りこぼすより拾う方に倒す
 fn is_listing_change(event: &notify::Event) -> bool {
     use notify::event::{EventKind, ModifyKind};
@@ -874,7 +1127,7 @@ fn is_listing_change(event: &notify::Event) -> bool {
             | EventKind::Remove(_)
             | EventKind::Modify(ModifyKind::Name(_))
     );
-    // 名前の変更では変更前と変更後の両方が入るので、どちらかが画像・動画なら対象
+    // 名前の変更では変更前と変更後の両方が入るので、どちらかが画像・動画・音楽なら対象
     kind_matches && event.paths.iter().any(|p| is_media(p))
 }
 
@@ -1282,31 +1535,43 @@ fn current_work_area(window: &tauri::Window) -> Option<Area> {
 
 /// 縦横比 aspect（横 / 縦）と広さ area（論理ピクセルの面積）から、
 /// ウィンドウの中身の大きさを決める。
+/// extra（論理ピクセルの横・縦）は縦横比に含めない固定の余白で、縦横比は
+/// 大きさからこの分を除いた残りに対して保つ（画像・動画では 0）。
 /// limit に収まらない場合は縦横比を保ったまま縮め、小さすぎる場合は保ったまま広げる。
 /// 極端な縦横比では両立しないことがあるが、そのときは最小サイズを優先する
-fn sized_to_aspect(aspect: f64, area: f64, limit: (f64, f64)) -> (f64, f64) {
+fn sized_to_aspect(aspect: f64, extra: (f64, f64), area: f64, limit: (f64, f64)) -> (f64, f64) {
     let aspect = if aspect > 0.0 { aspect } else { 1.0 };
+    let (ex, ey) = (extra.0.max(0.0), extra.1.max(0.0));
     let area = area.max(MIN_WINDOW_SIZE.0 * MIN_WINDOW_SIZE.1);
 
-    // area = width * height かつ aspect = width / height を満たす大きさ
-    let mut width = (area * aspect).sqrt();
-    let mut height = width / aspect;
+    // 余白を除いた部分の横を cw として (cw + ex) * (cw / aspect + ey) = area を解く
+    // （余白が 0 なら cw = √(area × aspect)）
+    let a = 1.0 / aspect;
+    let b = ey + ex / aspect;
+    let c = ex * ey - area;
+    let mut cw = ((b * b - 4.0 * a * c).max(0.0).sqrt() - b) / (2.0 * a);
 
-    let shrink = (limit.0 / width).min(limit.1 / height).min(1.0);
-    width *= shrink;
-    height *= shrink;
-
-    let grow = (MIN_WINDOW_SIZE.0 / width)
-        .max(MIN_WINDOW_SIZE.1 / height)
+    // 画面に収める（縮める）
+    cw = cw.min(limit.0 - ex).min((limit.1 - ey) * aspect);
+    // 最小サイズを下回らない（広げる）
+    cw = cw
+        .max(MIN_WINDOW_SIZE.0 - ex)
+        .max((MIN_WINDOW_SIZE.1 - ey) * aspect)
         .max(1.0);
-    (width * grow, height * grow)
+    (cw + ex, cw / aspect + ey)
 }
 
 /// 「画像に合わせる」で、ウィンドウの縦横比を表示中の画像に固定する。
 /// ratio が null のときは解除する（「自由に変更」や、画像を開いていないとき）。
 /// かけ直したときは、そのときのウィンドウの大きさを基準の広さとして覚える
 #[tauri::command]
-fn set_aspect_lock(window: WebviewWindow, lock: State<AspectLock>, ratio: Option<f64>) {
+fn set_aspect_lock(
+    window: WebviewWindow,
+    lock: State<AspectLock>,
+    ratio: Option<f64>,
+    extra_width: Option<f64>,
+    extra_height: Option<f64>,
+) {
     let Ok(mut state) = lock.0.lock() else {
         return;
     };
@@ -1315,6 +1580,7 @@ fn set_aspect_lock(window: WebviewWindow, lock: State<AspectLock>, ratio: Option
         return;
     };
     state.ratio = Some(ratio);
+    state.extra = (extra_width.unwrap_or(0.0), extra_height.unwrap_or(0.0));
     if let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) {
         // 引っ張られた辺を判断する基準。ここから動いた分を見る
         // （ドラッグが終わったあとも呼ばれ、基準を実際の大きさに戻す）
@@ -1331,13 +1597,20 @@ fn set_aspect_lock(window: WebviewWindow, lock: State<AspectLock>, ratio: Option
 
 /// 引っ張られた辺（変化の割合が大きい方）と縦横比から、目指す広さを出す。
 /// もう一方の辺はこの広さと縦横比から決まるので、引っ張った辺はそのまま残る
-fn dragged_area(now: LogicalSize<f64>, before: LogicalSize<f64>, ratio: f64) -> f64 {
+/// extra は縦横比に含めない固定の余白（sized_to_aspect と同じ）
+fn dragged_area(
+    now: LogicalSize<f64>,
+    before: LogicalSize<f64>,
+    ratio: f64,
+    extra: (f64, f64),
+) -> f64 {
+    let (ex, ey) = extra;
     let dw = (now.width - before.width).abs() / before.width.max(1.0);
     let dh = (now.height - before.height).abs() / before.height.max(1.0);
     if dw >= dh {
-        now.width * now.width / ratio
+        now.width * ((now.width - ex).max(0.0) / ratio + ey)
     } else {
-        now.height * now.height * ratio
+        now.height * ((now.height - ey).max(0.0) * ratio + ex)
     }
 }
 
@@ -1377,9 +1650,10 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
     let now = size.to_logical::<f64>(scale);
     let before = state.reported.to_logical::<f64>(scale);
     state.reported = size;
-    let area = dragged_area(now, before, ratio);
+    let extra = state.extra;
+    let area = dragged_area(now, before, ratio, extra);
     // 手で変えている間は画面に収める判定をしない（引っ張った先で止められない）
-    let (width, height) = sized_to_aspect(ratio, area, NO_LIMIT);
+    let (width, height) = sized_to_aspect(ratio, extra, area, NO_LIMIT);
     let fixed: PhysicalSize<u32> = LogicalSize::new(width, height).to_physical(scale);
 
     // 1 ピクセルのずれは OS 側の丸めなので、直しに行かずそのまま受け入れる
@@ -1416,6 +1690,8 @@ fn fit_window_to_image(
     startup: State<StartupFit>,
     width: f64,
     height: f64,
+    extra_width: Option<f64>,
+    extra_height: Option<f64>,
 ) -> Result<(), String> {
     if !(width > 0.0 && height > 0.0) {
         return Err("画像サイズを取得できません".to_string());
@@ -1457,7 +1733,8 @@ fn fit_window_to_image(
     } else {
         NO_LIMIT
     };
-    let (w, h) = sized_to_aspect(width / height, area, limit);
+    let extra = (extra_width.unwrap_or(0.0), extra_height.unwrap_or(0.0));
+    let (w, h) = sized_to_aspect(width / height, extra, area, limit);
     let new_inner: PhysicalSize<u32> = LogicalSize::new(w, h).to_physical(scale);
 
     // 起動して最初の 1 枚は前回の左上に合わせる。ただし起動時に置いた場所から
@@ -2321,6 +2598,8 @@ pub fn run() {
             fit_window_to_image,
             set_aspect_lock,
             delete_image,
+            audio_info,
+            audio_artwork,
             watch_folder,
             file_association_status,
             apply_file_associations

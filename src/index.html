@@ -8,14 +8,27 @@
 </head>
 <body>
   <div id="app">
-    <!-- 画像・動画の表示ステージ（フィット表示中はウィンドウのドラッグ領域を兼ねる）。
-         動画は OS の WebView が持つデコーダで再生する（コーデックは同梱しない） -->
+    <!-- 画像・動画・音楽の表示ステージ（フィット表示中はウィンドウのドラッグ領域を兼ねる）。
+         動画と音楽は OS の WebView が持つデコーダで再生する（コーデックは同梱しない）。
+         音楽も #video で鳴らし（映像は出さない）、代わりに #audio にアートワークと曲名を出す -->
     <div id="stage" data-tauri-drag-region>
       <img id="image" alt="" draggable="false" />
       <video id="video" hidden playsinline preload="metadata" disablepictureinpicture></video>
+      <!-- 音楽を表示しているときだけ出す。上にアートワーク、下の帯（ウィンドウの「＋α」の部分）に
+           曲名・アーティストと細い再生位置のバーを出す。再生操作のカードはこの帯の上に重なる -->
+      <div id="audio" hidden>
+        <div id="audio-art">
+          <img id="artwork" alt="" draggable="false" />
+        </div>
+        <div id="audio-panel">
+          <p id="audio-title"></p>
+          <p id="audio-sub"></p>
+          <div id="audio-progress"><div id="audio-progress-fill"></div></div>
+        </div>
+      </div>
       <div id="placeholder">
         <p class="big">sView</p>
-        <p>画像・動画・フォルダ・圧縮フォルダ (zip / cbz) をここにドロップ</p>
+        <p>画像・動画・音楽・フォルダ・圧縮フォルダ (zip / cbz) をここにドロップ</p>
         <p class="dim">クリック または <code>O</code> でファイル、<code>D</code> でフォルダを開く</p>
         <p class="dim">← → で移動</p>
       </div>
@@ -53,7 +66,7 @@
       </div>
       <button id="nav-prev" class="nav" title="前の画像 (←)" aria-label="前の画像">&#x276E;</button>
       <button id="nav-next" class="nav" title="次の画像 (→)" aria-label="次の画像">&#x276F;</button>
-      <!-- 動画を表示しているときだけ出す再生操作（下部中央のカード）。
+      <!-- 動画・音楽を表示しているときだけ出す再生操作（下部中央のカード）。
            上段にシークバー、下段は左に再生時間・中央に再生ボタン類・右に音量。
            ウィンドウのドラッグ領域にはしない（シーク操作がウィンドウの移動にならないように） -->
       <div id="videobar">

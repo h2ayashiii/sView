@@ -20,7 +20,9 @@ body {
   width: 100%;
   height: 100%;
   background: rgba(14, 14, 16, 0.97);
-  border-radius: 8px;
+  /* ウィンドウの角の丸め。音楽のアートワークも同じ丸めにする */
+  --window-radius: 8px;
+  border-radius: var(--window-radius);
   overflow: hidden;
 }
 
@@ -43,7 +45,8 @@ body {
 }
 
 #image,
-#video {
+#video,
+#artwork {
   /* pointer-events を切ることで、クリックが常に #stage（ドラッグ領域）に届く */
   pointer-events: none;
   transform-origin: 0 0;
@@ -53,7 +56,8 @@ body {
 /* ウィンドウより小さくても大きくても、縦横比を保ったままウィンドウいっぱいに合わせる。
    要素の箱はウィンドウ全体になり、絵はその中に object-fit で収まる */
 #image.fit,
-#video.fit {
+#video.fit,
+#artwork.fit {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -62,9 +66,112 @@ body {
 /* ウィンドウをドラッグしている間、画像の大きさを据え置くための状態。
    大きさは JS が px で入れるので、フィットの上限は外す（.fit より後に置く） */
 #image.frozen,
-#video.frozen {
+#video.frozen,
+#artwork.frozen {
   max-width: none;
   max-height: none;
+}
+
+/* ---- 音楽 ----
+   上にアートワーク、下に曲名などの帯（--audio-panel-h）。「画像に合わせる」では
+   ウィンドウをアートワーク＋この帯の形にする（main.js の mediaSize）。
+   帯の高さは、ファイル名の帯と再生操作のカードが曲名に重ならない分だけとる */
+#app {
+  --audio-panel-h: 158px;
+}
+
+#app.hide-filename {
+  --audio-panel-h: 130px;
+}
+
+#audio {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
+#audio[hidden] {
+  display: none;
+}
+
+/* アートワークとウィンドウの縁のあいだの余白（左右と上。下は帯・再生操作のカードがある）。
+   main.js の mediaSize() がこの値を読んで「画像に合わせる」の縦横比に含める */
+#audio-art {
+  padding: 28px 28px 0;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 箱の大きさは main.js の layoutArtwork() が絵に合わせるので、丸めは絵の角に掛かる */
+#artwork {
+  border-radius: var(--window-radius);
+}
+
+#audio-panel {
+  flex: 0 0 var(--audio-panel-h);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 20px;
+  text-align: center;
+  /* 再生操作のカードが出ている間は、曲名をカードの上へ逃がす */
+  transition: padding-bottom 0.18s ease;
+}
+
+#app.chrome-visible #audio-panel,
+#app:has(#chrome:focus-within) #audio-panel {
+  padding-bottom: calc(var(--audio-panel-h) - 58px);
+}
+
+#audio-title,
+#audio-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#audio-title {
+  color: #e8e8ec;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#audio-sub {
+  color: #9a9aa2;
+  font-size: 12px;
+}
+
+#audio-sub:empty {
+  display: none;
+}
+
+/* カードが隠れている間の再生位置の目安（操作はカードのシークバーで行う） */
+#audio-progress {
+  align-self: center;
+  width: min(360px, 100%);
+  height: 3px;
+  margin-top: 8px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  transition: opacity 0.18s ease;
+}
+
+#audio-progress-fill {
+  width: 0;
+  height: 100%;
+  background: #c8c8d0;
+}
+
+#app.chrome-visible #audio-progress,
+#app:has(#chrome:focus-within) #audio-progress {
+  opacity: 0;
 }
 
 #placeholder {
@@ -306,8 +413,8 @@ body {
   white-space: nowrap;
 }
 
-/* ---- 動画の再生操作 ----
-   動画を表示しているとき（#app.video）だけ、下部中央にカードとして出す。
+/* ---- 動画・音楽の再生操作 ----
+   動画・音楽を表示しているとき（#app.video / #app.audio）だけ、下部中央にカードとして出す。
    上段: シークバー / 下段: 左に再生時間・中央に再生ボタン類・右に音量 */
 #videobar {
   position: absolute;
@@ -327,7 +434,8 @@ body {
   z-index: 1;
 }
 
-#app.video #videobar {
+#app.video #videobar,
+#app.audio #videobar {
   display: flex;
 }
 
@@ -426,10 +534,39 @@ body {
   text-overflow: ellipsis;
 }
 
+/* シークバー・音量つまみは OS 標準の見た目を使わず自前で描く。
+   標準のままだと、WebView2 は済んだ側を accent-color で塗るが、macOS の WKWebView は
+   塗り分けず両側が似た色になる。済んだ側の割合は main.js が --fill（0〜1）で入れる。
+   つまみの幅（--thumb）は main.js の RANGE_THUMB_PX と揃える */
 #videobar input[type="range"] {
-  height: 4px;
-  accent-color: #e8e8ec;
+  --thumb: 12px;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  background: transparent;
   cursor: pointer;
+}
+
+#videobar input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  /* 塗りの境目はつまみの中心（つまみの半分だけ両端が内側に寄る） */
+  background: linear-gradient(
+    to right,
+    #e8e8ec calc(var(--thumb) / 2 + (100% - var(--thumb)) * var(--fill, 0)),
+    rgba(255, 255, 255, 0.22) 0
+  );
+}
+
+#videobar input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--thumb);
+  height: var(--thumb);
+  margin-top: calc((4px - var(--thumb)) / 2);
+  border: none;
+  border-radius: 50%;
+  background: #e8e8ec;
 }
 
 #vb-seek {
