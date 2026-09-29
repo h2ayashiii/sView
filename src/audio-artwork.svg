@@ -6,7 +6,8 @@
       <stop offset="1" stop-color="#1b1b20" />
     </linearGradient>
   </defs>
-  <rect width="512" height="512" rx="28" fill="url(#bg)" />
+  <!-- 角の丸めは CSS（#artwork）でウィンドウと同じにする -->
+  <rect width="512" height="512" fill="url(#bg)" />
   <g fill="#8e8e99">
     <path d="M214 148 L370 116 V334 h-26 V177 L240 198 V366 h-26 Z" />
     <ellipse cx="184" cy="366" rx="54" ry="40" />

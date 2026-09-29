@@ -196,6 +196,25 @@ function unfreezeImageSize() {
     el.style.height = "";
     el.classList.remove("frozen");
   }
+  layoutArtwork();
+}
+
+// アートワークの箱を、実際に描かれる絵の大きさにする。
+// object-fit のままだと箱が枠いっぱいに広がり、角の丸めが絵ではなく箱に掛かってしまう
+function layoutArtwork() {
+  if (!showingAudio || frozenSize) return;
+  const { naturalWidth: w, naturalHeight: h } = artwork;
+  const pad = getComputedStyle(audioArt);
+  const boxW = audioArt.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);
+  const boxH = audioArt.clientHeight - parseFloat(pad.paddingTop) - parseFloat(pad.paddingBottom);
+  if (!w || !h || !artwork.complete || boxW <= 0 || boxH <= 0) {
+    artwork.style.width = "";
+    artwork.style.height = "";
+    return;
+  }
+  const s = Math.min(boxW / w, boxH / h);
+  artwork.style.width = `${w * s}px`;
+  artwork.style.height = `${h * s}px`;
 }
 
 // 動画・音楽は拡大縮小しない（常にウィンドウに合わせて表示する）
@@ -313,20 +332,22 @@ function mediaEl() {
 }
 
 // 表示中の画像・動画の実寸。まだ分からなければ null。
-// 音楽はアートワークの下に曲名の帯（px で固定）が付くので、その分を縦に足した形を返す。
-// 帯の高さは今のウィンドウ幅での比率に直す（「画像に合わせる」で使うのは縦横比だけ）
+// 音楽はアートワークの実寸に加えて、周りの余白と曲名の帯の大きさ（px で固定。
+// ウィンドウの大きさによらない）を extraWidth / extraHeight で返す。
+// 「画像に合わせる」では Rust 側がこの分を除いた残りをアートワークの縦横比に合わせる
+// （固定の分を今のウィンドウ幅で比率に直して縦横比に混ぜると、直前のウィンドウの形に
+// 引きずられ、同じ曲でも開き直すたびに大きさが少しずつ変わってしまう）
 function mediaSize() {
   if (showingAudio) {
     const { naturalWidth: w, naturalHeight: h } = artwork;
     if (!w || !h || !artwork.complete) return null;
-    // アートワークの周りの余白（px）と曲名の帯は固定の大きさなので、
-    // 今のウィンドウ幅でアートワークが何倍で描かれているかを使って、絵の実寸に換算して足す
     const pad = getComputedStyle(audioArt);
-    const padX = parseFloat(pad.paddingLeft) + parseFloat(pad.paddingRight);
-    const padTop = parseFloat(pad.paddingTop);
-    const drawn = Math.max(1, window.innerWidth - padX);
-    const s = w / drawn;
-    return { width: w + padX * s, height: h + (padTop + audioPanel.offsetHeight) * s };
+    return {
+      width: w,
+      height: h,
+      extraWidth: parseFloat(pad.paddingLeft) + parseFloat(pad.paddingRight),
+      extraHeight: parseFloat(pad.paddingTop) + audioPanel.offsetHeight,
+    };
   }
   const [width, height] = showingVideo
     ? [video.videoWidth, video.videoHeight]
@@ -363,6 +384,8 @@ function syncAspectLock() {
   const size = fitsToImage() && index >= 0 ? mediaSize() : null;
   return invoke("set_aspect_lock", {
     ratio: size ? size.width / size.height : null,
+    extraWidth: size?.extraWidth ?? 0,
+    extraHeight: size?.extraHeight ?? 0,
   }).catch(() => {});
 }
 
@@ -617,6 +640,9 @@ function setArtwork(url) {
   if (url) artwork.src = url;
   else artwork.removeAttribute("src");
 }
+
+artwork.addEventListener("load", layoutArtwork);
+new ResizeObserver(layoutArtwork).observe(audioArt);
 
 // 埋め込みのアートワークが壊れていて表示できないときは既定の絵に替える
 artwork.addEventListener("error", () => {

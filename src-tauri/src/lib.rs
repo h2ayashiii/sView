@@ -84,6 +84,10 @@ struct StartupFit(Mutex<bool>);
 struct AspectState {
     /// 固定する縦横比（横 / 縦）。None のときは固定しない
     ratio: Option<f64>,
+    /// 縦横比に含めない固定の余白（論理ピクセルの横・縦）。音楽のアートワークの周りの
+    /// 余白や曲名の帯のように、ウィンドウの大きさによらず一定の部分。
+    /// 縦横比はウィンドウからこの分を除いた残りに対して保つ
+    extra: (f64, f64),
     /// 自分で直した大きさ（物理ピクセル）。その跳ね返りを見分けるのに使う
     last: PhysicalSize<u32>,
     /// OS が最後に知らせてきた大きさ（物理ピクセル）。
@@ -343,11 +347,11 @@ mod tests {
     fn sized_to_aspect_keeps_the_area_and_takes_the_ratio_from_the_image() {
         let limit = (1728.0, 972.0);
         // 500x500 相当の広さで 16:9 の画像に合わせる → 広さはそのまま、形だけ画像に合う
-        let (w, h) = sized_to_aspect(16.0 / 9.0, 500.0 * 500.0, limit);
+        let (w, h) = sized_to_aspect(16.0 / 9.0, (0.0, 0.0), 500.0 * 500.0, limit);
         assert!((w / h - 16.0 / 9.0).abs() < 1e-9);
         assert!((w * h - 250_000.0).abs() < 1e-6);
         // 縦長の画像でも広さは変わらない（切り替えても大きさの印象が揃う）
-        let (w, h) = sized_to_aspect(9.0 / 16.0, 500.0 * 500.0, limit);
+        let (w, h) = sized_to_aspect(9.0 / 16.0, (0.0, 0.0), 500.0 * 500.0, limit);
         assert!((w / h - 9.0 / 16.0).abs() < 1e-9);
         assert!((w * h - 250_000.0).abs() < 1e-6);
     }
@@ -359,21 +363,54 @@ mod tests {
         let before = LogicalSize::new(800.0, 450.0);
         // 右端を引っ張った（横だけ変わった）→ 横はそのまま、縦が縦横比で決まる
         let now = LogicalSize::new(1000.0, 450.0);
-        let (w, h) = sized_to_aspect(ratio, dragged_area(now, before, ratio), limit);
+        let (w, h) = sized_to_aspect(
+            ratio,
+            (0.0, 0.0),
+            dragged_area(now, before, ratio, (0.0, 0.0)),
+            limit,
+        );
         assert!((w - 1000.0).abs() < 1e-9);
         assert!((h - 1000.0 / ratio).abs() < 1e-9);
         // 下端を引っ張った（縦だけ変わった）→ 縦はそのまま、横が縦横比で決まる
         let now = LogicalSize::new(800.0, 600.0);
-        let (w, h) = sized_to_aspect(ratio, dragged_area(now, before, ratio), limit);
+        let (w, h) = sized_to_aspect(
+            ratio,
+            (0.0, 0.0),
+            dragged_area(now, before, ratio, (0.0, 0.0)),
+            limit,
+        );
         assert!((h - 600.0).abs() < 1e-9);
         assert!((w - 600.0 * ratio).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sized_to_aspect_keeps_the_ratio_outside_the_fixed_margin() {
+        let limit = (1728.0, 972.0);
+        // 音楽: アートワークの周りの余白（横 56、縦 186）はウィンドウの大きさによらず一定。
+        // 縦横比は余白を除いた部分で保ち、広さはウィンドウ全体で保つ
+        let extra = (56.0, 186.0);
+        for aspect in [1.0, 2.0 / 3.0, 16.0 / 9.0] {
+            let (w, h) = sized_to_aspect(aspect, extra, 500.0 * 700.0, limit);
+            assert!(((w - extra.0) / (h - extra.1) - aspect).abs() < 1e-9);
+            assert!((w * h - 350_000.0).abs() < 1e-6);
+        }
+        // 横を引っ張ったら横はそのまま、縦は余白を除いた部分の縦横比で決まる
+        let before = LogicalSize::new(500.0, 700.0);
+        let now = LogicalSize::new(600.0, 700.0);
+        let (w, h) = sized_to_aspect(1.0, extra, dragged_area(now, before, 1.0, extra), limit);
+        assert!((w - 600.0).abs() < 1e-6);
+        assert!((h - (600.0 - 56.0 + 186.0)).abs() < 1e-6);
+        // 画面に収めるときも、余白を除いた部分の縦横比は崩さない
+        let (w, h) = sized_to_aspect(1.0, extra, 4000.0 * 4000.0, limit);
+        assert!(w <= limit.0 + 1e-9 && h <= limit.1 + 1e-9);
+        assert!(((w - extra.0) / (h - extra.1) - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn sized_to_aspect_shrinks_to_fit_the_screen() {
         let limit = (1728.0, 972.0);
         // 画面に収まらない広さを求められたら、縦横比を保ったまま縮める
-        let (w, h) = sized_to_aspect(1.0, 4000.0 * 4000.0, limit);
+        let (w, h) = sized_to_aspect(1.0, (0.0, 0.0), 4000.0 * 4000.0, limit);
         assert!((w - 972.0).abs() < 1e-9);
         assert!((h - 972.0).abs() < 1e-9);
     }
@@ -382,7 +419,7 @@ mod tests {
     fn sized_to_aspect_grows_to_the_minimum_size() {
         let limit = (1728.0, 972.0);
         // 小さすぎる指定でも最小サイズは下回らない
-        let (w, h) = sized_to_aspect(1.0, 1.0, limit);
+        let (w, h) = sized_to_aspect(1.0, (0.0, 0.0), 1.0, limit);
         assert!(w >= MIN_WINDOW_SIZE.0 - 1e-9);
         assert!(h >= MIN_WINDOW_SIZE.1 - 1e-9);
         assert!((w / h - 1.0).abs() < 1e-9);
@@ -1498,31 +1535,43 @@ fn current_work_area(window: &tauri::Window) -> Option<Area> {
 
 /// 縦横比 aspect（横 / 縦）と広さ area（論理ピクセルの面積）から、
 /// ウィンドウの中身の大きさを決める。
+/// extra（論理ピクセルの横・縦）は縦横比に含めない固定の余白で、縦横比は
+/// 大きさからこの分を除いた残りに対して保つ（画像・動画では 0）。
 /// limit に収まらない場合は縦横比を保ったまま縮め、小さすぎる場合は保ったまま広げる。
 /// 極端な縦横比では両立しないことがあるが、そのときは最小サイズを優先する
-fn sized_to_aspect(aspect: f64, area: f64, limit: (f64, f64)) -> (f64, f64) {
+fn sized_to_aspect(aspect: f64, extra: (f64, f64), area: f64, limit: (f64, f64)) -> (f64, f64) {
     let aspect = if aspect > 0.0 { aspect } else { 1.0 };
+    let (ex, ey) = (extra.0.max(0.0), extra.1.max(0.0));
     let area = area.max(MIN_WINDOW_SIZE.0 * MIN_WINDOW_SIZE.1);
 
-    // area = width * height かつ aspect = width / height を満たす大きさ
-    let mut width = (area * aspect).sqrt();
-    let mut height = width / aspect;
+    // 余白を除いた部分の横を cw として (cw + ex) * (cw / aspect + ey) = area を解く
+    // （余白が 0 なら cw = √(area × aspect)）
+    let a = 1.0 / aspect;
+    let b = ey + ex / aspect;
+    let c = ex * ey - area;
+    let mut cw = ((b * b - 4.0 * a * c).max(0.0).sqrt() - b) / (2.0 * a);
 
-    let shrink = (limit.0 / width).min(limit.1 / height).min(1.0);
-    width *= shrink;
-    height *= shrink;
-
-    let grow = (MIN_WINDOW_SIZE.0 / width)
-        .max(MIN_WINDOW_SIZE.1 / height)
+    // 画面に収める（縮める）
+    cw = cw.min(limit.0 - ex).min((limit.1 - ey) * aspect);
+    // 最小サイズを下回らない（広げる）
+    cw = cw
+        .max(MIN_WINDOW_SIZE.0 - ex)
+        .max((MIN_WINDOW_SIZE.1 - ey) * aspect)
         .max(1.0);
-    (width * grow, height * grow)
+    (cw + ex, cw / aspect + ey)
 }
 
 /// 「画像に合わせる」で、ウィンドウの縦横比を表示中の画像に固定する。
 /// ratio が null のときは解除する（「自由に変更」や、画像を開いていないとき）。
 /// かけ直したときは、そのときのウィンドウの大きさを基準の広さとして覚える
 #[tauri::command]
-fn set_aspect_lock(window: WebviewWindow, lock: State<AspectLock>, ratio: Option<f64>) {
+fn set_aspect_lock(
+    window: WebviewWindow,
+    lock: State<AspectLock>,
+    ratio: Option<f64>,
+    extra_width: Option<f64>,
+    extra_height: Option<f64>,
+) {
     let Ok(mut state) = lock.0.lock() else {
         return;
     };
@@ -1531,6 +1580,7 @@ fn set_aspect_lock(window: WebviewWindow, lock: State<AspectLock>, ratio: Option
         return;
     };
     state.ratio = Some(ratio);
+    state.extra = (extra_width.unwrap_or(0.0), extra_height.unwrap_or(0.0));
     if let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) {
         // 引っ張られた辺を判断する基準。ここから動いた分を見る
         // （ドラッグが終わったあとも呼ばれ、基準を実際の大きさに戻す）
@@ -1547,13 +1597,20 @@ fn set_aspect_lock(window: WebviewWindow, lock: State<AspectLock>, ratio: Option
 
 /// 引っ張られた辺（変化の割合が大きい方）と縦横比から、目指す広さを出す。
 /// もう一方の辺はこの広さと縦横比から決まるので、引っ張った辺はそのまま残る
-fn dragged_area(now: LogicalSize<f64>, before: LogicalSize<f64>, ratio: f64) -> f64 {
+/// extra は縦横比に含めない固定の余白（sized_to_aspect と同じ）
+fn dragged_area(
+    now: LogicalSize<f64>,
+    before: LogicalSize<f64>,
+    ratio: f64,
+    extra: (f64, f64),
+) -> f64 {
+    let (ex, ey) = extra;
     let dw = (now.width - before.width).abs() / before.width.max(1.0);
     let dh = (now.height - before.height).abs() / before.height.max(1.0);
     if dw >= dh {
-        now.width * now.width / ratio
+        now.width * ((now.width - ex).max(0.0) / ratio + ey)
     } else {
-        now.height * now.height * ratio
+        now.height * ((now.height - ey).max(0.0) * ratio + ex)
     }
 }
 
@@ -1593,9 +1650,10 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
     let now = size.to_logical::<f64>(scale);
     let before = state.reported.to_logical::<f64>(scale);
     state.reported = size;
-    let area = dragged_area(now, before, ratio);
+    let extra = state.extra;
+    let area = dragged_area(now, before, ratio, extra);
     // 手で変えている間は画面に収める判定をしない（引っ張った先で止められない）
-    let (width, height) = sized_to_aspect(ratio, area, NO_LIMIT);
+    let (width, height) = sized_to_aspect(ratio, extra, area, NO_LIMIT);
     let fixed: PhysicalSize<u32> = LogicalSize::new(width, height).to_physical(scale);
 
     // 1 ピクセルのずれは OS 側の丸めなので、直しに行かずそのまま受け入れる
@@ -1632,6 +1690,8 @@ fn fit_window_to_image(
     startup: State<StartupFit>,
     width: f64,
     height: f64,
+    extra_width: Option<f64>,
+    extra_height: Option<f64>,
 ) -> Result<(), String> {
     if !(width > 0.0 && height > 0.0) {
         return Err("画像サイズを取得できません".to_string());
@@ -1673,7 +1733,8 @@ fn fit_window_to_image(
     } else {
         NO_LIMIT
     };
-    let (w, h) = sized_to_aspect(width / height, area, limit);
+    let extra = (extra_width.unwrap_or(0.0), extra_height.unwrap_or(0.0));
+    let (w, h) = sized_to_aspect(width / height, extra, area, limit);
     let new_inner: PhysicalSize<u32> = LogicalSize::new(w, h).to_physical(scale);
 
     // 起動して最初の 1 枚は前回の左上に合わせる。ただし起動時に置いた場所から

@@ -131,14 +131,19 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   no zoom — while `showingVideo` / `showingAudio` pick what is displayed. Tags and artwork come from
   `audio_info` / `audio_artwork` (`lofty`, tags only, no audio properties); artwork falls back to a
   `cover` / `folder` / … image in the same folder (`COVER_STEMS`), then to `DEFAULT_ARTWORK`
-  (`src/audio-artwork.svg`). In "image" mode `mediaSize()` returns artwork **plus** the fixed-px
-  `#audio-panel` (`--audio-panel-h`) converted at the current window width, so the window is
-  "artwork + panel"; only the aspect ratio reaches Rust. `audioEnd: "next"` advances on `ended`
+  (`src/audio-artwork.svg`). In "image" mode `mediaSize()` returns the artwork size plus
+  `extraWidth` / `extraHeight` — the fixed-px `#audio-art` padding and `#audio-panel`
+  (`--audio-panel-h`) — which `set_aspect_lock` / `fit_window_to_image` store as
+  `AspectState.extra`; `sized_to_aspect` / `dragged_area` keep the ratio on the window **minus**
+  that margin (images / videos pass 0). Don't fold the margin into the ratio at the current
+  window width: the ratio then depends on the previous window shape and the size drifts. `audioEnd: "next"` advances on `ended`
   to the next *audio* entry (skipping images / videos, wrapping only with `wrapAround`) and
   forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
   slider value (`getVolume` / `setVolume` wrap `video.volume`; never read or write it directly for
   the user-facing volume). `#audio-art` has fixed-px padding (left / right / top) that `mediaSize()`
-  reads via `getComputedStyle` and includes in the aspect ratio.
+  reads via `getComputedStyle`. `layoutArtwork()` sizes `#artwork` to the drawn picture (instead
+  of `object-fit` on a full box) so its `border-radius` (`--window-radius`, same as `#app`)
+  rounds the picture itself.
 - Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
   `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
   into `settings.json`.
