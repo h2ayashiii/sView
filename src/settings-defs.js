@@ -114,11 +114,11 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "video",
-    label: "動画",
+    label: "動画・音楽",
     items: [
       {
         key: "videoAutoplay",
-        label: "開いたらすぐ再生する",
+        label: "動画を開いたらすぐ再生する",
         hint:
           "オフのときは最初のコマで止まった状態で開きます。Space キーで再生 / 一時停止します。" +
           "再生できる形式は OS の再生機能によります（mp4 / m4v / webm / mov）",
@@ -127,22 +127,45 @@ const SETTINGS_SECTIONS = [
       },
       {
         key: "videoLoop",
-        label: "繰り返し再生する",
+        label: "動画を繰り返し再生する",
         hint: "最後まで再生したら先頭に戻って続けます",
         type: "toggle",
         default: true,
       },
       {
+        key: "audioAutoplay",
+        label: "音楽を開いたらすぐ再生する",
+        hint:
+          "オフのときは止まった状態で開きます。" +
+          "再生できる形式は OS の再生機能によります（mp3 / m4a / aac / flac / wav / ogg / opus）",
+        type: "toggle",
+        default: true,
+      },
+      {
+        key: "audioEnd",
+        label: "曲が終わったら",
+        hint:
+          "「次の曲へ進む」は同じフォルダの次の音楽ファイルを続けて再生します（間の画像・動画は飛ばします）。" +
+          "最後の曲のあとは「端で最初 / 最後へ折り返す」がオンのときだけ先頭に戻ります",
+        type: "select",
+        options: [
+          ["next", "次の曲へ進む"],
+          ["repeat", "同じ曲を繰り返す"],
+          ["stop", "止める"],
+        ],
+        default: "next",
+      },
+      {
         key: "videoMuted",
         label: "音を消す",
-        hint: "再生中に M キーや音量ボタンで切り替えた状態もここに保存されます",
+        hint: "動画と音楽で共通です。再生中に M キーや音量ボタンで切り替えた状態もここに保存されます",
         type: "toggle",
         default: false,
       },
       {
         key: "videoVolume",
         label: "音量",
-        hint: "再生中の音量バーで変えた値もここに保存されます",
+        hint: "動画と音楽で共通です。再生中の音量バーで変えた値もここに保存されます",
         type: "range",
         min: 0,
         max: 100,

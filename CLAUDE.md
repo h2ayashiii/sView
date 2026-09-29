@@ -5,12 +5,12 @@ Guidance for coding agents working in this repository.
 ## Overview
 
 sView is a minimal, frameless, cross-platform image viewer built with **Tauri v2**.
-It opens single images, videos, folders, and zip/cbz archives; the overlay UI shows while the mouse
+It opens single images, videos, audio files, folders, and zip/cbz archives; the overlay UI shows while the mouse
 moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` toggle
 `#app.chrome-visible` in `src/main.js`).
 
 - **Backend**: Rust 2021, crate `sview` / lib `sview_lib` (`tauri`, `tauri-plugin-dialog`,
-  `tauri-plugin-log`, `log`, `serde`, `zip`, `notify`, `trash`).
+  `tauri-plugin-log`, `log`, `serde`, `zip`, `notify`, `trash`, `lofty`).
 - **Frontend**: plain HTML/CSS/JS. **No framework, no bundler, no TypeScript.**
   `withGlobalTauri: true`, so APIs come from `window.__TAURI__` and scripts load via `<script src>`.
 - Targets: Windows 10/11, macOS 10.15+. **Linux is not a target.** It is kept only buildable,
@@ -30,6 +30,7 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
 | `src-tauri/src/lib.rs` | **All** backend logic + inline `#[cfg(test)] mod tests` |
 | `README.md` | Entry point only: overview, download, first launch, short usage, links. Detailed behaviour goes in `docs/` |
 | `docs/` | `architecture.md`, `development.md` (build / CI / release), `specs/*.md` (one file per feature, Japanese). Update the matching spec when behaviour changes |
+| `src/audio-artwork.svg` | Default artwork for audio files without one (`DEFAULT_ARTWORK` in `main.js`) |
 | `CHANGELOG.md` | Per-version change summary; add to `未リリース` with user-visible changes |
 | `src-tauri/src/main.rs` | Only calls `sview_lib::run()` |
 | `src-tauri/tauri.conf.json` | Windows, CSP, bundle, file associations |
@@ -123,6 +124,18 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `VIDEO_DRAG_THRESHOLD_PX` calls `appWindow.startDragging()`, and one released within
   `VIDEO_CLICK_MS` without moving toggles play-pause. The playback controls are the `#videobar` card (seek bar on top; time /
   ±5 s + play / mute + volume below) inside `#chrome`, so they show and hide with the rest of the chrome.
+- Audio (`AUDIO_EXTS` in `lib.rs` / `AUDIO_EXT_FILTER` in `main.js`, kept in sync by the same test;
+  not file-associated, never listed from archives) plays through the **same `<video>` element**,
+  which stays hidden while `#audio` shows the artwork and the title panel. `showingMedia`
+  (video or audio) gates everything playback-related — keys, the press-to-play logic, `#videobar`,
+  no zoom — while `showingVideo` / `showingAudio` pick what is displayed. Tags and artwork come from
+  `audio_info` / `audio_artwork` (`lofty`, tags only, no audio properties); artwork falls back to a
+  `cover` / `folder` / … image in the same folder (`COVER_STEMS`), then to `DEFAULT_ARTWORK`
+  (`src/audio-artwork.svg`). In "image" mode `mediaSize()` returns artwork **plus** the fixed-px
+  `#audio-panel` (`--audio-panel-h`) converted at the current window width, so the window is
+  "artwork + panel"; only the aspect ratio reaches Rust. `audioEnd: "next"` advances on `ended`
+  to the next *audio* entry (skipping images / videos, wrapping only with `wrapAround`) and
+  forces playback via `continuePlayback`.
 - Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
   `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
   into `settings.json`.

@@ -58,11 +58,12 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 - **フレームレス表示** — タイトルバー・枠なし。ウィンドウ操作ボタン（macOS は左上に「閉じる / 最小化 / 最大化」、Windows は右上に「最小化 / 最大化 / 閉じる」）や左右の移動ボタン、左下のファイル名・右下の枚数表示は、マウスを動かしている間だけオーバーレイ表示され、3 秒動かさないと消えて画像だけの表示に戻ります。最小化・最大化の挙動は OS 標準どおりで、タイトルバーのダブルクリックでも最大化できます。大きさはウィンドウの端をドラッグして変えられ、設定で表示中の画像の縦横比に合わせることもできます
 - **フォルダ / 圧縮フォルダ対応** — 画像1枚・フォルダ・圧縮フォルダ（zip / cbz）のいずれを開いても、その中の画像を自然順（`img2.png` → `img10.png`）で前後に移動できます
 - **動画の再生** — mp4 / m4v / webm / mov を、画像と同じ一覧の中で再生できます
+- **音楽の再生** — mp3 / m4a / aac / flac / wav / ogg / opus を、アートワークと曲名を表示して再生できます。曲が終わると同じフォルダの次の曲へ進みます
 - **右クリックメニューと設定** — アプリ上の右クリックでコンテキストメニューが開き、エクスプローラー / Finder での表示や各種操作、設定ウィンドウを呼び出せます
 - **ビュアーから削除** — `Del` キーや右クリックメニューで、表示中の画像を OS のゴミ箱へ移動できます（完全削除はしないので戻せます）。確認ウィンドウには「今後確認しない」があり、チェックすると次からは確認なしで削除します
 - **フォルダの変更に追従** — フォルダを開いている間は、あとから画像を追加・削除しても開き直さずに一覧へ反映されます。OS のネイティブ通知（Windows: ReadDirectoryChangesW / macOS: FSEvents）を使うので、変化が無い間は待っているだけで CPU もディスクも使いません
 - **圧縮フォルダは必要な1枚だけ展開** — zip の索引（セントラルディレクトリ）だけを読み、表示する画像のみをその都度取り出します。書庫全体をメモリやディスクに展開しないため、数GBの書庫でも起動が一瞬です
-- **対応形式** — 画像: avif / bmp / gif / ico / jfif / jpe / jpeg / jpg / png / svg / tif / tiff / webp、動画: mp4 / m4v / webm / mov、書庫: zip / cbz
+- **対応形式** — 画像: avif / bmp / gif / ico / jfif / jpe / jpeg / jpg / png / svg / tif / tiff / webp、動画: mp4 / m4v / webm / mov、音楽: mp3 / m4a / aac / flac / wav / ogg / opus、書庫: zip / cbz
 - **対応OS** — Windows 10/11・macOS 10.15 以降（Apple Silicon）
 
 ## 使い方
@@ -80,6 +81,7 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 | [docs/specs/controls.md](docs/specs/controls.md) | 開き方・キーボード・マウス・右クリックメニュー |
 | [docs/specs/files.md](docs/specs/files.md) | フォルダ・圧縮フォルダの探索範囲と読み込み、フォルダの変更への追従、画像の削除 |
 | [docs/specs/video.md](docs/specs/video.md) | 動画の再生と対応形式 |
+| [docs/specs/audio.md](docs/specs/audio.md) | 音楽の再生・アートワークと対応形式 |
 | [docs/specs/window-size.md](docs/specs/window-size.md) | ウィンドウサイズの挙動と保存 |
 | [docs/specs/settings.md](docs/specs/settings.md) | 設定項目・ログ・キャッシュの置き場所 |
 | [docs/architecture.md](docs/architecture.md) | 全体構成・設計方針・プラットフォーム別の注意点 |

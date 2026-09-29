@@ -19,6 +19,12 @@ const vbVolume = document.getElementById("vb-volume");
 const vbTime = document.getElementById("vb-time");
 const vbDuration = document.getElementById("vb-duration");
 const vbTip = document.getElementById("vb-tip");
+const audioBox = document.getElementById("audio");
+const artwork = document.getElementById("artwork");
+const audioPanel = document.getElementById("audio-panel");
+const audioTitle = document.getElementById("audio-title");
+const audioSub = document.getElementById("audio-sub");
+const audioProgressFill = document.getElementById("audio-progress-fill");
 const placeholder = document.getElementById("placeholder");
 const errorBox = document.getElementById("error");
 const filenameEl = document.getElementById("filename");
@@ -47,6 +53,8 @@ const IMAGE_EXT_FILTER = [
 // 動画は OS の WebView が再生できるものだけ（コーデックは同梱しない）。
 // 書庫の中の動画は一覧に出さない
 const VIDEO_EXT_FILTER = ["mp4", "m4v", "webm", "mov"];
+// 音楽も同じく OS の WebView 任せ。書庫の中の音楽は一覧に出さない
+const AUDIO_EXT_FILTER = ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus"];
 const ARCHIVE_EXT_FILTER = ["zip", "cbz"];
 
 // blob URL に必要な MIME（拡張子から判定）
@@ -70,6 +78,10 @@ let entryPrefix = "";
 let showToken = 0;
 // 表示中のものが動画なら true（#image の代わりに #video を使う）
 let showingVideo = false;
+// 表示中のものが音楽なら true（#video で鳴らし、#audio にアートワークを出す）
+let showingAudio = false;
+// 動画か音楽（どちらも #video で再生し、再生操作のカードを出す）
+let showingMedia = false;
 
 // ---- 書庫内画像の遅延ロード ----
 // 書庫は一括展開せず、表示するエントリだけを Rust 側から取り出して
@@ -84,6 +96,10 @@ function extOf(name) {
 
 function isVideoPath(name) {
   return VIDEO_EXT_FILTER.includes(extOf(name));
+}
+
+function isAudioPath(name) {
+  return AUDIO_EXT_FILTER.includes(extOf(name));
 }
 
 function clearBlobCache() {
@@ -139,12 +155,13 @@ function setFitMode() {
   mode = "fit";
   img.className = "fit";
   video.className = "fit";
+  artwork.className = "fit";
   img.style.transform = "";
   img.style.position = "";
   unfreezeImageSize();
-  // 動画の上はクリックで再生 / 一時停止にするので、ウィンドウのドラッグ領域にしない
-  // （ドラッグはタイトルバー・ステータスバーで行う）
-  if (showingVideo) stage.removeAttribute("data-tauri-drag-region");
+  // 動画・音楽の上はクリックで再生 / 一時停止にするので、ウィンドウのドラッグ領域にしない
+  // （押したまま動かしたときは自分で startDragging() を呼ぶ）
+  if (showingMedia) stage.removeAttribute("data-tauri-drag-region");
   else stage.setAttribute("data-tauri-drag-region", "");
   stage.classList.remove("panning");
 }
@@ -173,16 +190,16 @@ function freezeImageSize() {
 
 function unfreezeImageSize() {
   frozenSize = false;
-  for (const el of [img, video]) {
+  for (const el of [img, video, artwork]) {
     el.style.width = "";
     el.style.height = "";
     el.classList.remove("frozen");
   }
 }
 
-// 動画は拡大縮小しない（常にウィンドウに合わせて表示する）
+// 動画・音楽は拡大縮小しない（常にウィンドウに合わせて表示する）
 function enterZoomMode() {
-  if (mode === "zoom" || showingVideo || !img.src || !img.naturalWidth) return;
+  if (mode === "zoom" || showingMedia || !img.src || !img.naturalWidth) return;
   // 据え置き中なら先に戻す（据え置きの大きさから倍率を出すと二重にかかる）
   unfreezeImageSize();
   // フィット表示の <img> は箱がウィンドウ全体で、絵は object-fit: contain で中に収まっている。
@@ -265,9 +282,9 @@ function updateChrome() {
   counterEl.textContent = `${index + 1} / ${images.length}`;
   navPrev.disabled = index === 0;
   navNext.disabled = index === images.length - 1;
-  // 動画の間は ← → が早送り・巻き戻しになるので、移動のキーは Shift + ← → と示す
-  navPrev.title = showingVideo ? "前のファイル (Shift + ←)" : "前の画像 (←)";
-  navNext.title = showingVideo ? "次のファイル (Shift + →)" : "次の画像 (→)";
+  // 動画・音楽の間は ← → が早送り・巻き戻しになるので、移動のキーは Shift + ← → と示す
+  navPrev.title = showingMedia ? "前のファイル (Shift + ←)" : "前の画像 (←)";
+  navNext.title = showingMedia ? "次のファイル (Shift + →)" : "次の画像 (→)";
   appWindow.setTitle(`${baseName(images[index])} - sView`).catch(() => {});
 }
 
@@ -277,8 +294,8 @@ function preloadNeighbors() {
     // 端で折り返さないので、範囲外は先読みしない
     const i = index + off;
     if (i < 0 || i >= images.length) continue;
-    // 動画は大きいので先読みしない
-    if (!archivePath && isVideoPath(images[i])) continue;
+    // 動画・音楽は大きいので先読みしない
+    if (!archivePath && (isVideoPath(images[i]) || isAudioPath(images[i]))) continue;
     if (archivePath) {
       // 先読みも 1 件ずつ。失敗しても表示には影響させない
       archiveBlobUrl(images[i]).catch(() => {});
@@ -288,13 +305,22 @@ function preloadNeighbors() {
   }
 }
 
-// 表示中の要素（画像か動画）
+// 表示中の要素（画像か動画。音楽ならアートワーク）
 function mediaEl() {
+  if (showingAudio) return artwork;
   return showingVideo ? video : img;
 }
 
-// 表示中の画像・動画の実寸。まだ分からなければ null
+// 表示中の画像・動画の実寸。まだ分からなければ null。
+// 音楽はアートワークの下に曲名の帯（px で固定）が付くので、その分を縦に足した形を返す。
+// 帯の高さは今のウィンドウ幅での比率に直す（「画像に合わせる」で使うのは縦横比だけ）
 function mediaSize() {
+  if (showingAudio) {
+    const { naturalWidth: w, naturalHeight: h } = artwork;
+    if (!w || !h || !artwork.complete) return null;
+    const scaleToArt = w / Math.max(1, window.innerWidth);
+    return { width: w, height: h + audioPanel.offsetHeight * scaleToArt };
+  }
   const [width, height] = showingVideo
     ? [video.videoWidth, video.videoHeight]
     : [img.naturalWidth, img.naturalHeight];
@@ -306,6 +332,11 @@ function mediaSize() {
 function onImageReady(run) {
   if (img.complete && img.naturalWidth) run();
   else img.addEventListener("load", run, { once: true });
+}
+
+function onArtworkReady(run) {
+  if (artwork.complete && artwork.naturalWidth) run();
+  else artwork.addEventListener("load", run, { once: true });
 }
 
 // 動画は再生前に大きさ（メタデータ）だけ先に分かる
@@ -353,25 +384,39 @@ function applyStartupZoom() {
 async function show() {
   if (index < 0 || index >= images.length) return;
   const token = ++showToken;
-  // 前の動画は必ず止めて手放す（再生を続けさせない・ファイルを掴んだままにしない）
+  // 前の動画・音楽は必ず止めて手放す（再生を続けさせない・ファイルを掴んだままにしない）
   unloadVideo();
-  // 書庫の中の動画は一覧に出てこないので、動画は常にファイルとして開ける
+  // 曲の終わりから次の曲へ進んだときは、設定にかかわらず続けて再生する
+  const continuing = continuePlayback;
+  continuePlayback = false;
+  // 書庫の中の動画・音楽は一覧に出てこないので、常にファイルとして開ける
   showingVideo = !archivePath && isVideoPath(images[index]);
+  showingAudio = !archivePath && isAudioPath(images[index]);
+  showingMedia = showingVideo || showingAudio;
   app.classList.toggle("video", showingVideo);
+  app.classList.toggle("audio", showingAudio);
   video.hidden = !showingVideo;
-  img.hidden = showingVideo;
+  audioBox.hidden = !showingAudio;
+  img.hidden = showingMedia;
   setFitMode();
   placeholder.hidden = true;
   updateChrome();
-  if (showingVideo) {
+  if (showingMedia) {
     img.removeAttribute("src");
-    loadVideo(convertFileSrc(images[index]));
-    onVideoReady(() => {
-      if (token === showToken) fitWindowToImage();
-    });
+    const autoplay = continuing || (showingAudio ? settings.audioAutoplay : settings.videoAutoplay);
+    loadVideo(convertFileSrc(images[index]), autoplay);
+    if (showingAudio) {
+      loadAudioInfo(images[index], token);
+    } else {
+      setArtwork(null);
+      onVideoReady(() => {
+        if (token === showToken) fitWindowToImage();
+      });
+    }
     preloadNeighbors();
     return;
   }
+  setArtwork(null);
   try {
     const src = archivePath
       ? await archiveBlobUrl(images[index])
@@ -409,13 +454,18 @@ let seekDragging = false;
 // 自動再生の制限で音を消したことは 1 回だけ知らせる（動画ごとに出すとうるさい）
 let autoplayMuteNoticed = false;
 
-function loadVideo(src) {
-  video.loop = !!settings.videoLoop;
+function loadVideo(src, autoplay) {
+  video.loop = mediaLoop();
   video.muted = !!settings.videoMuted;
   video.volume = videoVolume();
   video.src = src;
   syncVideoBar();
-  if (settings.videoAutoplay) playVideo();
+  if (autoplay) playVideo();
+}
+
+// 繰り返し再生するか。音楽は「曲が終わったら」が「同じ曲を繰り返す」のときだけ
+function mediaLoop() {
+  return showingAudio ? settings.audioEnd === "repeat" : !!settings.videoLoop;
 }
 
 // src を外して読み込み直すと、WebView はファイルを手放す
@@ -448,28 +498,28 @@ function playVideo() {
 }
 
 function togglePlay() {
-  if (!showingVideo) return;
+  if (!showingMedia) return;
   if (video.paused || video.ended) playVideo();
   else video.pause();
 }
 
 // 消音の状態は設定に保存して、次の動画・次回の起動にも持ち越す
 function toggleMute() {
-  if (!showingVideo) return;
+  if (!showingMedia) return;
   settings.videoMuted = !video.muted;
   video.muted = settings.videoMuted;
   saveSettings();
 }
 
 function seekBy(seconds) {
-  if (!showingVideo || !Number.isFinite(video.duration)) return;
+  if (!showingMedia || !Number.isFinite(video.duration)) return;
   video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + seconds));
   // どこまで動いたかが見えるよう、再生操作を出す
   showChrome();
 }
 
 function changeVolumeBy(delta) {
-  if (!showingVideo) return;
+  if (!showingMedia) return;
   const volume = Math.min(1, Math.max(0, Math.round((video.volume + delta) * 100) / 100));
   video.volume = volume;
   settings.videoVolume = Math.round(volume * 100);
@@ -506,11 +556,9 @@ function syncVideoBar() {
   const duration = video.duration;
   vbDuration.textContent = formatTime(duration);
   vbTime.textContent = formatTime(video.currentTime);
-  if (!seekDragging) {
-    vbSeek.value = duration > 0 && Number.isFinite(duration)
-      ? String(Math.round((video.currentTime / duration) * 1000))
-      : "0";
-  }
+  const ratio = duration > 0 && Number.isFinite(duration) ? video.currentTime / duration : 0;
+  if (!seekDragging) vbSeek.value = String(Math.round(ratio * 1000));
+  audioProgressFill.style.width = `${ratio * 100}%`;
 }
 
 for (const type of ["play", "pause", "ended", "timeupdate", "durationchange", "volumechange", "emptied"]) {
@@ -518,15 +566,78 @@ for (const type of ["play", "pause", "ended", "timeupdate", "durationchange", "v
 }
 
 video.addEventListener("error", () => {
-  if (!showingVideo || !video.getAttribute("src")) return;
+  if (!showingMedia || !video.getAttribute("src")) return;
   const name = baseName(images[index] ?? "");
+  const kind = showingAudio ? "音楽ファイル" : "動画";
   // 3: デコードできない / 4: 形式に対応していない。どちらも OS 側の再生機能の問題
   const code = video.error?.code;
   showError(
     code === 3 || code === 4
-      ? `この動画は再生できません（OS が対応していない形式です）: ${name}`
-      : `動画を読み込めませんでした: ${name}`
+      ? `この${kind}は再生できません（OS が対応していない形式です）: ${name}`
+      : `${kind}を読み込めませんでした: ${name}`
   );
+});
+
+// ---- 音楽 ----
+// 再生は動画と同じ #video で行い（映像は出さない）、代わりにアートワークと曲名を出す。
+// アートワークはタグに埋め込まれたもの → 同じフォルダの cover.jpg など → 既定の絵の順
+const DEFAULT_ARTWORK = "audio-artwork.svg";
+// 曲の終わりから次の曲へ進むときだけ true（次の show() で再生を始める）
+let continuePlayback = false;
+// 表示中のアートワークの blob URL（差し替えるときに解放する）
+let artworkUrl = null;
+
+function setArtwork(url) {
+  if (artworkUrl) URL.revokeObjectURL(artworkUrl);
+  artworkUrl = url && url.startsWith("blob:") ? url : null;
+  if (url) artwork.src = url;
+  else artwork.removeAttribute("src");
+}
+
+// 埋め込みのアートワークが壊れていて表示できないときは既定の絵に替える
+artwork.addEventListener("error", () => {
+  if (showingAudio && artwork.getAttribute("src") !== DEFAULT_ARTWORK) setArtwork(DEFAULT_ARTWORK);
+});
+
+async function loadAudioInfo(path, token) {
+  // タグが読めるまではファイル名を出しておく
+  audioTitle.textContent = baseName(path);
+  audioSub.textContent = "";
+  const [info, bytes] = await Promise.all([
+    invoke("audio_info", { path }).catch(() => null),
+    invoke("audio_artwork", { path }).then(toBytes).catch(() => null),
+  ]);
+  if (token !== showToken) return; // 既に別のファイルへ移動している
+  audioTitle.textContent = info?.title || baseName(path);
+  audioSub.textContent = [info?.artist, info?.album].filter(Boolean).join(" — ");
+  setArtwork(bytes?.length ? URL.createObjectURL(new Blob([bytes])) : DEFAULT_ARTWORK);
+  onArtworkReady(() => {
+    if (token === showToken) fitWindowToImage();
+  });
+}
+
+// 次に再生する曲の位置。間の画像・動画は飛ばす。無ければ -1
+// （最後まで来たら、設定「端で最初 / 最後へ折り返す」のときだけ先頭から探す）
+function nextAudioIndex() {
+  for (let off = 1; off < images.length; off++) {
+    let i = index + off;
+    if (i >= images.length) {
+      if (!settings.wrapAround) return -1;
+      i -= images.length;
+    }
+    if (isAudioPath(images[i])) return i;
+  }
+  return -1;
+}
+
+// 設定「曲が終わったら」が「次の曲へ進む」なら、同じフォルダの次の曲を続けて再生する
+video.addEventListener("ended", () => {
+  if (!showingAudio || settings.audioEnd !== "next") return;
+  const next = nextAudioIndex();
+  if (next < 0) return;
+  index = next;
+  continuePlayback = true;
+  show();
 });
 
 // ボタンは押したらフォーカスを外す（Space が「ボタンを押す」にならないように）
@@ -655,8 +766,12 @@ function clearView() {
   index = -1;
   unloadVideo();
   showingVideo = false;
-  app.classList.remove("video");
+  showingAudio = false;
+  showingMedia = false;
+  app.classList.remove("video", "audio");
   video.hidden = true;
+  audioBox.hidden = true;
+  setArtwork(null);
   img.hidden = false;
   img.removeAttribute("src");
   setFitMode();
@@ -815,8 +930,8 @@ async function deleteCurrent() {
     // 確認している間に別の画像へ移っていたら、そのときの 1 枚を消さない
     if (images[index] !== path) return;
   }
-  // 再生中の動画はファイルを手放してから送る
-  const wasVideo = showingVideo;
+  // 再生中の動画・音楽はファイルを手放してから送る
+  const wasVideo = showingMedia;
   unloadVideo();
   try {
     await invoke("delete_image", { path });
@@ -844,11 +959,14 @@ async function openDialog() {
       multiple: false,
       filters: [
         {
-          name: "画像・動画・圧縮フォルダ",
-          extensions: [...IMAGE_EXT_FILTER, ...VIDEO_EXT_FILTER, ...ARCHIVE_EXT_FILTER],
+          name: "画像・動画・音楽・圧縮フォルダ",
+          extensions: [
+            ...IMAGE_EXT_FILTER, ...VIDEO_EXT_FILTER, ...AUDIO_EXT_FILTER, ...ARCHIVE_EXT_FILTER,
+          ],
         },
         { name: "画像", extensions: IMAGE_EXT_FILTER },
         { name: "動画", extensions: VIDEO_EXT_FILTER },
+        { name: "音楽", extensions: AUDIO_EXT_FILTER },
         { name: "圧縮フォルダ (zip / cbz)", extensions: ARCHIVE_EXT_FILTER },
       ],
     });
@@ -920,7 +1038,7 @@ window.addEventListener("blur", syncActive);
 syncActive();
 
 // ---- input: keyboard ----
-// 動画を表示している間だけのキー。処理したら true を返す。
+// 動画・音楽を表示している間だけのキー。処理したら true を返す。
 // ← → は早送り・巻き戻し、↑ ↓ は音量。前後のファイルへは Shift + ← → や
 // PageUp / PageDown などで移る
 function handleVideoKey(e) {
@@ -988,7 +1106,7 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (showingVideo && handleVideoKey(e)) return;
+  if (showingMedia && handleVideoKey(e)) return;
   switch (e.key) {
     case "ArrowRight":
     case "ArrowDown":
@@ -1101,8 +1219,8 @@ window.addEventListener("mousemove", (e) => {
 });
 window.addEventListener("mouseup", () => (panning = null));
 
-// ---- input: 動画の上の押下（すぐ離すと再生 / 一時停止、押したまま動かすとウィンドウ移動） ----
-// 動画表示中の #stage はドラッグ領域にしない（setFitMode）。付けたままだと押した瞬間に
+// ---- input: 動画・音楽の上の押下（すぐ離すと再生 / 一時停止、押したまま動かすとウィンドウ移動） ----
+// 動画・音楽の表示中の #stage はドラッグ領域にしない（setFitMode）。付けたままだと押した瞬間に
 // OS のウィンドウ移動が始まり、離したことが WebView に届かずクリックと区別できないため。
 // 代わりに一定以上動いたところで自分で startDragging() を呼ぶ
 const VIDEO_DRAG_THRESHOLD_PX = 4;
@@ -1113,7 +1231,7 @@ let videoPress = null;
 stage.addEventListener("mousedown", (e) => {
   videoPress = null;
   // ダブルクリックの 2 回目は数えない（2 回切り替わって元に戻らないように）
-  if (!showingVideo || e.button !== 0 || e.detail > 1 || pressClosedMenu || !confirmEl.hidden) return;
+  if (!showingMedia || e.button !== 0 || e.detail > 1 || pressClosedMenu || !confirmEl.hidden) return;
   videoPress = { x: e.clientX, y: e.clientY, t: performance.now() };
 });
 window.addEventListener("mousemove", (e) => {
@@ -1131,7 +1249,7 @@ window.addEventListener("mouseup", (e) => {
   const quick = performance.now() - videoPress.t <= VIDEO_CLICK_MS;
   videoPress = null;
   // 長く押して動かさずに離したときは何もしない
-  if (quick && showingVideo) togglePlay();
+  if (quick && showingMedia) togglePlay();
 });
 
 // ---- misc UI ----
@@ -1242,7 +1360,7 @@ function applySettings() {
   app.classList.toggle("hide-filename", !settings.showFilename);
   app.classList.toggle("hide-nav", !settings.showNavButtons);
   img.style.imageRendering = settings.imageRendering;
-  video.loop = !!settings.videoLoop;
+  video.loop = mediaLoop();
   video.volume = videoVolume();
   video.muted = !!settings.videoMuted;
   appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
@@ -1328,7 +1446,7 @@ function buildContextMenu() {
     { label: "フォルダを開く…", accel: "D", action: openFolderDialog },
     { label: "再読み込み", accel: "R", disabled: !hasFile, action: rescan },
     { separator: true },
-    ...(showingVideo
+    ...(showingMedia
       ? [
           {
             label: video.paused || video.ended ? "再生" : "一時停止",
@@ -1339,17 +1457,17 @@ function buildContextMenu() {
           { separator: true },
         ]
       : []),
-    // 動画は常にウィンドウに合わせて表示する（拡大縮小しない）
+    // 動画・音楽は常にウィンドウに合わせて表示する（拡大縮小しない）
     {
       label: "ウィンドウに合わせる",
       accel: "0",
-      disabled: !hasFile || showingVideo,
+      disabled: !hasFile || showingMedia,
       action: setFitMode,
     },
     {
       label: "等倍 (100%)",
       accel: "1",
-      disabled: !hasFile || showingVideo,
+      disabled: !hasFile || showingMedia,
       action: () => zoomTo(1),
     },
     { label: "全画面表示", accel: "F", action: toggleFullscreen },

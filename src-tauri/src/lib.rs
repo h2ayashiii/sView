@@ -22,6 +22,17 @@ const IMAGE_EXTS: &[&str] = &[
 /// どの OS の WebView でもおおむね再生できるコンテナだけに絞っている
 const VIDEO_EXTS: &[&str] = &["m4v", "mov", "mp4", "webm"];
 
+/// 対応する音楽拡張子（小文字で比較）。
+/// 動画と同じく再生は OS の WebView に任せる（コーデックは同梱しない）
+const AUDIO_EXTS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav"];
+
+/// 音楽ファイルと同じフォルダに置かれたジャケット画像とみなすファイル名（拡張子を除く・小文字）。
+/// 埋め込みのアートワークが無いときだけ使う
+const COVER_STEMS: &[&str] = &["cover", "folder", "front", "album", "albumart"];
+
+/// アートワークとして読む画像の上限（埋め込み・同じフォルダの画像とも）
+const MAX_ARTWORK_BYTES: u64 = 64 * 1024 * 1024;
+
 /// 対応する書庫（圧縮フォルダ）拡張子
 const ARCHIVE_EXTS: &[&str] = &["cbz", "zip"];
 
@@ -124,9 +135,13 @@ fn is_video(path: &Path) -> bool {
     has_ext(path, VIDEO_EXTS)
 }
 
-/// フォルダで一覧に並べるもの（画像と動画）。書庫の中の動画は対象外
+fn is_audio(path: &Path) -> bool {
+    has_ext(path, AUDIO_EXTS)
+}
+
+/// フォルダで一覧に並べるもの（画像・動画・音楽）。書庫の中の動画・音楽は対象外
 fn is_media(path: &Path) -> bool {
-    is_image(path) || is_video(path)
+    is_image(path) || is_video(path) || is_audio(path)
 }
 
 fn is_archive(path: &Path) -> bool {
@@ -406,7 +421,88 @@ mod tests {
         assert!(!is_media(Path::new("/x/notes.txt")));
     }
 
-    /// フォルダでは画像と動画を混ぜて自然順に並べ、それ以外は外す
+    #[test]
+    fn audio_extension_detection() {
+        assert!(is_audio(Path::new("/x/song.MP3")));
+        assert!(is_audio(Path::new("/x/song.flac")));
+        assert!(is_audio(Path::new("/x/song.m4a")));
+        assert!(!is_audio(Path::new("/x/song.wma")));
+        assert!(!is_audio(Path::new("/x/clip.mp4")));
+        assert!(is_media(Path::new("/x/song.ogg")));
+    }
+
+    /// 埋め込みのアートワークが無いときは、同じフォルダのジャケット画像を
+    /// COVER_STEMS の順（cover → folder → …）で選ぶ。大文字小文字は問わない
+    #[test]
+    fn folder_artwork_prefers_cover_names_in_order() {
+        let dir = std::env::temp_dir().join(format!("sview-cover-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("01 song.mp3");
+        fs::write(&song, b"x").unwrap();
+        assert_eq!(folder_artwork(&song), None);
+        fs::write(dir.join("booklet.jpg"), b"booklet").unwrap();
+        assert_eq!(folder_artwork(&song), None);
+        fs::write(dir.join("Folder.JPG"), b"folder").unwrap();
+        assert_eq!(folder_artwork(&song).as_deref(), Some(&b"folder"[..]));
+        fs::write(dir.join("cover.png"), b"cover").unwrap();
+        assert_eq!(folder_artwork(&song).as_deref(), Some(&b"cover"[..]));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// タグに埋め込まれたアートワークと曲名を読める。表紙（CoverFront）を優先する
+    #[test]
+    fn reads_embedded_tags_and_artwork() {
+        use lofty::config::WriteOptions;
+        use lofty::picture::{MimeType, Picture, PictureType};
+        use lofty::prelude::*;
+        use lofty::tag::{Tag, TagType};
+
+        let dir = std::env::temp_dir().join(format!("sview-embed-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("song.mp3");
+        // MPEG-1 Layer III / 128 kbps / 44.1 kHz のフレーム（中身は無音でよい）を並べる
+        let mut frame = vec![0xFF, 0xFB, 0x90, 0x00];
+        frame.resize(417, 0);
+        fs::write(&song, frame.repeat(4)).unwrap();
+        // 同じフォルダのジャケット画像より、埋め込みの方を先に使う
+        fs::write(dir.join("cover.jpg"), b"folder cover").unwrap();
+
+        let mut tag = Tag::new(TagType::Id3v2);
+        tag.set_title("曲名".to_string());
+        tag.set_artist("アーティスト".to_string());
+        let picture = |kind, data: &[u8]| {
+            Picture::unchecked(data.to_vec())
+                .pic_type(kind)
+                .mime_type(MimeType::Png)
+                .build()
+        };
+        tag.push_picture(picture(PictureType::Other, b"other"));
+        tag.push_picture(picture(PictureType::CoverFront, b"front"));
+        tag.save_to_path(&song, WriteOptions::default()).unwrap();
+
+        let path = song.to_string_lossy().into_owned();
+        let info = audio_info(path).unwrap();
+        assert_eq!(info.title.as_deref(), Some("曲名"));
+        assert_eq!(info.artist.as_deref(), Some("アーティスト"));
+        assert_eq!(info.album, None);
+        assert_eq!(embedded_artwork(&song).as_deref(), Some(&b"front"[..]));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// タグの無い（壊れた）音楽ファイルでもエラーにせず、空の情報を返す
+    #[test]
+    fn audio_info_tolerates_missing_tags() {
+        let dir = std::env::temp_dir().join(format!("sview-tag-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("broken.mp3");
+        fs::write(&song, b"not really an mp3").unwrap();
+        let info = audio_info(song.to_string_lossy().into_owned()).unwrap();
+        assert_eq!((info.title, info.artist, info.album), (None, None, None));
+        assert!(audio_info(dir.join("x.png").to_string_lossy().into_owned()).is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// フォルダでは画像・動画・音楽を混ぜて自然順に並べ、それ以外は外す
     #[test]
     fn folder_listing_mixes_images_and_videos() {
         let dir = std::env::temp_dir().join(format!("sview-media-test-{}", std::process::id()));
@@ -418,6 +514,8 @@ mod tests {
             "a3.webm",
             "notes.txt",
             "a4.avi",
+            "a5.mp3",
+            "a6.wma",
         ] {
             fs::write(dir.join(name), b"x").unwrap();
         }
@@ -433,7 +531,10 @@ mod tests {
                     .into_owned()
             })
             .collect();
-        assert_eq!(names, vec!["a1.jpg", "a2.mp4", "a3.webm", "a10.png"]);
+        assert_eq!(
+            names,
+            vec!["a1.jpg", "a2.mp4", "a3.webm", "a5.mp3", "a10.png"]
+        );
         assert_eq!(list.index, 2);
         fs::remove_dir_all(&dir).ok();
     }
@@ -586,6 +687,12 @@ mod tests {
             sorted(quoted_items(&main_js, "const VIDEO_EXT_FILTER = [", ']')),
             sorted(VIDEO_EXTS.to_vec()),
             "main.js の VIDEO_EXT_FILTER が VIDEO_EXTS とずれています"
+        );
+        // 音楽も動画と同じく、開けるが OS には関連付けない
+        assert_eq!(
+            sorted(quoted_items(&main_js, "const AUDIO_EXT_FILTER = [", ']')),
+            sorted(AUDIO_EXTS.to_vec()),
+            "main.js の AUDIO_EXT_FILTER が AUDIO_EXTS とずれています"
         );
 
         let archives = sorted(ARCHIVE_EXTS.to_vec());
@@ -855,15 +962,124 @@ fn delete_image(path: String) -> Result<(), String> {
         return Err(format!("ファイルが見つかりません: {path}"));
     }
     if !is_media(&target) {
-        return Err(format!("画像・動画ファイルではありません: {path}"));
+        return Err(format!("画像・動画・音楽ファイルではありません: {path}"));
     }
     trash::delete(&target).map_err(|e| format!("ゴミ箱へ移動できませんでした: {e}"))?;
     log::info!("ゴミ箱へ移動しました: {path}");
     Ok(())
 }
 
+/// 音楽ファイルのタグ情報（表示用）。読めない項目は None
+#[derive(serde::Serialize, Default)]
+struct AudioInfo {
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+}
+
+/// 音楽ファイルのタグを読む。音声の長さなどは要らないので、タグだけを読む。
+/// 形式は拡張子ではなく中身から判定する（拡張子と中身が食い違うファイルもあるため）
+fn read_audio_tags(path: &Path) -> Option<lofty::file::TaggedFile> {
+    use lofty::config::ParseOptions;
+    use lofty::probe::Probe;
+    let read = || -> Result<lofty::file::TaggedFile, Box<dyn std::error::Error>> {
+        Ok(Probe::open(path)?
+            .guess_file_type()?
+            .options(ParseOptions::new().read_properties(false))
+            .read()?)
+    };
+    read()
+        .map_err(|e| log::warn!("音楽ファイルのタグを読めません ({}): {e}", path.display()))
+        .ok()
+}
+
+/// 前後の空白を除き、空なら None にする
+fn non_empty(text: Option<std::borrow::Cow<'_, str>>) -> Option<String> {
+    text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+}
+
+/// 音楽ファイルの曲名・アーティスト・アルバム名を返す。
+/// タグが無い・読めないときもエラーにはせず、空の情報を返す（再生はできるため）
+#[tauri::command]
+fn audio_info(path: String) -> Result<AudioInfo, String> {
+    use lofty::prelude::*;
+    let target = PathBuf::from(&path);
+    if !target.is_file() || !is_audio(&target) {
+        return Err(format!("音楽ファイルではありません: {path}"));
+    }
+    let Some(file) = read_audio_tags(&target) else {
+        return Ok(AudioInfo::default());
+    };
+    // 主となるタグを先に見て、足りない項目はほかのタグで補う
+    let mut info = AudioInfo::default();
+    for tag in file.primary_tag().into_iter().chain(file.tags()) {
+        info.title = info.title.or_else(|| non_empty(tag.title()));
+        info.artist = info.artist.or_else(|| non_empty(tag.artist()));
+        info.album = info.album.or_else(|| non_empty(tag.album()));
+    }
+    Ok(info)
+}
+
+/// タグに埋め込まれたアートワーク。表紙（CoverFront）を優先し、無ければ最初の 1 枚
+fn embedded_artwork(path: &Path) -> Option<Vec<u8>> {
+    use lofty::picture::PictureType;
+    use lofty::prelude::*;
+    let file = read_audio_tags(path)?;
+    let pictures: Vec<_> = file
+        .tags()
+        .iter()
+        .flat_map(|t| t.pictures())
+        .filter(|p| !p.data().is_empty() && p.data().len() as u64 <= MAX_ARTWORK_BYTES)
+        .collect();
+    pictures
+        .iter()
+        .find(|p| p.pic_type() == PictureType::CoverFront)
+        .or_else(|| pictures.first())
+        .map(|p| p.data().to_vec())
+}
+
+/// 同じフォルダにあるジャケット画像（cover.jpg / folder.png など）。
+/// 候補が複数あれば COVER_STEMS の順に選ぶ
+fn folder_artwork(path: &Path) -> Option<Vec<u8>> {
+    let dir = path.parent()?;
+    let mut candidates: Vec<(usize, PathBuf)> = fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && is_image(p) && !has_ext(p, &["svg"]))
+        .filter_map(|p| {
+            let stem = p.file_stem()?.to_str()?.to_ascii_lowercase();
+            let rank = COVER_STEMS.iter().position(|s| *s == stem)?;
+            Some((rank, p))
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().find_map(|(_, p)| {
+        let size = fs::metadata(&p).ok()?.len();
+        if size == 0 || size > MAX_ARTWORK_BYTES {
+            return None;
+        }
+        fs::read(&p).ok()
+    })
+}
+
+/// 音楽ファイルのアートワークをバイト列のまま返す（IPC の raw payload で転送）。
+/// 埋め込みが無ければ同じフォルダのジャケット画像を探し、それも無ければ空を返す
+/// （そのときはフロントエンドが既定の絵を出す）
+#[tauri::command]
+fn audio_artwork(path: String) -> Result<Response, String> {
+    let target = PathBuf::from(&path);
+    if !target.is_file() || !is_audio(&target) {
+        return Err(format!("音楽ファイルではありません: {path}"));
+    }
+    let bytes = embedded_artwork(&target)
+        .or_else(|| folder_artwork(&target))
+        .unwrap_or_default();
+    Ok(Response::new(bytes))
+}
+
 /// 一覧を作り直す必要がある変更かどうか。
-/// 画像・動画の増減（作成・削除・名前の変更）だけを拾い、中身の書き換えは無視する。
+/// 画像・動画・音楽の増減（作成・削除・名前の変更）だけを拾い、中身の書き換えは無視する。
 /// 種類を判別できない通知（EventKind::Any）は、取りこぼすより拾う方に倒す
 fn is_listing_change(event: &notify::Event) -> bool {
     use notify::event::{EventKind, ModifyKind};
@@ -874,7 +1090,7 @@ fn is_listing_change(event: &notify::Event) -> bool {
             | EventKind::Remove(_)
             | EventKind::Modify(ModifyKind::Name(_))
     );
-    // 名前の変更では変更前と変更後の両方が入るので、どちらかが画像・動画なら対象
+    // 名前の変更では変更前と変更後の両方が入るので、どちらかが画像・動画・音楽なら対象
     kind_matches && event.paths.iter().any(|p| is_media(p))
 }
 
@@ -2321,6 +2537,8 @@ pub fn run() {
             fit_window_to_image,
             set_aspect_lock,
             delete_image,
+            audio_info,
+            audio_artwork,
             watch_folder,
             file_association_status,
             apply_file_associations

@@ -43,7 +43,8 @@ body {
 }
 
 #image,
-#video {
+#video,
+#artwork {
   /* pointer-events を切ることで、クリックが常に #stage（ドラッグ領域）に届く */
   pointer-events: none;
   transform-origin: 0 0;
@@ -53,7 +54,8 @@ body {
 /* ウィンドウより小さくても大きくても、縦横比を保ったままウィンドウいっぱいに合わせる。
    要素の箱はウィンドウ全体になり、絵はその中に object-fit で収まる */
 #image.fit,
-#video.fit {
+#video.fit,
+#artwork.fit {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -62,9 +64,104 @@ body {
 /* ウィンドウをドラッグしている間、画像の大きさを据え置くための状態。
    大きさは JS が px で入れるので、フィットの上限は外す（.fit より後に置く） */
 #image.frozen,
-#video.frozen {
+#video.frozen,
+#artwork.frozen {
   max-width: none;
   max-height: none;
+}
+
+/* ---- 音楽 ----
+   上にアートワーク、下に曲名などの帯（--audio-panel-h）。「画像に合わせる」では
+   ウィンドウをアートワーク＋この帯の形にする（main.js の mediaSize）。
+   帯の高さは、ファイル名の帯と再生操作のカードが曲名に重ならない分だけとる */
+#app {
+  --audio-panel-h: 158px;
+}
+
+#app.hide-filename {
+  --audio-panel-h: 130px;
+}
+
+#audio {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
+#audio[hidden] {
+  display: none;
+}
+
+#audio-art {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#audio-panel {
+  flex: 0 0 var(--audio-panel-h);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 20px;
+  text-align: center;
+  /* 再生操作のカードが出ている間は、曲名をカードの上へ逃がす */
+  transition: padding-bottom 0.18s ease;
+}
+
+#app.chrome-visible #audio-panel,
+#app:has(#chrome:focus-within) #audio-panel {
+  padding-bottom: calc(var(--audio-panel-h) - 58px);
+}
+
+#audio-title,
+#audio-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#audio-title {
+  color: #e8e8ec;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#audio-sub {
+  color: #9a9aa2;
+  font-size: 12px;
+}
+
+#audio-sub:empty {
+  display: none;
+}
+
+/* カードが隠れている間の再生位置の目安（操作はカードのシークバーで行う） */
+#audio-progress {
+  align-self: center;
+  width: min(360px, 100%);
+  height: 3px;
+  margin-top: 8px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  transition: opacity 0.18s ease;
+}
+
+#audio-progress-fill {
+  width: 0;
+  height: 100%;
+  background: #c8c8d0;
+}
+
+#app.chrome-visible #audio-progress,
+#app:has(#chrome:focus-within) #audio-progress {
+  opacity: 0;
 }
 
 #placeholder {
@@ -306,8 +403,8 @@ body {
   white-space: nowrap;
 }
 
-/* ---- 動画の再生操作 ----
-   動画を表示しているとき（#app.video）だけ、下部中央にカードとして出す。
+/* ---- 動画・音楽の再生操作 ----
+   動画・音楽を表示しているとき（#app.video / #app.audio）だけ、下部中央にカードとして出す。
    上段: シークバー / 下段: 左に再生時間・中央に再生ボタン類・右に音量 */
 #videobar {
   position: absolute;
@@ -327,7 +424,8 @@ body {
   z-index: 1;
 }
 
-#app.video #videobar {
+#app.video #videobar,
+#app.audio #videobar {
   display: flex;
 }
 

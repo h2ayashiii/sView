@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- アートワークの無い音楽ファイルに出す既定の絵（main.js の DEFAULT_ARTWORK） -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34343d" />
+      <stop offset="1" stop-color="#1b1b20" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="28" fill="url(#bg)" />
+  <g fill="#8e8e99">
+    <path d="M214 148 L370 116 V334 h-26 V177 L240 198 V366 h-26 Z" />
+    <ellipse cx="184" cy="366" rx="54" ry="40" />
+    <ellipse cx="314" cy="334" rx="54" ry="40" />
+  </g>
+</svg>
