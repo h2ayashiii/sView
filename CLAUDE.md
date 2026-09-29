@@ -135,7 +135,10 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `#audio-panel` (`--audio-panel-h`) converted at the current window width, so the window is
   "artwork + panel"; only the aspect ratio reaches Rust. `audioEnd: "next"` advances on `ended`
   to the next *audio* entry (skipping images / videos, wrapping only with `wrapAround`) and
-  forces playback via `continuePlayback`.
+  forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
+  slider value (`getVolume` / `setVolume` wrap `video.volume`; never read or write it directly for
+  the user-facing volume). `#audio-art` has fixed-px padding (left / right / top) that `mediaSize()`
+  reads via `getComputedStyle` and includes in the aspect ratio.
 - Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
   `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
   into `settings.json`.

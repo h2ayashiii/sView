@@ -21,6 +21,7 @@ const vbDuration = document.getElementById("vb-duration");
 const vbTip = document.getElementById("vb-tip");
 const audioBox = document.getElementById("audio");
 const artwork = document.getElementById("artwork");
+const audioArt = document.getElementById("audio-art");
 const audioPanel = document.getElementById("audio-panel");
 const audioTitle = document.getElementById("audio-title");
 const audioSub = document.getElementById("audio-sub");
@@ -318,8 +319,14 @@ function mediaSize() {
   if (showingAudio) {
     const { naturalWidth: w, naturalHeight: h } = artwork;
     if (!w || !h || !artwork.complete) return null;
-    const scaleToArt = w / Math.max(1, window.innerWidth);
-    return { width: w, height: h + audioPanel.offsetHeight * scaleToArt };
+    // アートワークの周りの余白（px）と曲名の帯は固定の大きさなので、
+    // 今のウィンドウ幅でアートワークが何倍で描かれているかを使って、絵の実寸に換算して足す
+    const pad = getComputedStyle(audioArt);
+    const padX = parseFloat(pad.paddingLeft) + parseFloat(pad.paddingRight);
+    const padTop = parseFloat(pad.paddingTop);
+    const drawn = Math.max(1, window.innerWidth - padX);
+    const s = w / drawn;
+    return { width: w + padX * s, height: h + (padTop + audioPanel.offsetHeight) * s };
   }
   const [width, height] = showingVideo
     ? [video.videoWidth, video.videoHeight]
@@ -457,7 +464,7 @@ let autoplayMuteNoticed = false;
 function loadVideo(src, autoplay) {
   video.loop = mediaLoop();
   video.muted = !!settings.videoMuted;
-  video.volume = videoVolume();
+  setVolume(videoVolume());
   video.src = src;
   syncVideoBar();
   if (autoplay) playVideo();
@@ -476,6 +483,23 @@ function unloadVideo() {
   video.removeAttribute("src");
   video.load();
   seekDragging = false;
+}
+
+// 音楽は動画より音が大きいことが多いので、同じ音量つまみの位置でも実際の音量を半分にする
+// （つまみ・↑ ↓ キー・保存する値は動画と共通の 0〜100%。100% のとき素材の音量の半分で鳴る）
+const AUDIO_VOLUME_GAIN = 0.5;
+
+function volumeGain() {
+  return showingAudio ? AUDIO_VOLUME_GAIN : 1;
+}
+
+// つまみ上の音量（0〜1）と、<video> 要素に入れる実際の音量の変換
+function getVolume() {
+  return video.volume / volumeGain();
+}
+
+function setVolume(v) {
+  video.volume = Math.min(1, Math.max(0, v)) * volumeGain();
 }
 
 function videoVolume() {
@@ -520,8 +544,8 @@ function seekBy(seconds) {
 
 function changeVolumeBy(delta) {
   if (!showingMedia) return;
-  const volume = Math.min(1, Math.max(0, Math.round((video.volume + delta) * 100) / 100));
-  video.volume = volume;
+  const volume = Math.min(1, Math.max(0, Math.round((getVolume() + delta) * 100) / 100));
+  setVolume(volume);
   settings.videoVolume = Math.round(volume * 100);
   // 音量を上げたら消音も解く（再生バーの音量つまみと同じ扱い）
   if (delta > 0 && video.muted) {
@@ -552,7 +576,7 @@ function syncVideoBar() {
   videobar.classList.toggle("muted", muted);
   vbMute.title = muted ? "消音を解除 (M)" : "消音 (M)";
   vbMute.setAttribute("aria-label", muted ? "消音を解除" : "消音");
-  vbVolume.value = String(Math.round(video.volume * 100));
+  vbVolume.value = String(Math.round(getVolume() * 100));
   const duration = video.duration;
   vbDuration.textContent = formatTime(duration);
   vbTime.textContent = formatTime(video.currentTime);
@@ -702,8 +726,8 @@ function rangeRatioAt(input, clientX) {
 function showVolumeTip() {
   const r = vbVolume.getBoundingClientRect();
   if (!r.width) return;
-  const x = r.left + RANGE_THUMB_PX / 2 + video.volume * (r.width - RANGE_THUMB_PX);
-  const percent = Math.round(video.volume * 100);
+  const x = r.left + RANGE_THUMB_PX / 2 + getVolume() * (r.width - RANGE_THUMB_PX);
+  const percent = Math.round(getVolume() * 100);
   showVideoTip(video.muted ? `消音中（音量 ${percent}%）` : `音量 ${percent}%`, x, vbVolume);
 }
 
@@ -728,7 +752,7 @@ video.addEventListener("volumechange", () => {
 });
 
 vbVolume.addEventListener("input", () => {
-  video.volume = Number(vbVolume.value) / 100;
+  setVolume(Number(vbVolume.value) / 100);
   // 音量を上げたら消音も解く（上げても聞こえないのは分かりにくい）
   if (video.volume > 0 && video.muted) {
     video.muted = false;
@@ -1361,7 +1385,7 @@ function applySettings() {
   app.classList.toggle("hide-nav", !settings.showNavButtons);
   img.style.imageRendering = settings.imageRendering;
   video.loop = mediaLoop();
-  video.volume = videoVolume();
+  setVolume(videoVolume());
   video.muted = !!settings.videoMuted;
   appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
   syncWatcher();

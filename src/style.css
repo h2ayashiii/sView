@@ -94,7 +94,10 @@ body {
   display: none;
 }
 
+/* アートワークとウィンドウの縁のあいだの余白（左右と上。下は帯・再生操作のカードがある）。
+   main.js の mediaSize() がこの値を読んで「画像に合わせる」の縦横比に含める */
 #audio-art {
+  padding: 28px 28px 0;
   flex: 1;
   min-height: 0;
   display: flex;
