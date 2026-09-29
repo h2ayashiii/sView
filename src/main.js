@@ -600,12 +600,26 @@ function syncVideoBar() {
   vbMute.title = muted ? "消音を解除 (M)" : "消音 (M)";
   vbMute.setAttribute("aria-label", muted ? "消音を解除" : "消音");
   vbVolume.value = String(Math.round(getVolume() * 100));
+  syncRangeFill(vbVolume);
   const duration = video.duration;
   vbDuration.textContent = formatTime(duration);
   vbTime.textContent = formatTime(video.currentTime);
   const ratio = duration > 0 && Number.isFinite(duration) ? video.currentTime / duration : 0;
   if (!seekDragging) vbSeek.value = String(Math.round(ratio * 1000));
+  syncRangeFill(vbSeek);
   audioProgressFill.style.width = `${ratio * 100}%`;
+}
+
+// シークバー・音量つまみの済んだ側を塗る割合（style.css の --fill）。
+// WebView ごとの標準の塗り分けには頼らない（macOS では塗り分けられない）
+function syncRangeFill(input) {
+  const min = Number(input.min), max = Number(input.max);
+  const ratio = max > min ? (Number(input.value) - min) / (max - min) : 0;
+  input.style.setProperty("--fill", String(Math.min(1, Math.max(0, ratio))));
+}
+
+for (const input of [vbSeek, vbVolume]) {
+  input.addEventListener("input", () => syncRangeFill(input));
 }
 
 for (const type of ["play", "pause", "ended", "timeupdate", "durationchange", "volumechange", "emptied"]) {
@@ -723,8 +737,8 @@ vbSeek.addEventListener("change", () => {
 
 // ---- シークバー・音量つまみに乗せたときの吹き出し ----
 // シークバーはカーソル位置の時刻、音量つまみは今の音量を出す。
-// つまみの幅の分だけ端が内側に寄るので、位置の計算から除く（WebView の標準のつまみでおよそ 16px）
-const RANGE_THUMB_PX = 16;
+// つまみの幅の分だけ端が内側に寄るので、位置の計算から除く（style.css の --thumb と揃える）
+const RANGE_THUMB_PX = 12;
 let volumeHover = false;
 
 // anchor（シークバー / 音量つまみ）のすぐ上、横は clientX に合わせる（カードからははみ出さない）
