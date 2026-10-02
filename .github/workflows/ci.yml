@@ -1,0 +1,57 @@
+name: ci
+
+# PR と main への push で走る軽量チェック。バンドルは作らない
+# （バンドルまで毎回作るとランナー時間とキャッシュを食うため。バンドルは build.yml）
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# GITHUB_TOKEN は既定で読み取りのみ。書き込みが要る job だけ個別に広げる
+permissions:
+  contents: read
+
+# 同じ ref で実行が重なったら古い方を止める
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # SHA で固定するとツールチェーン名を参照名から読めないため、明示する
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          # キャッシュを保存するのは main だけ。PR は main のキャッシュを読むだけにして、
+          # PR ごとのキャッシュで容量枠（10 GB）が埋まり main の分が追い出されるのを防ぐ
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # cargo test でも tauri crate をリンクするため、GUI の開発パッケージが必要。
+      # 無いと gdk-3.0.pc not found でコケる（コードの問題ではない）
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev
+
+      - name: Run Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+

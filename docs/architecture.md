@@ -26,7 +26,8 @@ sView/
 ├── scripts/              # ビルドスクリプト、リリース時にタグのバージョンを反映する set-version.mjs、
 │                         # THIRD-PARTY-NOTICES を作り直す gen-third-party-notices.mjs
 ├── .github/
-│   ├── workflows/build.yml   # PR / main では cargo test、タグでは配布ビルドとリリース
+│   ├── workflows/ci.yml      # PR / main への push で cargo test
+│   ├── workflows/build.yml   # タグ・手動実行で配布ビルド（タグはリリースも）
 │   ├── release-notes/        # タグ名と同じ .md を置くとリリースノートに使われる
 │   └── ISSUE_TEMPLATE/       # 不具合報告のテンプレート
 ├── LICENSE               # Commons Clause + MIT

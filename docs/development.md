@@ -50,15 +50,17 @@ npm run build:debug
 
 GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイナリをビルドできます。手元にビルド環境がない場合は、リリースの添付ファイルか、Actions の成果物（Artifacts）を利用してください。
 
-**配布用のバンドルビルドが走るタイミングは 2 つだけです。** PR と main への push では `cargo test` だけが走ります。
+**配布用のバンドルビルドが走るタイミングは 2 つだけです。** PR と main への push では、別のワークフロー `ci`（`.github/workflows/ci.yml`）の `cargo test` だけが走ります。Actions タブ左の一覧には `ci` と `build` の 2 つが並びます。
 
 | きっかけ | 動き |
 | --- | --- |
-| PR を開く / main へ push | `ubuntu-latest` で `cargo test` だけを走らせる（バンドルは作らない） |
+| PR を開く / main へ push | `ci`: `ubuntu-latest` で `cargo test` だけを走らせる（バンドルは作らない） |
 | `v*` タグを push | Windows / macOS の両方をビルドし、GitHub Release を作って成果物を添付する |
 | 手動実行（Run workflow） | 選んだ OS だけをビルドし、Artifacts に置く（リリースは作らない） |
 
 同じ ref で実行が重なった場合は、古い方を自動でキャンセルします。
+
+ワークフローで使う Action はタグではなくコミット SHA で固定しています（`uses: actions/checkout@<SHA> # v4.4.0` の形。コメントが対応するバージョン）。上げるときは SHA とコメントを両方書き換えてください。`GITHUB_TOKEN` は既定で読み取りのみで、書き込み権限は Release を作る `release` job にだけ付けています。
 
 Artifacts は zip を展開すると成果物がそのまま出てきます（`bundle/nsis/…` のような階層は作りません）。
 
@@ -78,7 +80,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-- **バージョンはタグから決まります。** ビルド前に `scripts/set-version.mjs` が `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` / `package.json` の `version` をタグの値（`v` を除いたもの）に書き換えるため、設定ウィンドウに出るバージョンも成果物のファイル名もタグと一致します。リポジトリ側のバージョンを事前に上げておく必要はありません（手動ビルドではこの書き換えは行われず、リポジトリの値がそのまま使われます）。
+- **バージョンはタグから決まります。** ビルド前に `scripts/set-version.mjs` が `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` / `package.json` の `version` をタグの値（`v` を除いたもの）に書き換えるため、設定ウィンドウに出るバージョンも成果物のファイル名もタグと一致します。リポジトリ側のバージョンを事前に上げておく必要はありません（手動ビルドでのバージョンは次節）。
 - タグは `v1.2.3` の形式にしてください。それ以外はビルド前にエラーで止まります。`v1.2.3-beta.1` のようなプレリリースも仕組み上は通りますが、方針として使いません（[バージョンの読み方](../README.md#バージョンの読み方)）。
 - Release には `.dmg` と `.exe` が**そのまま**添付されます。Release の添付ファイルは zip に固められないため、ダウンロードしたらすぐ実行できます。
 - リリースノートは、`.github/release-notes/<タグ名>.md` があればその内容を使い、無ければ GitHub の自動生成（`--generate-notes`）になります。節目のリリースでは手書きのノートを置いてください。同じタグで再実行した場合は、既存の Release にファイルを上書きアップロードします。
@@ -91,6 +93,8 @@ git push origin v0.2.0
 
 - **画面から**: Actions タブ → 左の `build` → 右上の「Run workflow」→ ブランチと「ビルドする OS」を選んで実行
 - **CLI から**: `gh workflow run build.yml --ref <ブランチ名> -f targets=windows`
+
+- **バージョン**: 手動ビルドでは `git describe` から `<直近のタグ>-dev.<タグからのコミット数>.g<コミットハッシュ>`（例: `0.3.0-dev.5.g3df11f1`）を作り、設定ウィンドウの表示と成果物のファイル名に使います。semver ではビルドメタデータ（`+…`）を使えないため、プレリリース部分に入れています。
 
 「ビルドする OS」は `both`（既定）/ `windows` / `macos` から選べます。片方だけ確認したいときに選ぶと、もう一方のランナーは起動しません。タグ実行では常に両方をビルドします。
 
