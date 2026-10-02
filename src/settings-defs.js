@@ -1,8 +1,18 @@
 // 設定項目の定義。設定ウィンドウ（UI生成）と本体（既定値の解決）で共有する。
 // ここに 1 項目足すだけで設定ウィンドウに項目が増える。
+
+// 設定ウィンドウのタブ。各分類は tab でどれか 1 つに入る
+const SETTINGS_TABS = [
+  { id: "general", label: "全般" },
+  { id: "image", label: "画像" },
+  { id: "video", label: "動画" },
+  { id: "audio", label: "音楽" },
+];
+
 const SETTINGS_SECTIONS = [
   {
     id: "appearance",
+    tab: "general",
     label: "外観",
     items: [
       {
@@ -41,6 +51,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "window",
+    tab: "general",
     label: "ウィンドウ",
     items: [
       {
@@ -77,6 +88,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "view",
+    tab: "image",
     label: "表示",
     items: [
       {
@@ -114,7 +126,8 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "video",
-    label: "動画・音楽",
+    tab: "video",
+    label: "動画の再生",
     items: [
       {
         key: "videoAutoplay",
@@ -132,6 +145,13 @@ const SETTINGS_SECTIONS = [
         type: "toggle",
         default: true,
       },
+    ],
+  },
+  {
+    id: "audio",
+    tab: "audio",
+    label: "音楽の再生",
+    items: [
       {
         key: "audioAutoplay",
         label: "音楽を開いたらすぐ再生する",
@@ -145,7 +165,7 @@ const SETTINGS_SECTIONS = [
         key: "audioEnd",
         label: "曲が終わったら",
         hint:
-          "「次の曲へ進む」は同じフォルダの次の音楽ファイルを続けて再生します（間の画像・動画は飛ばします）。" +
+          "「次の曲へ進む」は同じフォルダの次の音楽ファイルを続けて再生します。" +
           "最後の曲のあとは「端で最初 / 最後へ折り返す」がオンのときだけ先頭に戻ります",
         type: "select",
         options: [
@@ -155,6 +175,13 @@ const SETTINGS_SECTIONS = [
         ],
         default: "next",
       },
+    ],
+  },
+  {
+    id: "sound",
+    tab: "general",
+    label: "音量",
+    items: [
       {
         key: "videoMuted",
         label: "音を消す",
@@ -177,6 +204,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "input",
+    tab: "general",
     label: "操作",
     items: [
       {
@@ -218,6 +246,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "file",
+    tab: "general",
     label: "ファイル",
     items: [
       {
@@ -243,6 +272,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "association",
+    tab: "general",
     label: "関連付け",
     items: [
       {
@@ -261,6 +291,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "logs",
+    tab: "general",
     label: "ログ",
     items: [
       {

@@ -147,6 +147,39 @@ body {
   border-color: #3c3c40;
 }
 
+/* ---- tabs ---- */
+#s-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.s-tab {
+  padding: 7px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.s-tab:hover {
+  color: var(--fg);
+}
+
+.s-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.s-panel[hidden] {
+  display: none;
+}
+
 /* ---- scrollable body ---- */
 #s-body {
   flex: 1;
@@ -191,7 +224,7 @@ body {
   color: var(--fg-dim);
 }
 
-.section-title:first-child {
+.s-panel > .section-title:first-child {
   border-top: none;
 }
 

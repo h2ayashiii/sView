@@ -33,6 +33,7 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("contextmenu", (e) => e.preventDefault());
 
 const body = document.getElementById("s-body");
+const tabBar = document.getElementById("s-tabs");
 const statusEl = document.getElementById("s-status");
 const versionEl = document.getElementById("s-version");
 
@@ -330,16 +331,46 @@ function buildAssociationRow(item) {
   return row;
 }
 
+// タブを切り替える。設定ウィンドウは閉じても隠すだけなので、次に開いたときも同じタブのまま
+function selectTab(id) {
+  for (const button of tabBar.children) {
+    const active = button.dataset.tab === id;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  }
+  for (const panel of body.children) panel.hidden = panel.dataset.tab !== id;
+  body.scrollTop = 0;
+}
+
 function build() {
+  const panels = new Map();
+  for (const tab of SETTINGS_TABS) {
+    const button = document.createElement("button");
+    button.className = "s-tab";
+    button.setAttribute("role", "tab");
+    button.dataset.tab = tab.id;
+    button.textContent = tab.label;
+    button.addEventListener("click", () => selectTab(tab.id));
+    tabBar.appendChild(button);
+
+    const panel = document.createElement("div");
+    panel.className = "s-panel";
+    panel.setAttribute("role", "tabpanel");
+    panel.dataset.tab = tab.id;
+    body.appendChild(panel);
+    panels.set(tab.id, panel);
+  }
   for (const section of SETTINGS_SECTIONS) {
+    const panel = panels.get(section.tab) ?? panels.get(SETTINGS_TABS[0].id);
     const title = document.createElement("div");
     title.className = "section-title";
     title.textContent = section.label;
-    body.appendChild(title);
+    panel.appendChild(title);
     for (const item of section.items) {
-      body.appendChild(item.type === "associations" ? buildAssociationRow(item) : buildRow(item));
+      panel.appendChild(item.type === "associations" ? buildAssociationRow(item) : buildRow(item));
     }
   }
+  selectTab(SETTINGS_TABS[0].id);
 }
 
 function render() {

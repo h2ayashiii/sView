@@ -83,7 +83,9 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 ## Making common changes
 
 - **Add a setting** → add one entry to `SETTINGS_SECTIONS` in `src/settings-defs.js`.
-  `SETTINGS_DEFAULTS` and the settings window UI are both derived from it.
+  `SETTINGS_DEFAULTS` and the settings window UI are both derived from it. Each section has a
+  `tab` (`general` / `image` / `video` / `audio`, listed in `SETTINGS_TABS`) that picks the
+  settings-window tab it appears under; a new section needs one.
 - **Add a settings-window button** (not a stored value) → add an entry with `type: "action"`
   and `action: "<name>"`, then register the handler under that name in `ACTIONS` in
   `src/settings.js`. Keep `settings-defs.js` pure data — `main.js` loads it too.
