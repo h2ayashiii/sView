@@ -8,6 +8,8 @@
 //   - src-tauri/tauri.conf.json … アプリが表示するバージョン（PackageInfo）と
 //                                 インストーラ / dmg のファイル名
 //   - src-tauri/Cargo.toml      … クレートのバージョン（exe のファイル情報）
+//   - src-tauri/Cargo.lock      … Cargo.lock 内の sview 自身のバージョン
+//                                 （Cargo.toml とずれると cargo --locked が失敗する）
 //   - package.json              … npm 側のメタデータ
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -75,6 +77,15 @@ function patchCargoToml(relative) {
   console.log(`${relative}: version = ${version}`);
 }
 
+/** Cargo.lock は name = "sview" の [[package]] の version 行だけを差し替える
+ *  （同名の依存は無いので、名前だけで一意に決まる） */
+function patchCargoLock(relative) {
+  const path = join(root, relative);
+  const text = readFileSync(path, "utf8");
+  writeVersion(path, relative, text, /(\[\[package\]\]\r?\nname = "sview"\r?\nversion = )"[^"]*"/);
+}
+
 patchJson("src-tauri/tauri.conf.json");
 patchJson("package.json");
 patchCargoToml("src-tauri/Cargo.toml");
+patchCargoLock("src-tauri/Cargo.lock");

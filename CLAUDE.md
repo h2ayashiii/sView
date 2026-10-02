@@ -36,7 +36,7 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
 | `src-tauri/tauri.conf.json` | Windows, CSP, bundle, file associations |
 | `src-tauri/installer-hooks.nsh` | Windows インストーラ (NSIS) のフック。旧ユーザー単位インストールの後始末 |
 | `src-tauri/capabilities/` | `default.json` (main) and `settings.json` — per-window permissions |
-| `scripts/` | `build.sh` / `build.ps1` — thin `npm install && npm run build` wrappers; `set-version.mjs` — writes a release tag's version into `tauri.conf.json` / `Cargo.toml` / `package.json`; `gen-third-party-notices.mjs` — regenerates `THIRD-PARTY-NOTICES` from `cargo metadata` |
+| `scripts/` | `build.sh` / `build.ps1` — thin `npm install && npm run build` wrappers; `set-version.mjs` — writes a release tag's version into `tauri.conf.json` / `Cargo.toml` / `Cargo.lock` (sview's own entry, or `cargo --locked` fails) / `package.json`; `gen-third-party-notices.mjs` — regenerates `THIRD-PARTY-NOTICES` from `cargo metadata` |
 | `.github/workflows/ci.yml` | `test` job: `cargo test` on `ubuntu-latest`, runs on PRs and pushes to `main` (needs the GTK/WebKit apt packages) |
 | `.github/workflows/build.yml` | `build` / `release` jobs: `cargo test` + `npm run build` for Windows/macOS, **only** on `v*` tags and manual dispatch; tag runs attach the `.dmg` / `.exe` to a GitHub Release. Manual runs set the version to `<last tag>-dev.<commits>.g<sha>` via `git describe` |
 | `.github/ISSUE_TEMPLATE/` | Bug-report form (`bug_report.yml`); blank issues are disabled |
