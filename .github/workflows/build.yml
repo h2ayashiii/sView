@@ -72,6 +72,8 @@ jobs:
         # タグ名は式で run に直接埋め込まず、環境変数で渡す（シェルに解釈させない）
         env:
           TAG: ${{ github.ref_name }}
+        # Windows の既定シェル（pwsh）では "$TAG" が PowerShell の変数として空になるため、bash で動かす
+        shell: bash
         run: node scripts/set-version.mjs "$TAG"
 
       # 手動ビルドでは、直近のタグ・そこからのコミット数・コミットハッシュから

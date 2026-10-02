@@ -80,7 +80,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-- **バージョンはタグから決まります。** ビルド前に `scripts/set-version.mjs` が `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` / `package.json` の `version` をタグの値（`v` を除いたもの）に書き換えるため、設定ウィンドウに出るバージョンも成果物のファイル名もタグと一致します。リポジトリ側のバージョンを事前に上げておく必要はありません（手動ビルドでのバージョンは次節）。
+- **バージョンはタグから決まります。** ビルド前に `scripts/set-version.mjs` が `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock`（sview 自身の行）/ `package.json` の `version` をタグの値（`v` を除いたもの）に書き換えるため、設定ウィンドウに出るバージョンも成果物のファイル名もタグと一致します。リポジトリ側のバージョンを事前に上げておく必要はありません（手動ビルドでのバージョンは次節）。
 - タグは `v1.2.3` の形式にしてください。それ以外はビルド前にエラーで止まります。`v1.2.3-beta.1` のようなプレリリースも仕組み上は通りますが、方針として使いません（[バージョンの読み方](../README.md#バージョンの読み方)）。
 - Release には `.dmg` と `.exe` が**そのまま**添付されます。Release の添付ファイルは zip に固められないため、ダウンロードしたらすぐ実行できます。
 - リリースノートは、`.github/release-notes/<タグ名>.md` があればその内容を使い、無ければ GitHub の自動生成（`--generate-notes`）になります。節目のリリースでは手書きのノートを置いてください。同じタグで再実行した場合は、既存の Release にファイルを上書きアップロードします。
