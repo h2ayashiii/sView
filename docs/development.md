@@ -60,6 +60,8 @@ GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイ�
 
 同じ ref で実行が重なった場合は、古い方を自動でキャンセルします。
 
+ワークフローで使う Action はタグではなくコミット SHA で固定しています（`uses: actions/checkout@<SHA> # v4.4.0` の形。コメントが対応するバージョン）。上げるときは SHA とコメントを両方書き換えてください。`GITHUB_TOKEN` は既定で読み取りのみで、書き込み権限は Release を作る `release` job にだけ付けています。
+
 Artifacts は zip を展開すると成果物がそのまま出てきます（`bundle/nsis/…` のような階層は作りません）。
 
 | Artifacts | 展開すると出てくるもの |

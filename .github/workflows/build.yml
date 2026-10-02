@@ -18,6 +18,10 @@ on:
           - windows
           - macos
 
+# GITHUB_TOKEN は既定で読み取りのみ。書き込みが要る job だけ個別に広げる
+permissions:
+  contents: read
+
 # 同じ ref で実行が重なったら古い方を止める。
 # タグを打ち直したときに release job が同じタグへ並行して upload するのも防ぐ
 concurrency:
@@ -40,19 +44,24 @@ jobs:
           || '[{"os":"windows-latest","name":"windows"},{"os":"macos-latest","name":"macos"}]'
           ) }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # 手動ビルドのバージョンを git describe で決めるため、タグと履歴も取得する
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
-      - uses: dtolnay/rust-toolchain@stable
+      # SHA で固定するとツールチェーン名を参照名から読めないため、明示する
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
 
@@ -60,7 +69,10 @@ jobs:
       # （設定ウィンドウに出るバージョンと、成果物のファイル名がタグと一致する）
       - name: Apply version from tag
         if: startsWith(github.ref, 'refs/tags/v')
-        run: node scripts/set-version.mjs "${{ github.ref_name }}"
+        # タグ名は式で run に直接埋め込まず、環境変数で渡す（シェルに解釈させない）
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node scripts/set-version.mjs "$TAG"
 
       # 手動ビルドでは、直近のタグ・そこからのコミット数・コミットハッシュから
       # 「0.3.0-dev.5.g3df11f1」のようなバージョンを作る（リリース版と見分けが付く）。
@@ -84,10 +96,10 @@ jobs:
           node scripts/set-version.mjs "${base}-dev.${count}.g${sha}"
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Build
         run: npm run build
@@ -115,7 +127,7 @@ jobs:
           ls -l dist
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sView-${{ steps.collect.outputs.version }}-${{ matrix.name }}
           path: dist/*
@@ -128,13 +140,16 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
       # リリースノートのファイルを読むためにリポジトリも取得する
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
