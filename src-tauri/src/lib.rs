@@ -44,6 +44,10 @@ const MIN_WINDOW_SIZE: (f64, f64) = (200.0, 150.0);
 /// 逆ドメイン名がそのまま見えるのは分かりにくいので、ここは短い名前に固定する
 const CONFIG_DIR_NAME: &str = "sview";
 
+/// フォルダ・書庫を開いたときに読む深さ。開いたフォルダ・書庫の直下を 1 層目とし、
+/// その下 2 層（= 3 層目）まで。ファイルが多すぎる場所を開いても一覧が膨らみすぎないようにする
+const MAX_DEPTH: usize = 3;
+
 /// 展開後サイズの上限（zip bomb 対策 / 1枚あたり）
 const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -106,10 +110,22 @@ struct AspectLock(Mutex<AspectState>);
 struct Watching {
     /// 監視中のフォルダ。同じフォルダを開き直したときに張り直さないための目印
     path: PathBuf,
+    /// 見ている深さ（直下だけなら 1）。これも同じなら張り直さない
+    depth: usize,
     /// drop するとネイティブの監視も解除されるので、持っているだけでよい
     _watcher: RecommendedWatcher,
 }
 struct FolderWatcher(Mutex<Option<Watching>>);
+
+/// ファイルの種類。一覧には 1 種類だけを並べる
+/// （単体のファイルを開いたらその種類、フォルダ・書庫なら並び順で先頭のファイルの種類）
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum MediaKind {
+    Image,
+    Video,
+    Audio,
+}
 
 #[derive(serde::Serialize)]
 struct ImageList {
@@ -120,8 +136,15 @@ struct ImageList {
     archive: Option<String>,
     /// 監視対象のフォルダ（フォルダを開いた場合のみ。書庫では None）
     dir: Option<String>,
-    /// 表示名から取り除く共通フォルダ（書庫のみ。例: "book/"）
+    /// 表示名から取り除く共通フォルダ
+    /// （書庫では全エントリの共通フォルダ。例: "book/"。フォルダをサブフォルダごと
+    /// 読んだときは開いたフォルダのパス。単体のファイルから開いたときは空）
     prefix: String,
+    /// 並べている種類（一覧が空のときは None）
+    kind: Option<MediaKind>,
+    /// 読んだ深さ（単体のファイルから開いたときは 1、フォルダ・書庫は MAX_DEPTH）。
+    /// 読み直しと監視で同じ深さを使うために返す
+    depth: usize,
 }
 
 fn has_ext(path: &Path, exts: &[&str]) -> bool {
@@ -145,7 +168,19 @@ fn is_audio(path: &Path) -> bool {
 
 /// フォルダで一覧に並べるもの（画像・動画・音楽）。書庫の中の動画・音楽は対象外
 fn is_media(path: &Path) -> bool {
-    is_image(path) || is_video(path) || is_audio(path)
+    media_kind(path).is_some()
+}
+
+fn media_kind(path: &Path) -> Option<MediaKind> {
+    if is_image(path) {
+        Some(MediaKind::Image)
+    } else if is_video(path) {
+        Some(MediaKind::Video)
+    } else if is_audio(path) {
+        Some(MediaKind::Audio)
+    } else {
+        None
+    }
 }
 
 fn is_archive(path: &Path) -> bool {
@@ -204,6 +239,11 @@ mod tests {
         assert_eq!(
             normalize_association_exts(&[".JPG".into(), "png".into(), "jpg".into()]).unwrap(),
             vec!["jpg", "png"]
+        );
+        // 動画・音楽も関連付けられる
+        assert_eq!(
+            normalize_association_exts(&["MP4".into(), "flac".into()]).unwrap(),
+            vec!["mp4", "flac"]
         );
         // 書庫は関連付けの対象にしない
         assert!(normalize_association_exts(&["zip".into()]).is_err());
@@ -539,11 +579,31 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// フォルダでは画像・動画・音楽を混ぜて自然順に並べ、それ以外は外す
-    #[test]
-    fn folder_listing_mixes_images_and_videos() {
-        let dir = std::env::temp_dir().join(format!("sview-media-test-{}", std::process::id()));
+    /// 一覧のファイル名だけを取り出す
+    fn file_names(list: &ImageList) -> Vec<String> {
+        list.images
+            .iter()
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    }
+
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sview-{name}-{}", std::process::id()));
+        fs::remove_dir_all(&dir).ok();
         fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 単体のファイルから開くと、同じフォルダの直下にある同じ種類のファイルだけを並べる
+    #[test]
+    fn single_file_lists_only_its_own_kind() {
+        let dir = test_dir("single");
         for name in [
             "a10.png",
             "a2.mp4",
@@ -556,24 +616,65 @@ mod tests {
         ] {
             fs::write(dir.join(name), b"x").unwrap();
         }
-        let list = list_dir_images(&dir, Some(std::ffi::OsStr::new("a3.webm"))).unwrap();
-        let names: Vec<String> = list
-            .images
-            .iter()
-            .map(|p| {
-                Path::new(p)
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        assert_eq!(
-            names,
-            vec!["a1.jpg", "a2.mp4", "a3.webm", "a5.mp3", "a10.png"]
-        );
-        assert_eq!(list.index, 2);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/a0.png"), b"x").unwrap();
+
+        let list =
+            list_dir_images(&dir, 1, Some(MediaKind::Video), Some("a3.webm".as_ref())).unwrap();
+        assert_eq!(file_names(&list), vec!["a2.mp4", "a3.webm"]);
+        assert_eq!(list.index, 1);
+        assert_eq!(list.kind, Some(MediaKind::Video));
+        assert_eq!(list.prefix, "");
+
+        // サブフォルダの画像は拾わない
+        let list =
+            list_dir_images(&dir, 1, Some(MediaKind::Image), Some("a10.png".as_ref())).unwrap();
+        assert_eq!(file_names(&list), vec!["a1.jpg", "a10.png"]);
+        assert_eq!(list.index, 1);
+
+        let list =
+            list_dir_images(&dir, 1, Some(MediaKind::Audio), Some("a5.mp3".as_ref())).unwrap();
+        assert_eq!(file_names(&list), vec!["a5.mp3"]);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// フォルダを開くと 3 層目まで読み、並べたとき先頭に来るファイルの種類だけを残す
+    #[test]
+    fn folder_listing_keeps_the_first_kind_down_to_three_levels() {
+        let dir = test_dir("folder");
+        for name in [
+            "b.mp4",
+            "a/1.mp3",
+            "a/x/2.png",
+            "a/x/y/3.png",
+            "c.png",
+            "notes.txt",
+        ] {
+            let path = dir.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"x").unwrap();
+        }
+
+        // 相対パスの自然順で a/1.mp3 が先頭なので、音楽だけ
+        let list = list_dir_images(&dir, MAX_DEPTH, None, None).unwrap();
+        assert_eq!(file_names(&list), vec!["1.mp3"]);
+        assert_eq!(list.kind, Some(MediaKind::Audio));
+        assert_eq!(list.depth, MAX_DEPTH);
+        assert!(list.prefix.ends_with(std::path::MAIN_SEPARATOR));
+
+        // 読み直しでは最初に決めた種類を保つ。
+        // a/x/2.png は 3 層目なので読み、a/x/y/3.png は 4 層目なので読まない
+        let list = list_dir_images(&dir, MAX_DEPTH, Some(MediaKind::Image), None).unwrap();
+        assert_eq!(file_names(&list), vec!["2.png", "c.png"]);
+
+        // 空のフォルダは種類が決まらない
+        let empty = test_dir("folder-empty");
+        let list = list_dir_images(&empty, MAX_DEPTH, None, None).unwrap();
+        assert!(list.images.is_empty());
+        assert_eq!(list.kind, None);
+
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&empty).ok();
     }
 
     #[test]
@@ -586,6 +687,8 @@ mod tests {
             paths: paths.iter().map(PathBuf::from).collect(),
             attrs: Default::default(),
         };
+        let roots = [PathBuf::from("/x")];
+        let is_listing_change = |e: &notify::Event| is_listing_change(e, &roots, 1);
 
         // 画像が増えた・消えた・名前が変わった → 一覧を作り直す
         assert!(is_listing_change(&event(
@@ -618,6 +721,44 @@ mod tests {
             EventKind::Create(CreateKind::File),
             &["/x/notes.txt"]
         )));
+    }
+
+    #[test]
+    fn listing_change_respects_the_depth() {
+        use notify::event::{CreateKind, EventKind, RemoveKind};
+        let event = |kind, path: &str| notify::Event {
+            kind,
+            paths: vec![PathBuf::from(path)],
+            attrs: Default::default(),
+        };
+        let roots = [PathBuf::from("/x")];
+        let created = |path: &str, depth: usize| {
+            is_listing_change(
+                &event(EventKind::Create(CreateKind::File), path),
+                &roots,
+                depth,
+            )
+        };
+
+        // 3 層目までは拾い、4 層目は捨てる
+        assert!(created("/x/a/b/c.png", 3));
+        assert!(!created("/x/a/b/c/d.png", 3));
+        // 直下だけを見ているときはサブフォルダの中を拾わない
+        assert!(!created("/x/a/c.png", 1));
+
+        // 消えたサブフォルダ（拡張子なし）は、中に一覧のファイルがあったかもしれないので拾う
+        let removed = |path: &str, depth: usize| {
+            is_listing_change(
+                &event(EventKind::Remove(RemoveKind::Any), path),
+                &roots,
+                depth,
+            )
+        };
+        assert!(removed("/x/chapter", 3));
+        assert!(removed("/x/a/chapter", 3));
+        // 3 層目のフォルダの中身は読まないので無関係。直下だけのときも無関係
+        assert!(!removed("/x/a/b/chapter", 3));
+        assert!(!removed("/x/chapter", 1));
     }
 
     #[test]
@@ -719,17 +860,27 @@ mod tests {
             "tauri.conf.json の fileAssociations が IMAGE_EXTS とずれています"
         );
 
-        // 動画は開けるが OS には関連付けない（書庫と同じ扱い）
+        let videos = sorted(VIDEO_EXTS.to_vec());
         assert_eq!(
             sorted(quoted_items(&main_js, "const VIDEO_EXT_FILTER = [", ']')),
-            sorted(VIDEO_EXTS.to_vec()),
+            videos,
             "main.js の VIDEO_EXT_FILTER が VIDEO_EXTS とずれています"
         );
-        // 音楽も動画と同じく、開けるが OS には関連付けない
+        assert_eq!(
+            sorted(association("Video")),
+            videos,
+            "tauri.conf.json の fileAssociations が VIDEO_EXTS とずれています"
+        );
+        let audios = sorted(AUDIO_EXTS.to_vec());
         assert_eq!(
             sorted(quoted_items(&main_js, "const AUDIO_EXT_FILTER = [", ']')),
-            sorted(AUDIO_EXTS.to_vec()),
+            audios,
             "main.js の AUDIO_EXT_FILTER が AUDIO_EXTS とずれています"
+        );
+        assert_eq!(
+            sorted(association("Audio")),
+            audios,
+            "tauri.conf.json の fileAssociations が AUDIO_EXTS とずれています"
         );
 
         let archives = sorted(ARCHIVE_EXTS.to_vec());
@@ -739,13 +890,13 @@ mod tests {
             "main.js の ARCHIVE_EXT_FILTER が ARCHIVE_EXTS とずれています"
         );
         // 書庫は開けるが OS には関連付けない（ドラッグ＆ドロップと O キーで開く）。
-        // 関連付けは画像の 1 件だけ
+        // 関連付けは画像・動画・音楽の 3 件だけ
         assert_eq!(
             conf["bundle"]["fileAssociations"]
                 .as_array()
                 .map(|a| a.len()),
-            Some(1),
-            "tauri.conf.json の fileAssociations は画像の 1 件だけにします"
+            Some(3),
+            "tauri.conf.json の fileAssociations は画像・動画・音楽の 3 件だけにします"
         );
     }
 
@@ -785,6 +936,8 @@ mod tests {
                 ("readme.txt", "nope"),
                 // 書庫の中の動画は一覧に出さない（丸ごとメモリに読む方式なので）
                 ("b/clip.mp4", "video"),
+                // 4 層目は読まない
+                ("b/c/d/img1.png", "deep"),
             ] {
                 w.start_file(name, opts).unwrap();
                 w.write_all(body.as_bytes()).unwrap();
@@ -800,6 +953,7 @@ mod tests {
         let cache = ArchiveCache(Mutex::new(None));
         let list = list_archive_images(&path, &cache).unwrap();
         assert_eq!(list.images, vec!["b/img2.png", "b/img3.png", "b/img10.png"]);
+        assert_eq!(list.kind, Some(MediaKind::Image));
         assert_eq!(
             list.archive.as_deref(),
             Some(path.to_string_lossy().as_ref())
@@ -876,12 +1030,18 @@ fn common_dir_prefix(names: &[String]) -> String {
     prefix.to_owned()
 }
 
-/// 書庫内の画像エントリ名を自然順で返す
+/// 書庫内のエントリが何層目にあるか（書庫の直下が 1）
+fn entry_depth(name: &str) -> usize {
+    name.split('/').filter(|c| !c.is_empty()).count()
+}
+
+/// 書庫内の画像エントリ名を自然順で返す（MAX_DEPTH 層目まで）。
+/// 書庫の中は画像しか読まないので、種類は常に画像になる
 fn list_archive_images(path: &Path, cache: &ArchiveCache) -> Result<ImageList, String> {
     let mut names = with_archive(path, cache, |zip| {
         Ok(zip
             .file_names()
-            .filter(|n| !n.ends_with('/') && is_image(Path::new(n)))
+            .filter(|n| !n.ends_with('/') && entry_depth(n) <= MAX_DEPTH && is_image(Path::new(n)))
             .map(str::to_owned)
             .collect::<Vec<String>>())
     })?;
@@ -899,6 +1059,8 @@ fn list_archive_images(path: &Path, cache: &ArchiveCache) -> Result<ImageList, S
         archive: Some(path.to_string_lossy().into_owned()),
         dir: None,
         prefix,
+        kind: Some(MediaKind::Image),
+        depth: MAX_DEPTH,
     })
 }
 
@@ -922,26 +1084,79 @@ fn read_archive_entry(path: &Path, entry: &str, cache: &ArchiveCache) -> Result<
     })
 }
 
-/// フォルダ内の画像一覧（自然順ソート）と、`current` の位置を返す
-fn list_dir_images(dir: &Path, current: Option<&std::ffi::OsStr>) -> Result<ImageList, String> {
-    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
-        .map_err(|e| format!("フォルダを読めません: {e}"))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && is_media(p))
+/// `dir` の下の画像・動画・音楽を `depth` 層目まで集める（`dir` の直下が 1 層目）。
+/// 読めないサブフォルダは飛ばす
+fn collect_media(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)?.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_file() {
+            if is_media(&path) {
+                out.push(path);
+            }
+        } else if depth > 1 && path.is_dir() {
+            if let Err(e) = collect_media(&path, depth - 1, out) {
+                log::warn!("フォルダを読めません ({}): {e}", path.display());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 並べ替えに使う、`root` からの相対パス（区切りは書庫と同じ "/" にそろえる）
+fn relative_key(root: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// フォルダの中を `depth` 層目まで読み、`kind` の種類だけを自然順で返す。
+/// `kind` が None なら、並べたときに先頭に来るファイルの種類にする。
+/// `current`（直下のファイル名）があれば、その位置を開始位置にする
+fn list_dir_images(
+    dir: &Path,
+    depth: usize,
+    kind: Option<MediaKind>,
+    current: Option<&std::ffi::OsStr>,
+) -> Result<ImageList, String> {
+    let mut entries: Vec<PathBuf> = Vec::new();
+    collect_media(dir, depth.max(1), &mut entries)
+        .map_err(|e| format!("フォルダを読めません: {e}"))?;
+
+    // 書庫と同じく、開いたフォルダからの相対パスの自然順で並べる
+    let mut keyed: Vec<(String, PathBuf)> = entries
+        .into_iter()
+        .map(|p| (relative_key(dir, &p), p))
+        .collect();
+    keyed.sort_by(|x, y| natural_cmp(&x.0, &y.0));
+
+    let kind = kind.or_else(|| keyed.first().and_then(|(_, p)| media_kind(p)));
+    let entries: Vec<PathBuf> = keyed
+        .into_iter()
+        .map(|(_, p)| p)
+        .filter(|p| media_kind(p) == kind)
         .collect();
 
-    entries.sort_by(|x, y| {
-        natural_cmp(
-            &x.file_name().unwrap_or_default().to_string_lossy(),
-            &y.file_name().unwrap_or_default().to_string_lossy(),
-        )
-    });
-
-    // 同一フォルダ内なのでファイル名で自身を特定する
+    // 直下のファイル名で自身を特定する
     let index = current
-        .and_then(|name| entries.iter().position(|p| p.file_name() == Some(name)))
+        .and_then(|name| {
+            entries
+                .iter()
+                .position(|p| p.parent() == Some(dir) && p.file_name() == Some(name))
+        })
         .unwrap_or(0);
+
+    // サブフォルダまで読んだときは、開いたフォルダからの相対パスで表示する
+    let prefix = if depth > 1 {
+        let mut root = dir.to_string_lossy().into_owned();
+        if !root.ends_with(std::path::MAIN_SEPARATOR) {
+            root.push(std::path::MAIN_SEPARATOR);
+        }
+        root
+    } else {
+        String::new()
+    };
 
     let images = entries
         .into_iter()
@@ -952,17 +1167,29 @@ fn list_dir_images(dir: &Path, current: Option<&std::ffi::OsStr>) -> Result<Imag
         index,
         archive: None,
         dir: Some(dir.to_string_lossy().into_owned()),
-        prefix: String::new(),
+        prefix,
+        kind,
+        depth: depth.max(1),
     })
 }
 
-/// 画像 / フォルダ / 書庫（zip・cbz）のいずれかを受け取り、
-/// 表示対象の一覧と開始位置を返す
+/// 画像・動画・音楽 / フォルダ / 書庫（zip・cbz）のいずれかを受け取り、
+/// 表示対象の一覧と開始位置を返す。
+/// - 単体のファイル: 同じフォルダの直下にある、同じ種類のファイルだけ
+/// - フォルダ・書庫: MAX_DEPTH 層目までのうち、並べたとき先頭に来るファイルと同じ種類だけ
+///
+/// `kind` / `depth` は読み直しのときに、最初に開いたときと同じ条件で並べるために渡す
 #[tauri::command]
-fn list_images(path: String, cache: State<ArchiveCache>) -> Result<ImageList, String> {
+fn list_images(
+    path: String,
+    kind: Option<MediaKind>,
+    depth: Option<usize>,
+    cache: State<ArchiveCache>,
+) -> Result<ImageList, String> {
     let target = PathBuf::from(&path);
     if target.is_dir() {
-        return list_dir_images(&target, None);
+        let depth = depth.unwrap_or(MAX_DEPTH).clamp(1, MAX_DEPTH);
+        return list_dir_images(&target, depth, kind, None);
     }
     if !target.is_file() {
         return Err(format!("ファイルが見つかりません: {path}"));
@@ -970,14 +1197,14 @@ fn list_images(path: String, cache: State<ArchiveCache>) -> Result<ImageList, St
     if is_archive(&target) {
         return list_archive_images(&target, &cache);
     }
-    if !is_media(&target) {
+    let Some(kind) = media_kind(&target) else {
         return Err(format!("対応していないファイル形式です: {path}"));
-    }
+    };
     let dir = target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .ok_or_else(|| "親フォルダを取得できません".to_string())?;
-    list_dir_images(dir, target.file_name())
+    list_dir_images(dir, 1, Some(kind), target.file_name())
 }
 
 /// 書庫内の画像 1 枚をバイト列のまま返す（IPC の raw payload で転送）
@@ -1115,10 +1342,22 @@ fn audio_artwork(path: String) -> Result<Response, String> {
     Ok(Response::new(bytes))
 }
 
+/// `path` が監視中のフォルダ（`roots` のどれか）から数えて何層目か（直下が 1）。
+/// 数えられないとき（OS が別の表記のパスを返したなど）は直下とみなす
+fn watched_depth(path: &Path, roots: &[PathBuf]) -> usize {
+    roots
+        .iter()
+        .find_map(|root| path.strip_prefix(root).ok())
+        .map(|rel| rel.components().count())
+        .unwrap_or(1)
+}
+
 /// 一覧を作り直す必要がある変更かどうか。
-/// 画像・動画・音楽の増減（作成・削除・名前の変更）だけを拾い、中身の書き換えは無視する。
+/// `depth` 層目までの画像・動画・音楽の増減（作成・削除・名前の変更）だけを拾い、
+/// 中身の書き換えは無視する。サブフォルダまで見ているときは、その中にあるフォルダ自体の
+/// 増減も拾う（フォルダごと移してきたときは、中のファイルの通知が来ないことがあるため）。
 /// 種類を判別できない通知（EventKind::Any）は、取りこぼすより拾う方に倒す
-fn is_listing_change(event: &notify::Event) -> bool {
+fn is_listing_change(event: &notify::Event, roots: &[PathBuf], depth: usize) -> bool {
     use notify::event::{EventKind, ModifyKind};
     let kind_matches = matches!(
         event.kind,
@@ -1127,15 +1366,27 @@ fn is_listing_change(event: &notify::Event) -> bool {
             | EventKind::Remove(_)
             | EventKind::Modify(ModifyKind::Name(_))
     );
-    // 名前の変更では変更前と変更後の両方が入るので、どちらかが画像・動画・音楽なら対象
-    kind_matches && event.paths.iter().any(|p| is_media(p))
+    // 名前の変更では変更前と変更後の両方が入るので、どちらかが対象なら拾う
+    kind_matches
+        && event.paths.iter().any(|p| {
+            let level = watched_depth(p, roots);
+            if level > depth {
+                return false;
+            }
+            if is_media(p) {
+                return true;
+            }
+            // 消えたものはフォルダだったか確かめられないので、拡張子の無いものをフォルダとみなす
+            level < depth && (p.is_dir() || (!p.exists() && p.extension().is_none()))
+        })
 }
 
 /// 表示中のフォルダの監視を開始する（`path` が null なら監視をやめる）。
 ///
 /// OS のネイティブ通知を使うので、変化が無い間は CPU もディスクも使わない
 /// （ポーリングのように一定間隔で read_dir する方式とはここが違う）。
-/// サブフォルダは見ない（表示対象が同一フォルダ内だけなので）。
+/// `depth` は一覧と同じ深さ。1 なら直下だけを見て、2 以上ならサブフォルダも見たうえで
+/// `depth` 層目より深いところの通知は捨てる。
 /// 通知は数が多くなりがちなので、実際の再スキャンはフロントエンド側で
 /// 一定時間まとめてから 1 回だけ行う
 #[tauri::command]
@@ -1143,6 +1394,7 @@ fn watch_folder(
     app: AppHandle,
     state: State<FolderWatcher>,
     path: Option<String>,
+    depth: Option<usize>,
 ) -> Result<(), String> {
     let mut current = state
         .0
@@ -1154,8 +1406,12 @@ fn watch_folder(
         return Ok(());
     };
     let dir = PathBuf::from(path);
-    if current.as_ref().is_some_and(|w| w.path == dir) {
-        return Ok(()); // 同じフォルダなら張り直さない
+    let depth = depth.unwrap_or(1).clamp(1, MAX_DEPTH);
+    if current
+        .as_ref()
+        .is_some_and(|w| w.path == dir && w.depth == depth)
+    {
+        return Ok(()); // 同じフォルダを同じ深さで見ているなら張り直さない
     }
     // 先に古い監視を解除してから張り直す（二重に監視しない）
     *current = None;
@@ -1163,10 +1419,18 @@ fn watch_folder(
         return Err(format!("フォルダが見つかりません: {}", dir.display()));
     }
 
+    // macOS の FSEvents は実体のパス（/private/var/... など）で知らせてくることがあるので、
+    // 渡されたパスと実体のパスの両方を基準にして深さを数える
+    let mut roots = vec![dir.clone()];
+    if let Ok(real) = dir.canonicalize() {
+        if real != dir {
+            roots.push(real);
+        }
+    }
     let handle = app.clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         match res {
-            Ok(event) if is_listing_change(&event) => {
+            Ok(event) if is_listing_change(&event, &roots, depth) => {
                 let _ = handle.emit("folder-changed", ());
             }
             // 監視できなくなった場合（フォルダごと消えたなど）は記録だけして続ける。
@@ -1177,12 +1441,21 @@ fn watch_folder(
     })
     .map_err(|e| format!("フォルダを監視できません: {e}"))?;
 
+    let mode = if depth > 1 {
+        RecursiveMode::Recursive
+    } else {
+        RecursiveMode::NonRecursive
+    };
     watcher
-        .watch(&dir, RecursiveMode::NonRecursive)
+        .watch(&dir, mode)
         .map_err(|e| format!("フォルダを監視できません: {e}"))?;
-    log::info!("フォルダの監視を開始しました: {}", dir.display());
+    log::info!(
+        "フォルダの監視を開始しました: {} ({depth} 層目まで)",
+        dir.display()
+    );
     *current = Some(Watching {
         path: dir,
+        depth,
         _watcher: watcher,
     });
     Ok(())
@@ -2012,15 +2285,17 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
 //   アプリ」として登録し、最後の選択は Windows の「既定のアプリ」画面で本人にしてもらう
 // - macOS は LaunchServices の API で既定のアプリを直接設定できる
 
-/// 関連付けの対象にできる拡張子（画像すべて）。
+/// 関連付けの対象にできる拡張子（画像・動画・音楽すべて）。
 /// 書庫（zip / cbz）はここでは扱わない
 fn associable_exts() -> Vec<&'static str> {
-    IMAGE_EXTS.to_vec()
+    [IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS].concat()
 }
 
 #[derive(serde::Serialize)]
 struct AssociationItem {
     ext: String,
+    /// 種類（設定ウィンドウで種類ごとに分けて並べる）
+    kind: MediaKind,
     /// いま sView がこの拡張子の既定のアプリになっているか（調べられないときは false）
     associated: bool,
 }
@@ -2055,6 +2330,7 @@ fn file_association_status(app: AppHandle) -> AssociationStatus {
         .into_iter()
         .map(|ext| AssociationItem {
             ext: ext.to_string(),
+            kind: media_kind(Path::new(&format!("x.{ext}"))).unwrap_or(MediaKind::Image),
             associated: is_associated(&app, ext),
         })
         .collect();
@@ -2075,14 +2351,41 @@ fn apply_file_associations(app: AppHandle, exts: Vec<String>) -> Result<String, 
 
 #[cfg(target_os = "windows")]
 mod win_assoc {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
     use winreg::RegKey;
 
     /// 「既定のアプリ」画面や RegisteredApplications に出る名前
     pub const APP_NAME: &str = "sView";
     const CAPABILITIES_KEY: &str = r"Software\sView\Capabilities";
-    const PROG_ID_IMAGE: &str = "sView.Image";
+    /// 種類ごとの ProgID と、エクスプローラーに出る種類の名前
+    const PROG_IDS: &[(super::MediaKind, &str, &str)] = &[
+        (
+            super::MediaKind::Image,
+            "sView.Image",
+            "画像ファイル (sView)",
+        ),
+        (
+            super::MediaKind::Video,
+            "sView.Video",
+            "動画ファイル (sView)",
+        ),
+        (
+            super::MediaKind::Audio,
+            "sView.Audio",
+            "音楽ファイル (sView)",
+        ),
+    ];
+
+    /// 拡張子に対応する sView の ProgID
+    fn prog_id_for(ext: &str) -> &'static str {
+        let kind = super::media_kind(Path::new(&format!("x.{ext}")));
+        PROG_IDS
+            .iter()
+            .find(|(k, _, _)| Some(*k) == kind)
+            .map(|(_, id, _)| *id)
+            .unwrap_or(PROG_IDS[0].1)
+    }
 
     #[link(name = "shell32")]
     extern "system" {
@@ -2104,7 +2407,10 @@ mod win_assoc {
 
     /// ProgID の開くコマンドが sView の exe を指しているか
     fn prog_id_is_ours(prog_id: &str) -> bool {
-        if prog_id.eq_ignore_ascii_case(PROG_ID_IMAGE) {
+        if PROG_IDS
+            .iter()
+            .any(|(_, id, _)| prog_id.eq_ignore_ascii_case(id))
+        {
             return true;
         }
         let Some(exe) = exe_path()
@@ -2154,7 +2460,7 @@ mod win_assoc {
         let exe = exe.to_string_lossy();
 
         // ProgID（開き方）。インストーラーが HKLM に入れたものとは別に、ユーザー単位で持つ
-        for (id, name) in [(PROG_ID_IMAGE, "画像ファイル (sView)")] {
+        for &(_, id, name) in PROG_IDS {
             let (key, _) = hkcu
                 .create_subkey(format!(r"Software\Classes\{id}"))
                 .map_err(reg_err)?;
@@ -2172,14 +2478,14 @@ mod win_assoc {
         let (caps, _) = hkcu.create_subkey(CAPABILITIES_KEY).map_err(reg_err)?;
         caps.set_value("ApplicationName", &APP_NAME)
             .map_err(reg_err)?;
-        caps.set_value("ApplicationDescription", &"軽量な画像ビューア")
+        caps.set_value("ApplicationDescription", &"軽量な画像・動画・音楽ビューア")
             .map_err(reg_err)?;
         // 選ばれなかった拡張子を残さないよう、一覧は作り直す
         let _ = caps.delete_subkey_all("FileAssociations");
         let (assoc, _) = caps.create_subkey("FileAssociations").map_err(reg_err)?;
         for ext in exts {
             assoc
-                .set_value(format!(".{ext}"), &PROG_ID_IMAGE)
+                .set_value(format!(".{ext}"), &prog_id_for(ext))
                 .map_err(reg_err)?;
         }
         let (apps, _) = hkcu
@@ -2193,11 +2499,11 @@ mod win_assoc {
             let path = format!(r"Software\Classes\.{ext}\OpenWithProgids");
             if exts.iter().any(|e| e == ext) {
                 let (key, _) = hkcu.create_subkey(&path).map_err(reg_err)?;
-                key.set_value(PROG_ID_IMAGE, &"").map_err(reg_err)?;
+                key.set_value(prog_id_for(ext), &"").map_err(reg_err)?;
             } else if let Ok(key) =
                 hkcu.open_subkey_with_flags(&path, winreg::enums::KEY_ALL_ACCESS)
             {
-                let _ = key.delete_value(PROG_ID_IMAGE);
+                let _ = key.delete_value(prog_id_for(ext));
             }
         }
 

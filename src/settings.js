@@ -229,6 +229,9 @@ function buildRow(item) {
   return row;
 }
 
+// 関連付けの一覧で、種類ごとに挟む見出し
+const ASSOC_KIND_LABELS = { image: "画像", video: "動画", audio: "音楽" };
+
 // 拡張子の関連付け。状態は OS から読むので settings には入れない
 function buildAssociationRow(item) {
   const row = document.createElement("div");
@@ -274,7 +277,16 @@ function buildAssociationRow(item) {
     grid.replaceChildren();
     boxes.length = 0;
     const anyAssociated = status.items.some((i) => i.associated);
-    for (const { ext, associated } of status.items) {
+    let lastKind = null;
+    for (const { ext, kind, associated } of status.items) {
+      // 種類（画像・動画・音楽）ごとに見出しを挟む
+      if (kind !== lastKind) {
+        lastKind = kind;
+        const heading = document.createElement("div");
+        heading.className = "assoc-kind";
+        heading.textContent = ASSOC_KIND_LABELS[kind] ?? kind;
+        grid.appendChild(heading);
+      }
       const wrap = document.createElement("label");
       wrap.className = "assoc-item";
       const box = document.createElement("input");

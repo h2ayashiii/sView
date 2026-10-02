@@ -72,6 +72,18 @@
         "name": "Image",
         "description": "Image file",
         "role": "Viewer"
+      },
+      {
+        "ext": ["m4v", "mov", "mp4", "webm"],
+        "name": "Video",
+        "description": "Video file",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav"],
+        "name": "Audio",
+        "description": "Audio file",
+        "role": "Viewer"
       }
     ],
     "macOS": {

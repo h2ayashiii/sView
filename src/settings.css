@@ -441,6 +441,18 @@ button.ghost:disabled {
   gap: 4px 8px;
 }
 
+/* 種類（画像・動画・音楽）の見出し。グリッドの 1 行をまるごと使う */
+.assoc-kind {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.assoc-kind:first-child {
+  margin-top: 0;
+}
+
 .assoc-item {
   display: flex;
   align-items: center;
