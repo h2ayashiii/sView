@@ -1,8 +1,18 @@
 // 設定項目の定義。設定ウィンドウ（UI生成）と本体（既定値の解決）で共有する。
 // ここに 1 項目足すだけで設定ウィンドウに項目が増える。
+
+// 設定ウィンドウのタブ。各分類は tab でどれか 1 つに入る
+const SETTINGS_TABS = [
+  { id: "general", label: "全般" },
+  { id: "image", label: "画像" },
+  { id: "video", label: "動画" },
+  { id: "audio", label: "音楽" },
+];
+
 const SETTINGS_SECTIONS = [
   {
     id: "appearance",
+    tab: "general",
     label: "外観",
     items: [
       {
@@ -41,6 +51,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "window",
+    tab: "general",
     label: "ウィンドウ",
     items: [
       {
@@ -77,6 +88,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "view",
+    tab: "image",
     label: "表示",
     items: [
       {
@@ -114,7 +126,8 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "video",
-    label: "動画・音楽",
+    tab: "video",
+    label: "動画の再生",
     items: [
       {
         key: "videoAutoplay",
@@ -132,6 +145,13 @@ const SETTINGS_SECTIONS = [
         type: "toggle",
         default: true,
       },
+    ],
+  },
+  {
+    id: "audio",
+    tab: "audio",
+    label: "音楽の再生",
+    items: [
       {
         key: "audioAutoplay",
         label: "音楽を開いたらすぐ再生する",
@@ -145,7 +165,7 @@ const SETTINGS_SECTIONS = [
         key: "audioEnd",
         label: "曲が終わったら",
         hint:
-          "「次の曲へ進む」は同じフォルダの次の音楽ファイルを続けて再生します（間の画像・動画は飛ばします）。" +
+          "「次の曲へ進む」は同じフォルダの次の音楽ファイルを続けて再生します。" +
           "最後の曲のあとは「端で最初 / 最後へ折り返す」がオンのときだけ先頭に戻ります",
         type: "select",
         options: [
@@ -155,6 +175,13 @@ const SETTINGS_SECTIONS = [
         ],
         default: "next",
       },
+    ],
+  },
+  {
+    id: "sound",
+    tab: "general",
+    label: "音量",
+    items: [
       {
         key: "videoMuted",
         label: "音を消す",
@@ -177,23 +204,13 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "input",
+    tab: "general",
     label: "操作",
     items: [
       {
-        key: "wheelAction",
-        label: "ホイールの動作",
-        hint: "ホイールを回したときに拡大縮小するか、ページをめくるかを選びます",
-        type: "select",
-        options: [
-          ["zoom", "拡大縮小"],
-          ["navigate", "前後の画像へ移動"],
-        ],
-        default: "zoom",
-      },
-      {
         key: "wheelSensitivity",
         label: "ホイールの感度",
-        hint: "大きいほどホイール 1 回の変化が大きくなります",
+        hint: "大きいほどホイール 1 回の変化が大きくなります（画像では拡大縮小、動画・音楽では音量）",
         type: "range",
         min: 1,
         max: 10,
@@ -209,8 +226,8 @@ const SETTINGS_SECTIONS = [
       },
       {
         key: "sideButtons",
-        label: "マウスのサイドボタンで移動する",
-        hint: "「進む / 戻る」ボタンで次 / 前の画像へ移動します",
+        label: "マウスのサイドボタンを使う",
+        hint: "「進む / 戻る」ボタンで、画像では次 / 前の画像へ移動し、動画・音楽では 5 秒進む / 戻ります",
         type: "toggle",
         default: true,
       },
@@ -218,6 +235,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "file",
+    tab: "general",
     label: "ファイル",
     items: [
       {
@@ -243,6 +261,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "association",
+    tab: "general",
     label: "関連付け",
     items: [
       {
@@ -250,7 +269,7 @@ const SETTINGS_SECTIONS = [
         key: "fileAssociations",
         label: "sView で開くファイルの種類",
         hint:
-          "チェックした拡張子を、ダブルクリックしたときに sView で開くようにします。" +
+          "チェックした拡張子（画像・動画・音楽）を、ダブルクリックしたときに sView で開くようにします。" +
           "Windows では sView を登録したあと「既定のアプリ」の設定画面が開くので、そこで確定してください" +
           "（Windows はアプリが既定を直接変えることを認めていません）。" +
           "macOS ではその場で切り替わります。解除するときは Finder の「情報を見る」で別のアプリを選んでください",
@@ -261,6 +280,7 @@ const SETTINGS_SECTIONS = [
   },
   {
     id: "logs",
+    tab: "general",
     label: "ログ",
     items: [
       {

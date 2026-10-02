@@ -147,6 +147,39 @@ body {
   border-color: #3c3c40;
 }
 
+/* ---- tabs ---- */
+#s-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.s-tab {
+  padding: 7px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.s-tab:hover {
+  color: var(--fg);
+}
+
+.s-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.s-panel[hidden] {
+  display: none;
+}
+
 /* ---- scrollable body ---- */
 #s-body {
   flex: 1;
@@ -191,7 +224,7 @@ body {
   color: var(--fg-dim);
 }
 
-.section-title:first-child {
+.s-panel > .section-title:first-child {
   border-top: none;
 }
 
@@ -439,6 +472,18 @@ button.ghost:disabled {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
   gap: 4px 8px;
+}
+
+/* 種類（画像・動画・音楽）の見出し。グリッドの 1 行をまるごと使う */
+.assoc-kind {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.assoc-kind:first-child {
+  margin-top: 0;
 }
 
 .assoc-item {

@@ -501,7 +501,9 @@ body {
 
 #vb-play .i-play,
 #vb-back svg,
-#vb-fwd svg {
+#vb-fwd svg,
+#vb-prev svg,
+#vb-next svg {
   fill: currentColor;
 }
 
@@ -681,6 +683,9 @@ body {
 /* 設定で隠せる要素 */
 #app.hide-filename #statusbar,
 #app.hide-filename #counter,
+/* 動画・音楽では前後のファイルへの移動は再生操作カードの ⏮ ⏭ で行う */
+#app.video .nav,
+#app.audio .nav,
 #app.hide-nav .nav {
   display: none;
 }

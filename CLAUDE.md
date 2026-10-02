@@ -5,7 +5,7 @@ Guidance for coding agents working in this repository.
 ## Overview
 
 sView is a minimal, frameless, cross-platform image viewer built with **Tauri v2**.
-It opens single images, videos, audio files, folders, and zip/cbz archives; the overlay UI shows while the mouse
+It opens single images, videos, audio files, folders, and zip/cbz archives (one kind per list); the overlay UI shows while the mouse
 moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` toggle
 `#app.chrome-visible` in `src/main.js`).
 
@@ -84,7 +84,9 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 ## Making common changes
 
 - **Add a setting** → add one entry to `SETTINGS_SECTIONS` in `src/settings-defs.js`.
-  `SETTINGS_DEFAULTS` and the settings window UI are both derived from it.
+  `SETTINGS_DEFAULTS` and the settings window UI are both derived from it. Each section has a
+  `tab` (`general` / `image` / `video` / `audio`, listed in `SETTINGS_TABS`) that picks the
+  settings-window tab it appears under; a new section needs one.
 - **Add a settings-window button** (not a stored value) → add an entry with `type: "action"`
   and `action: "<name>"`, then register the handler under that name in `ACTIONS` in
   `src/settings.js`. Keep `settings-defs.js` pure data — `main.js` loads it too.
@@ -105,28 +107,41 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `IMAGE_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` (`src/main.js`),
   `fileAssociations` (`tauri.conf.json`). The `supported_extensions_stay_in_sync` test reads
   `main.js` and `tauri.conf.json` and fails when they drift, so `cargo test` catches it.
+  Video and audio extensions are file-associated too: `fileAssociations` has one entry per kind
+  (`Image` / `Video` / `Audio`), and the test checks each against `IMAGE_EXTS` / `VIDEO_EXTS` /
+  `AUDIO_EXTS` (and `VIDEO_EXT_FILTER` / `AUDIO_EXT_FILTER` in `main.js`).
   Archives (`ARCHIVE_EXTS`: `zip` / `cbz`) are deliberately **not** file-associated, neither by the
   installer nor from the settings window; they open via drag & drop, `O` and the command line.
-  Videos are the same: `VIDEO_EXTS` (`lib.rs`) and `VIDEO_EXT_FILTER` (`main.js`) must match (the
-  same test checks it), and they are not in `fileAssociations`.
+- A list holds **one kind** only (`MediaKind`: image / video / audio). `list_images` decides it:
+  a single file → that file's kind, its folder's direct children only (`depth` 1); a folder → every
+  media file down to `MAX_DEPTH` (3, the opened folder's direct children = level 1), sorted by the
+  relative path, then filtered to the kind of the first entry; an archive → images only, also down to
+  `MAX_DEPTH` (counted from the archive root, before `common_dir_prefix`). `ImageList` returns `kind`
+  and `depth`; `main.js` keeps them (`listKind` / `listDepth`) and passes them back on every re-list
+  (`R`, `refreshFolder`) and to `watch_folder`, so a re-list never switches the kind or turns a
+  single-file list into a recursive one.
 - Videos play in a `<video>` element with whatever decoder the OS WebView has (WebView2 / WKWebView). **No codec is bundled** — that keeps codec patent licensing out of the
   app — so `VIDEO_EXTS` is limited to containers most WebViews handle (`mp4` / `m4v` / `webm` /
   `mov`); anything the WebView can't decode just shows an error. Videos are listed only from
-  folders (`is_media`), never from archives (`read_archive_entry` loads a whole entry into memory).
+  folders / single files (`is_media`), never from archives (`read_archive_entry` loads a whole entry into memory).
   They load through the asset protocol, so the CSP needs `media-src` alongside `img-src`.
   `unloadVideo()` (pause + drop `src` + `load()`) runs before every `show()` and before
   `delete_image` so the WebView lets go of the file. Videos are always shown fitted (no zoom);
   `mediaSize()` / `mediaEl()` stand in for `img.naturalWidth` etc. in the window-fit and freeze
   logic. While a video is shown, `handleVideoKey` takes Space / K (play-pause), M (mute),
-  ← / → and J / L (±5 s), ↑ / ↓ (volume ±5 %, saved after a 500 ms pause) and Shift+← / →
-  (previous / next file). `setFitMode` leaves `#stage` without
+  ← / → and J / L (±5 s) and ↑ / ↓ (volume ±5 %, saved after a 500 ms pause), and swallows the
+  image paging keys (PageUp / PageDown / Backspace / Home / End): media never changes file by key or
+  mouse — only the `#vb-prev` / `#vb-next` buttons in `#videobar` do, and the window-side `.nav`
+  buttons are hidden (`#app.video` / `#app.audio`). The side buttons seek ±5 s and the wheel changes
+  the volume (`wheelVolume`). For images ← / → page, the wheel zooms, and ↑ / ↓ are deliberately
+  unbound (reserved for a future feature). `setFitMode` leaves `#stage` without
   `data-tauri-drag-region` while a video is shown — with it, the OS move loop starts on mousedown and
   the release never reaches the WebView, so a click could not be told apart. Instead a press that moves
   `VIDEO_DRAG_THRESHOLD_PX` calls `appWindow.startDragging()`, and one released within
   `VIDEO_CLICK_MS` without moving toggles play-pause. The playback controls are the `#videobar` card (seek bar on top; time /
   ±5 s + play / mute + volume below) inside `#chrome`, so they show and hide with the rest of the chrome.
 - Audio (`AUDIO_EXTS` in `lib.rs` / `AUDIO_EXT_FILTER` in `main.js`, kept in sync by the same test;
-  not file-associated, never listed from archives) plays through the **same `<video>` element**,
+  never listed from archives) plays through the **same `<video>` element**,
   which stays hidden while `#audio` shows the artwork and the title panel. `showingMedia`
   (video or audio) gates everything playback-related — keys, the press-to-play logic, `#videobar`,
   no zoom — while `showingVideo` / `showingAudio` pick what is displayed. Tags and artwork come from
@@ -138,7 +153,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `AspectState.extra`; `sized_to_aspect` / `dragged_area` keep the ratio on the window **minus**
   that margin (images / videos pass 0). Don't fold the margin into the ratio at the current
   window width: the ratio then depends on the previous window shape and the size drifts. `audioEnd: "next"` advances on `ended`
-  to the next *audio* entry (skipping images / videos, wrapping only with `wrapAround`) and
+  to the next *audio* entry (the list is audio-only anyway; wraps only with `wrapAround`) and
   forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
   slider value (`getVolume` / `setVolume` wrap `video.volume`; never read or write it directly for
   the user-facing volume). `#audio-art` has fixed-px padding (left / right / top) that `mediaSize()`
@@ -169,9 +184,11 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   cached with an `(mtime, size)` stamp — don't re-open it naively.
 - Folder watching (`watch_folder` / `FolderWatcher`) uses `notify`'s OS-native backends, so it
   costs nothing while idle — do **not** replace it with polling. Exactly one folder is watched at a
-  time, non-recursively, and only while a folder (not an archive) is open; passing `path: null`
-  drops the watcher. `is_listing_change` filters out content-only writes so a save doesn't
-  rebuild the list. Rust only emits `folder-changed`; the debounce (`RESCAN_DELAY_MS`, 800 ms in
+  time, to the list's `depth` (non-recursive for 1, recursive for more, with events deeper than
+  `depth` dropped by `is_listing_change`), and only while a folder (not an archive) is open; passing
+  `path: null` drops the watcher. `is_listing_change` filters out content-only writes so a save
+  doesn't rebuild the list, and in recursive mode also reacts to sub-folders appearing / vanishing
+  (a moved-in folder may not report its children). Rust only emits `folder-changed`; the debounce (`RESCAN_DELAY_MS`, 800 ms in
   `main.js`) and the actual re-listing live in the frontend — that delay also keeps a
   half-copied file from being listed, so don't shorten it without a reason.
 - Deleting goes through `trash`, never `fs::remove_file` — "削除" in this app always means the
@@ -236,11 +253,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - File associations from the settings window (`file_association_status` / `apply_file_associations`,
   `type: "associations"` row in `settings-defs.js`) follow each OS's rules. Windows 8+ forbids apps
   from setting the default (UserChoice is hash-protected), so `win_assoc` only registers sView in
-  HKCU (`sView.Image` ProgID, `Capabilities`, `RegisteredApplications`,
+  HKCU (one ProgID per kind — `sView.Image` / `sView.Video` / `sView.Audio`, `PROG_IDS` —, `Capabilities`, `RegisteredApplications`,
   `OpenWithProgids`) and opens `ms-settings:defaultapps?registeredAppUser=sView` for the user to
   confirm. macOS sets it directly via `LSSetDefaultRoleHandlerForContentType` (raw FFI in
   `mac_assoc`); there is no API to unset. The selectable list is
-  `associable_exts()` = `IMAGE_EXTS` only (archives are deliberately excluded).
+  `associable_exts()` = `IMAGE_EXTS` + `VIDEO_EXTS` + `AUDIO_EXTS` (archives are deliberately
+  excluded); the settings window groups them by `kind`.
 - macOS: WKWebView only tracks the mouse while its window is key, so an inactive window gets no
   `mousemove` and leaving the window fires no reliable `mouseleave`. `mac_pointer` (in `lib.rs`)
   adds an always-active `NSTrackingArea` to the main window's content view and emits

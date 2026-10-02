@@ -14,6 +14,8 @@ const vbPlay = document.getElementById("vb-play");
 const vbMute = document.getElementById("vb-mute");
 const vbBack = document.getElementById("vb-back");
 const vbFwd = document.getElementById("vb-fwd");
+const vbPrev = document.getElementById("vb-prev");
+const vbNext = document.getElementById("vb-next");
 const vbSeek = document.getElementById("vb-seek");
 const vbVolume = document.getElementById("vb-volume");
 const vbTime = document.getElementById("vb-time");
@@ -73,7 +75,15 @@ let index = -1;
 let archivePath = null;
 // フォルダを開いている場合はそのフルパス（監視対象）。書庫の場合は null
 let folderPath = null;
-// 全エントリが共有する先頭フォルダ。表示名からはこの分を取り除く
+// 一覧に並べている種類（"image" / "video" / "audio"。決まっていなければ null）。
+// 単体のファイルを開いたらその種類、フォルダ・書庫なら先頭のファイルの種類で、
+// 読み直しても変えない
+let listKind = null;
+// 一覧を読んだ深さ（単体のファイルから開いたら 1 = 直下だけ、フォルダ・書庫は 3）。
+// 読み直しと監視も同じ深さで行う
+let listDepth = 1;
+// 表示名から取り除く先頭部分（書庫では全エントリの共通フォルダ、
+// フォルダをサブフォルダごと読んだときは開いたフォルダのパス）
 let entryPrefix = "";
 // 表示要求の世代。非同期読み込みの結果が古い場合は捨てる
 let showToken = 0;
@@ -292,9 +302,10 @@ function updateChrome() {
     return;
   }
   app.classList.remove("no-image");
-  // 書庫内は同名ファイルが別フォルダに並びうるので、共通フォルダを除いた
-  // 相対パスで表示する（単一フォルダの書庫なら結果的にファイル名だけになる）
-  const name = archivePath
+  // 書庫内やサブフォルダまで読んだフォルダは同名ファイルが別フォルダに並びうるので、
+  // 共通フォルダ（開いたフォルダ）を除いた相対パスで表示する
+  // （単一フォルダの書庫なら結果的にファイル名だけになる）
+  const name = entryPrefix && images[index].startsWith(entryPrefix)
     ? images[index].slice(entryPrefix.length)
     : baseName(images[index]);
   filenameEl.textContent = archivePath ? `${baseName(archivePath)} / ${name}` : name;
@@ -302,9 +313,9 @@ function updateChrome() {
   counterEl.textContent = `${index + 1} / ${images.length}`;
   navPrev.disabled = index === 0;
   navNext.disabled = index === images.length - 1;
-  // 動画・音楽の間は ← → が早送り・巻き戻しになるので、移動のキーは Shift + ← → と示す
-  navPrev.title = showingMedia ? "前のファイル (Shift + ←)" : "前の画像 (←)";
-  navNext.title = showingMedia ? "次のファイル (Shift + →)" : "次の画像 (→)";
+  // 動画・音楽の前後移動は再生操作カードのボタンだけ（端で折り返す設定なら端でも押せる）
+  vbPrev.disabled = !settings.wrapAround && index === 0;
+  vbNext.disabled = !settings.wrapAround && index === images.length - 1;
   appWindow.setTitle(`${baseName(images[index])} - sView`).catch(() => {});
 }
 
@@ -680,7 +691,7 @@ async function loadAudioInfo(path, token) {
   });
 }
 
-// 次に再生する曲の位置。間の画像・動画は飛ばす。無ければ -1
+// 次に再生する曲の位置。一覧は同じ種類だけなので通常は隣の曲だが、念のため音楽以外は飛ばす。無ければ -1
 // （最後まで来たら、設定「端で最初 / 最後へ折り返す」のときだけ先頭から探す）
 function nextAudioIndex() {
   for (let off = 1; off < images.length; off++) {
@@ -712,6 +723,14 @@ vbPlay.addEventListener("click", () => {
 vbMute.addEventListener("click", () => {
   toggleMute();
   vbMute.blur();
+});
+vbPrev.addEventListener("click", () => {
+  step(-1);
+  vbPrev.blur();
+});
+vbNext.addEventListener("click", () => {
+  step(1);
+  vbNext.blur();
 });
 vbBack.addEventListener("click", () => {
   seekBy(-SEEK_STEP_S);
@@ -807,15 +826,28 @@ vbVolume.addEventListener("change", () => {
 });
 
 // ---- open / navigate ----
-async function openPath(path, preferredIndex = -1) {
+// opts.kind / opts.depth: 読み直しで、最初に開いたときと同じ種類・深さで並べる
+// opts.current: 一覧にあればそのファイルを表示する
+// opts.preferredIndex: current が無いときの表示位置（一覧の長さに収める）
+async function openPath(path, opts = {}) {
   try {
-    const res = await invoke("list_images", { path });
+    const res = await invoke("list_images", {
+      path,
+      kind: opts.kind ?? null,
+      depth: opts.depth ?? null,
+    });
     if (res.archive !== archivePath) clearBlobCache();
     archivePath = res.archive ?? null;
     folderPath = res.dir ?? null;
+    listKind = res.kind ?? null;
+    listDepth = res.depth ?? 1;
     entryPrefix = res.prefix ?? "";
     images = res.images;
-    index = preferredIndex >= 0 && preferredIndex < images.length ? preferredIndex : res.index;
+    const at = opts.current != null ? images.indexOf(opts.current) : -1;
+    const preferred = opts.preferredIndex ?? -1;
+    if (at >= 0) index = at;
+    else if (preferred >= 0 && images.length) index = Math.min(preferred, images.length - 1);
+    else index = res.index;
     syncWatcher();
     await show();
   } catch (e) {
@@ -864,9 +896,16 @@ async function rescan() {
   if (archivePath) {
     // 書庫の中身が差し替わっている可能性があるのでキャッシュを捨てて開き直す
     clearBlobCache();
-    await openPath(archivePath, index);
-  } else {
-    await openPath(images[index]);
+    await openPath(archivePath, { preferredIndex: index });
+  } else if (folderPath) {
+    // 単体のファイルから開いたかフォルダを開いたかで並べ方が違うので、
+    // 最初に開いたときと同じ種類・深さで読み直す
+    await openPath(folderPath, {
+      kind: listKind,
+      depth: listDepth,
+      current: images[index],
+      preferredIndex: index,
+    });
   }
 }
 
@@ -884,7 +923,7 @@ let watchFailed = false;
 // フォルダを開いている間だけ監視する。書庫のときと設定でオフのときは外す
 function syncWatcher() {
   const target = !archivePath && settings.watchFolder ? folderPath : null;
-  invoke("watch_folder", { path: target }).catch((e) => {
+  invoke("watch_folder", { path: target, depth: listDepth }).catch((e) => {
     // 監視できなくてもビューア自体は使えるので、知らせるのは 1 回だけにする
     // （R キーでいつでも読み直せる）
     if (watchFailed) return;
@@ -905,19 +944,23 @@ function scheduleRefresh() {
 async function refreshFolder() {
   if (archivePath || !folderPath) return;
   const dir = folderPath;
+  const depth = listDepth;
   let res;
   try {
-    res = await invoke("list_images", { path: dir });
+    res = await invoke("list_images", { path: dir, kind: listKind, depth });
   } catch {
     // フォルダごと消えた・読めなくなった場合。今の表示はそのまま残す
     return;
   }
   // 読んでいる間に別のものを開いていたら、その結果は捨てる
-  if (archivePath || folderPath !== dir) return;
+  // （同じフォルダでも、ファイルから開き直して深さが変わったときは捨てる）
+  if (archivePath || folderPath !== dir || listDepth !== depth) return;
 
   const current = index >= 0 ? images[index] : null;
   const added = res.images.length - images.length;
   images = res.images;
+  // 空のフォルダを開いていたときは、ここで初めて種類が決まる
+  listKind = res.kind ?? listKind;
 
   const at = current ? images.indexOf(current) : -1;
   if (at >= 0) {
@@ -1103,8 +1146,8 @@ syncActive();
 
 // ---- input: keyboard ----
 // 動画・音楽を表示している間だけのキー。処理したら true を返す。
-// ← → は早送り・巻き戻し、↑ ↓ は音量。前後のファイルへは Shift + ← → や
-// PageUp / PageDown などで移る
+// ← → は早送り・巻き戻し、↑ ↓ は音量。前後のファイルへはキーでは移らず、
+// 再生操作カードの ⏮ ⏭ ボタンだけで移る
 function handleVideoKey(e) {
   switch (e.key) {
     case " ":
@@ -1125,12 +1168,17 @@ function handleVideoKey(e) {
       seekBy(SEEK_STEP_S);
       break;
     case "ArrowLeft":
-      if (e.shiftKey) step(-1);
-      else seekBy(-SEEK_STEP_S);
+      seekBy(-SEEK_STEP_S);
       break;
     case "ArrowRight":
-      if (e.shiftKey) step(1);
-      else seekBy(SEEK_STEP_S);
+      seekBy(SEEK_STEP_S);
+      break;
+    // 画像の前後移動に使うキーは、動画・音楽では何もしない（誤ってファイルが変わらないように）
+    case "PageUp":
+    case "PageDown":
+    case "Backspace":
+    case "Home":
+    case "End":
       break;
     case "ArrowUp":
       changeVolumeBy(VOLUME_STEP);
@@ -1172,15 +1220,14 @@ window.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (showingMedia && handleVideoKey(e)) return;
   switch (e.key) {
+    // ↑ ↓ は今後の機能のために空けておく（前後移動には使わない）
     case "ArrowRight":
-    case "ArrowDown":
     case "PageDown":
     case " ":
       e.preventDefault();
       step(1);
       break;
     case "ArrowLeft":
-    case "ArrowUp":
     case "PageUp":
     case "Backspace":
       e.preventDefault();
@@ -1240,26 +1287,29 @@ window.addEventListener("keydown", (e) => {
 // mouseup として届く（届かないユーティリティ常駐マウスはキー操作で代替）。
 window.addEventListener("mouseup", (e) => {
   if (!settings.sideButtons || !confirmEl.hidden) return;
+  // 動画・音楽では前後のファイルではなく 5 秒戻る / 進む
   if (e.button === 3) {
     e.preventDefault();
-    step(-1);
+    if (showingMedia) seekBy(-SEEK_STEP_S);
+    else step(-1);
   } else if (e.button === 4) {
     e.preventDefault();
-    step(1);
+    if (showingMedia) seekBy(SEEK_STEP_S);
+    else step(1);
   }
 });
 window.addEventListener("auxclick", (e) => {
   if (e.button === 3 || e.button === 4) e.preventDefault();
 });
 
-// ---- input: wheel zoom ----
+// ---- input: wheel（画像は拡大縮小、動画・音楽は音量） ----
 window.addEventListener(
   "wheel",
   (e) => {
     if (!images.length || !confirmEl.hidden) return;
     e.preventDefault();
-    if (settings.wheelAction === "navigate") {
-      wheelNavigate(e.deltaY);
+    if (showingMedia) {
+      wheelVolume(e.deltaY);
       return;
     }
     const factor = Math.exp(-e.deltaY * 0.0004 * settings.wheelSensitivity);
@@ -1451,15 +1501,16 @@ async function openSettings() {
   }
 }
 
-// ---- wheel navigation ----
-// ホイール 1 段の量はデバイス差が大きいので、しきい値までためてから 1 枚送る
+// ---- wheel volume ----
+// ホイール 1 段の量はデバイス差が大きい（トラックパッドは細かく何度も届く）ので、
+// しきい値までためてから音量を 1 段（VOLUME_STEP）変える。上に回すと大きくなる
 let wheelAccum = 0;
-function wheelNavigate(deltaY) {
+function wheelVolume(deltaY) {
   const threshold = 220 - settings.wheelSensitivity * 18;
   if (Math.sign(deltaY) !== Math.sign(wheelAccum)) wheelAccum = 0;
   wheelAccum += deltaY;
   while (Math.abs(wheelAccum) >= threshold) {
-    step(Math.sign(wheelAccum));
+    changeVolumeBy(-Math.sign(wheelAccum) * VOLUME_STEP);
     wheelAccum -= Math.sign(wheelAccum) * threshold;
   }
 }
