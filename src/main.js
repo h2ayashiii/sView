@@ -14,6 +14,8 @@ const vbPlay = document.getElementById("vb-play");
 const vbMute = document.getElementById("vb-mute");
 const vbBack = document.getElementById("vb-back");
 const vbFwd = document.getElementById("vb-fwd");
+const vbPrev = document.getElementById("vb-prev");
+const vbNext = document.getElementById("vb-next");
 const vbSeek = document.getElementById("vb-seek");
 const vbVolume = document.getElementById("vb-volume");
 const vbTime = document.getElementById("vb-time");
@@ -311,9 +313,9 @@ function updateChrome() {
   counterEl.textContent = `${index + 1} / ${images.length}`;
   navPrev.disabled = index === 0;
   navNext.disabled = index === images.length - 1;
-  // 動画・音楽の間は ← → が早送り・巻き戻しになるので、移動のキーは Shift + ← → と示す
-  navPrev.title = showingMedia ? "前のファイル (Shift + ←)" : "前の画像 (←)";
-  navNext.title = showingMedia ? "次のファイル (Shift + →)" : "次の画像 (→)";
+  // 動画・音楽の前後移動は再生操作カードのボタンだけ（端で折り返す設定なら端でも押せる）
+  vbPrev.disabled = !settings.wrapAround && index === 0;
+  vbNext.disabled = !settings.wrapAround && index === images.length - 1;
   appWindow.setTitle(`${baseName(images[index])} - sView`).catch(() => {});
 }
 
@@ -721,6 +723,14 @@ vbPlay.addEventListener("click", () => {
 vbMute.addEventListener("click", () => {
   toggleMute();
   vbMute.blur();
+});
+vbPrev.addEventListener("click", () => {
+  step(-1);
+  vbPrev.blur();
+});
+vbNext.addEventListener("click", () => {
+  step(1);
+  vbNext.blur();
 });
 vbBack.addEventListener("click", () => {
   seekBy(-SEEK_STEP_S);
@@ -1136,8 +1146,8 @@ syncActive();
 
 // ---- input: keyboard ----
 // 動画・音楽を表示している間だけのキー。処理したら true を返す。
-// ← → は早送り・巻き戻し、↑ ↓ は音量。前後のファイルへは Shift + ← → や
-// PageUp / PageDown などで移る
+// ← → は早送り・巻き戻し、↑ ↓ は音量。前後のファイルへはキーでは移らず、
+// 再生操作カードの ⏮ ⏭ ボタンだけで移る
 function handleVideoKey(e) {
   switch (e.key) {
     case " ":
@@ -1158,12 +1168,17 @@ function handleVideoKey(e) {
       seekBy(SEEK_STEP_S);
       break;
     case "ArrowLeft":
-      if (e.shiftKey) step(-1);
-      else seekBy(-SEEK_STEP_S);
+      seekBy(-SEEK_STEP_S);
       break;
     case "ArrowRight":
-      if (e.shiftKey) step(1);
-      else seekBy(SEEK_STEP_S);
+      seekBy(SEEK_STEP_S);
+      break;
+    // 画像の前後移動に使うキーは、動画・音楽では何もしない（誤ってファイルが変わらないように）
+    case "PageUp":
+    case "PageDown":
+    case "Backspace":
+    case "Home":
+    case "End":
       break;
     case "ArrowUp":
       changeVolumeBy(VOLUME_STEP);
@@ -1205,15 +1220,14 @@ window.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (showingMedia && handleVideoKey(e)) return;
   switch (e.key) {
+    // ↑ ↓ は今後の機能のために空けておく（前後移動には使わない）
     case "ArrowRight":
-    case "ArrowDown":
     case "PageDown":
     case " ":
       e.preventDefault();
       step(1);
       break;
     case "ArrowLeft":
-    case "ArrowUp":
     case "PageUp":
     case "Backspace":
       e.preventDefault();
@@ -1273,26 +1287,29 @@ window.addEventListener("keydown", (e) => {
 // mouseup として届く（届かないユーティリティ常駐マウスはキー操作で代替）。
 window.addEventListener("mouseup", (e) => {
   if (!settings.sideButtons || !confirmEl.hidden) return;
+  // 動画・音楽では前後のファイルではなく 5 秒戻る / 進む
   if (e.button === 3) {
     e.preventDefault();
-    step(-1);
+    if (showingMedia) seekBy(-SEEK_STEP_S);
+    else step(-1);
   } else if (e.button === 4) {
     e.preventDefault();
-    step(1);
+    if (showingMedia) seekBy(SEEK_STEP_S);
+    else step(1);
   }
 });
 window.addEventListener("auxclick", (e) => {
   if (e.button === 3 || e.button === 4) e.preventDefault();
 });
 
-// ---- input: wheel zoom ----
+// ---- input: wheel（画像は拡大縮小、動画・音楽は音量） ----
 window.addEventListener(
   "wheel",
   (e) => {
     if (!images.length || !confirmEl.hidden) return;
     e.preventDefault();
-    if (settings.wheelAction === "navigate") {
-      wheelNavigate(e.deltaY);
+    if (showingMedia) {
+      wheelVolume(e.deltaY);
       return;
     }
     const factor = Math.exp(-e.deltaY * 0.0004 * settings.wheelSensitivity);
@@ -1484,15 +1501,16 @@ async function openSettings() {
   }
 }
 
-// ---- wheel navigation ----
-// ホイール 1 段の量はデバイス差が大きいので、しきい値までためてから 1 枚送る
+// ---- wheel volume ----
+// ホイール 1 段の量はデバイス差が大きい（トラックパッドは細かく何度も届く）ので、
+// しきい値までためてから音量を 1 段（VOLUME_STEP）変える。上に回すと大きくなる
 let wheelAccum = 0;
-function wheelNavigate(deltaY) {
+function wheelVolume(deltaY) {
   const threshold = 220 - settings.wheelSensitivity * 18;
   if (Math.sign(deltaY) !== Math.sign(wheelAccum)) wheelAccum = 0;
   wheelAccum += deltaY;
   while (Math.abs(wheelAccum) >= threshold) {
-    step(Math.sign(wheelAccum));
+    changeVolumeBy(-Math.sign(wheelAccum) * VOLUME_STEP);
     wheelAccum -= Math.sign(wheelAccum) * threshold;
   }
 }

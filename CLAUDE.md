@@ -128,8 +128,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `delete_image` so the WebView lets go of the file. Videos are always shown fitted (no zoom);
   `mediaSize()` / `mediaEl()` stand in for `img.naturalWidth` etc. in the window-fit and freeze
   logic. While a video is shown, `handleVideoKey` takes Space / K (play-pause), M (mute),
-  ← / → and J / L (±5 s), ↑ / ↓ (volume ±5 %, saved after a 500 ms pause) and Shift+← / →
-  (previous / next file). `setFitMode` leaves `#stage` without
+  ← / → and J / L (±5 s) and ↑ / ↓ (volume ±5 %, saved after a 500 ms pause), and swallows the
+  image paging keys (PageUp / PageDown / Backspace / Home / End): media never changes file by key or
+  mouse — only the `#vb-prev` / `#vb-next` buttons in `#videobar` do, and the window-side `.nav`
+  buttons are hidden (`#app.video` / `#app.audio`). The side buttons seek ±5 s and the wheel changes
+  the volume (`wheelVolume`). For images ← / → page, the wheel zooms, and ↑ / ↓ are deliberately
+  unbound (reserved for a future feature). `setFitMode` leaves `#stage` without
   `data-tauri-drag-region` while a video is shown — with it, the OS move loop starts on mousedown and
   the release never reaches the WebView, so a click could not be told apart. Instead a press that moves
   `VIDEO_DRAG_THRESHOLD_PX` calls `appWindow.startDragging()`, and one released within

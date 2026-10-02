@@ -208,20 +208,9 @@ const SETTINGS_SECTIONS = [
     label: "操作",
     items: [
       {
-        key: "wheelAction",
-        label: "ホイールの動作",
-        hint: "ホイールを回したときに拡大縮小するか、ページをめくるかを選びます",
-        type: "select",
-        options: [
-          ["zoom", "拡大縮小"],
-          ["navigate", "前後の画像へ移動"],
-        ],
-        default: "zoom",
-      },
-      {
         key: "wheelSensitivity",
         label: "ホイールの感度",
-        hint: "大きいほどホイール 1 回の変化が大きくなります",
+        hint: "大きいほどホイール 1 回の変化が大きくなります（画像では拡大縮小、動画・音楽では音量）",
         type: "range",
         min: 1,
         max: 10,
@@ -237,8 +226,8 @@ const SETTINGS_SECTIONS = [
       },
       {
         key: "sideButtons",
-        label: "マウスのサイドボタンで移動する",
-        hint: "「進む / 戻る」ボタンで次 / 前の画像へ移動します",
+        label: "マウスのサイドボタンを使う",
+        hint: "「進む / 戻る」ボタンで、画像では次 / 前の画像へ移動し、動画・音楽では 5 秒進む / 戻ります",
         type: "toggle",
         default: true,
       },
