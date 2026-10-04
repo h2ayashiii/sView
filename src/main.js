@@ -384,8 +384,20 @@ function onVideoReady(run) {
   else video.addEventListener("loadedmetadata", run, { once: true });
 }
 
+// 表示中のファイルの種類。ウィンドウの設定を種類ごとに切り替えるのに使う
+function shownKind() {
+  if (index < 0) return null;
+  return showingVideo ? "video" : showingAudio ? "audio" : "image";
+}
+
 function fitsToImage() {
-  return settings.windowSizeMode === "image";
+  return windowSetting(settings, shownKind(), "windowSizeMode") === "image";
+}
+
+// 「常に最前面に表示する」を表示中の種類の設定に合わせる
+function applyAlwaysOnTop() {
+  const onTop = !!windowSetting(settings, shownKind(), "alwaysOnTop");
+  appWindow.setAlwaysOnTop(onTop).catch(() => {});
 }
 
 // 「画像に合わせる」のとき、ウィンドウの縦横比を表示中の画像に固定する。
@@ -439,6 +451,7 @@ async function show() {
   video.hidden = !showingVideo;
   audioBox.hidden = !showingAudio;
   img.hidden = showingMedia;
+  applyAlwaysOnTop();
   setFitMode();
   placeholder.hidden = true;
   updateChrome();
@@ -497,8 +510,7 @@ let autoplayMuteNoticed = false;
 
 function loadVideo(src, autoplay) {
   video.loop = mediaLoop();
-  video.muted = !!settings.videoMuted;
-  setVolume(videoVolume());
+  setVolume(mediaVolume());
   video.src = src;
   syncVideoBar();
   if (autoplay) playVideo();
@@ -520,7 +532,7 @@ function unloadVideo() {
 }
 
 // 音楽は動画より音が大きいことが多いので、同じ音量つまみの位置でも実際の音量を半分にする
-// （つまみ・↑ ↓ キー・保存する値は動画と共通の 0〜100%。100% のとき素材の音量の半分で鳴る）
+// （つまみ・↑ ↓ キー・保存する値は 0〜100%。100% のとき素材の音量の半分で鳴る）
 const AUDIO_VOLUME_GAIN = 0.5;
 
 function volumeGain() {
@@ -536,8 +548,13 @@ function setVolume(v) {
   video.volume = Math.min(1, Math.max(0, v)) * volumeGain();
 }
 
-function videoVolume() {
-  const v = Number(settings.videoVolume);
+// 音量は動画と音楽で別々に保存する（0〜100%）
+function volumeKey() {
+  return showingAudio ? "audioVolume" : "videoVolume";
+}
+
+function mediaVolume() {
+  const v = Number(settings[volumeKey()]);
   return Number.isFinite(v) ? Math.min(1, Math.max(0, v / 100)) : 1;
 }
 
@@ -561,12 +578,10 @@ function togglePlay() {
   else video.pause();
 }
 
-// 消音の状態は設定に保存して、次の動画・次回の起動にも持ち越す
+// 消音は保存しない（起動したときは常に音が出る。起動している間は次のファイルにも持ち越す）
 function toggleMute() {
   if (!showingMedia) return;
-  settings.videoMuted = !video.muted;
-  video.muted = settings.videoMuted;
-  saveSettings();
+  video.muted = !video.muted;
 }
 
 function seekBy(seconds) {
@@ -580,12 +595,9 @@ function changeVolumeBy(delta) {
   if (!showingMedia) return;
   const volume = Math.min(1, Math.max(0, Math.round((getVolume() + delta) * 100) / 100));
   setVolume(volume);
-  settings.videoVolume = Math.round(volume * 100);
+  settings[volumeKey()] = Math.round(volume * 100);
   // 音量を上げたら消音も解く（再生バーの音量つまみと同じ扱い）
-  if (delta > 0 && video.muted) {
-    video.muted = false;
-    settings.videoMuted = false;
-  }
+  if (delta > 0 && video.muted) video.muted = false;
   clearTimeout(volumeSaveTimer);
   volumeSaveTimer = setTimeout(saveSettings, VOLUME_SAVE_DELAY_MS);
   // 音量つまみで結果が見えるよう、再生操作を出す
@@ -813,14 +825,11 @@ video.addEventListener("volumechange", () => {
 vbVolume.addEventListener("input", () => {
   setVolume(Number(vbVolume.value) / 100);
   // 音量を上げたら消音も解く（上げても聞こえないのは分かりにくい）
-  if (video.volume > 0 && video.muted) {
-    video.muted = false;
-    settings.videoMuted = false;
-  }
+  if (video.volume > 0 && video.muted) video.muted = false;
 });
 // 保存はつまみを離したときだけ（ドラッグ中に何度も書き込まない）
 vbVolume.addEventListener("change", () => {
-  settings.videoVolume = Number(vbVolume.value);
+  settings[volumeKey()] = Number(vbVolume.value);
   saveSettings();
   vbVolume.blur();
 });
@@ -873,6 +882,7 @@ function clearView() {
   setFitMode();
   placeholder.hidden = false;
   updateChrome();
+  applyAlwaysOnTop();
   syncAspectLock();
 }
 
@@ -1375,7 +1385,7 @@ navNext.addEventListener("click", () => step(1));
 // もう一度押すと元の大きさに戻る
 // 最大化中は画面の隅と食い違うので角は丸めない
 function applyCorners() {
-  const round = settings.roundedCorners && !app.classList.contains("maximized");
+  const round = !app.classList.contains("maximized");
   app.style.borderRadius = round ? "8px" : "0";
 }
 
@@ -1472,12 +1482,10 @@ function applySettings() {
   app.style.background = hexToRgba(settings.backgroundColor, settings.backgroundOpacity / 100);
   applyCorners();
   app.classList.toggle("hide-filename", !settings.showFilename);
-  app.classList.toggle("hide-nav", !settings.showNavButtons);
   img.style.imageRendering = settings.imageRendering;
   video.loop = mediaLoop();
-  setVolume(videoVolume());
-  video.muted = !!settings.videoMuted;
-  appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
+  setVolume(mediaVolume());
+  applyAlwaysOnTop();
   syncWatcher();
 }
 
@@ -1638,11 +1646,11 @@ window.addEventListener("blur", hideContextMenu);
 window.addEventListener("resize", hideContextMenu);
 
 listen("settings-changed", (event) => {
-  const previousMode = settings.windowSizeMode;
+  const wasFitting = fitsToImage();
   settings = normalizeSettings(event.payload);
   applySettings();
   // 「画像に合わせる」に切り替えた直後は、今の大きさを基準に縦横比だけ合わせる
-  if (settings.windowSizeMode !== previousMode) fitWindowToImage();
+  if (fitsToImage() !== wasFitting) fitWindowToImage();
 });
 
 invoke("load_settings")

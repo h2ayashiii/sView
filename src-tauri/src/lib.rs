@@ -1710,29 +1710,15 @@ fn fitted_position(
     }
 }
 
-/// 設定ファイルから文字列項目を 1 つ読む（Rust 側から設定を参照する用）
-fn settings_value(app: &AppHandle, key: &str) -> Option<String> {
-    let path = settings_file(app).ok()?;
-    let text = fs::read_to_string(path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    value.get(key)?.as_str().map(str::to_owned)
-}
-
-/// ウィンドウサイズの設定が「画像に合わせる」か。
-/// "flexible" は 0.1 系までの古い値（settings.json を書き換えずに読めるようにする）
-fn fits_window_to_image(app: &AppHandle) -> bool {
-    matches!(
-        settings_value(app, "windowSizeMode").as_deref(),
-        Some("image") | Some("flexible")
-    )
-}
-
 /// 起動時に、前回閉じたときのウィンドウを復元する。
 /// 大きさも位置も、どちらのサイズ設定でも戻す。
 /// ウィンドウ全体が作業領域に収まるよう寄せる（ディスプレイの構成が
 /// 変わっていたり、前回より大きく開いたりしたときに画面外へ出さない）。
 /// 「画像に合わせる」では最初の画像で縦横比を合わせ直すので、そのときも
-/// 前回と同じ左上に置けるよう、保存した位置を PendingPosition に残しておく
+/// 前回と同じ左上に置けるよう、保存した位置を PendingPosition に残しておく。
+/// ウィンドウのサイズ設定は表示するファイルの種類ごとに変えられ、起動した時点では
+/// どれになるか分からないので、設定にかかわらず残す（「自由に変更」なら使われないまま残るが、
+/// fit_window_to_image は起動時に置いた場所から動いていれば使わない）
 fn restore_window_state(window: &tauri::Window) {
     let app = window.app_handle();
     let Some(state) = read_window_state(app) else {
@@ -1770,13 +1756,11 @@ fn restore_window_state(window: &tauri::Window) {
     let (x, y) = clamp_to_area(saved_x, saved_y, outer_width, outer_height, &work_area);
     let _ = window.set_position(LogicalPosition::new(x, y));
 
-    if fits_window_to_image(app) {
-        if let Ok(mut pending) = app.state::<PendingPosition>().0.lock() {
-            *pending = Some(RestoredPosition {
-                saved: (saved_x, saved_y),
-                placed: (x, y),
-            });
-        }
+    if let Ok(mut pending) = app.state::<PendingPosition>().0.lock() {
+        *pending = Some(RestoredPosition {
+            saved: (saved_x, saved_y),
+            placed: (x, y),
+        });
     }
 }
 

@@ -45,6 +45,8 @@ invoke("app_version")
 
 let settings = { ...SETTINGS_DEFAULTS };
 const controls = new Map(); // key -> 値を書き戻す関数
+// enabledBy を持つ行。そのトグルがオフの間は操作できないようにする
+const dependents = []; // { row, enabledBy }
 
 function setStatus(text, isError) {
   statusEl.textContent = text;
@@ -129,6 +131,7 @@ async function persist() {
 function update(key, value) {
   settings[key] = value;
   applyTheme();
+  syncEnabled();
   emit("settings-changed", settings).catch(() => {});
   persist();
 }
@@ -227,13 +230,29 @@ function buildRow(item) {
   }
 
   row.append(label, control);
+  if (item.enabledBy) dependents.push({ row, enabledBy: item.enabledBy });
   return row;
 }
 
-// 関連付けの一覧で、種類ごとに挟む見出し
-const ASSOC_KIND_LABELS = { image: "画像", video: "動画", audio: "音楽" };
+// 「個別の設定を使う」がオフの間は、その下の項目を薄くして触れないようにする
+function syncEnabled() {
+  for (const { row, enabledBy } of dependents) {
+    const enabled = !!settings[enabledBy];
+    row.classList.toggle("disabled", !enabled);
+    for (const el of row.querySelectorAll("input, select")) el.disabled = !enabled;
+  }
+}
 
-// 拡張子の関連付け。状態は OS から読むので settings には入れない
+// 関連付けの行（画像・動画・音楽のタブに 1 つずつ）の読み直し。
+// どれかで関連付けると他の種類の状態も変わりうるので、まとめて読み直す
+const assocLoaders = [];
+
+function reloadAssociations() {
+  return Promise.all(assocLoaders.map((load) => load().catch(() => {})));
+}
+
+// 拡張子の関連付け。状態は OS から読むので settings には入れない。
+// item.kind の種類の拡張子だけを並べる
 function buildAssociationRow(item) {
   const row = document.createElement("div");
   row.className = "row assoc";
@@ -269,31 +288,25 @@ function buildAssociationRow(item) {
   row.append(label, grid, actions, note);
 
   const boxes = [];
+  // 最後に読んだ OS の状態（他の種類の拡張子も含む）
+  let status = null;
   const setAll = (checked) => boxes.forEach((b) => (b.checked = checked));
   selectAll.addEventListener("click", () => setAll(true));
   selectNone.addEventListener("click", () => setAll(false));
 
   const load = async () => {
-    const status = await invoke("file_association_status");
+    status = await invoke("file_association_status");
+    const items = status.items.filter((i) => i.kind === item.kind);
     grid.replaceChildren();
     boxes.length = 0;
-    const anyAssociated = status.items.some((i) => i.associated);
-    let lastKind = null;
-    for (const { ext, kind, associated } of status.items) {
-      // 種類（画像・動画・音楽）ごとに見出しを挟む
-      if (kind !== lastKind) {
-        lastKind = kind;
-        const heading = document.createElement("div");
-        heading.className = "assoc-kind";
-        heading.textContent = ASSOC_KIND_LABELS[kind] ?? kind;
-        grid.appendChild(heading);
-      }
+    const anyAssociated = items.some((i) => i.associated);
+    for (const { ext, associated } of items) {
       const wrap = document.createElement("label");
       wrap.className = "assoc-item";
       const box = document.createElement("input");
       box.type = "checkbox";
       box.value = ext;
-      // まだ何も関連付けていなければ、全部を選んだ状態から始める
+      // この種類をまだ何も関連付けていなければ、全部を選んだ状態から始める
       box.checked = anyAssociated ? associated : true;
       const name = document.createElement("span");
       name.textContent = `.${ext}`;
@@ -309,15 +322,24 @@ function buildAssociationRow(item) {
       boxes.push(box);
     }
   };
+  assocLoaders.push(load);
 
   apply.addEventListener("click", async () => {
     const exts = boxes.filter((b) => b.checked).map((b) => b.value);
+    // Windows は渡した一覧で sView の登録を作り直す（外れた拡張子は登録から消える）ので、
+    // 他の種類はいま関連付いているものをそのまま渡して残す。
+    // macOS は渡した拡張子を既定にするだけなので、この種類の分だけでよい
+    if (status?.platform === "windows") {
+      for (const i of status.items) {
+        if (i.kind !== item.kind && i.associated) exts.push(i.ext);
+      }
+    }
     apply.disabled = true;
     note.textContent = "";
     try {
       const message = await invoke("apply_file_associations", { exts });
       note.textContent = message;
-      await load();
+      await reloadAssociations();
     } catch (e) {
       setStatus(String(e), true);
     } finally {
@@ -325,11 +347,12 @@ function buildAssociationRow(item) {
     }
   });
 
-  // Windows の設定画面で選び終えて戻ってきたら、状態を読み直す
-  window.addEventListener("focus", () => load().catch(() => {}));
   load().catch((e) => setStatus(String(e), true));
   return row;
 }
+
+// Windows の設定画面で選び終えて戻ってきたら、状態を読み直す
+window.addEventListener("focus", () => reloadAssociations());
 
 // タブを切り替える。設定ウィンドウは閉じても隠すだけなので、次に開いたときも同じタブのまま
 function selectTab(id) {
@@ -376,6 +399,7 @@ function build() {
 function render() {
   for (const [key, apply] of controls) apply(settings[key]);
   applyTheme();
+  syncEnabled();
 }
 
 // 本体ウィンドウ側でも設定は変わる（削除確認の「今後確認しない」）。
@@ -388,7 +412,9 @@ listen("settings-changed", (event) => {
 });
 
 document.getElementById("s-reset").addEventListener("click", () => {
-  settings = { ...SETTINGS_DEFAULTS };
+  // 再生中の音量は設定ウィンドウに出していないので、既定に戻さずそのまま残す
+  const kept = Object.fromEntries(Object.keys(HIDDEN_DEFAULTS).map((k) => [k, settings[k]]));
+  settings = { ...SETTINGS_DEFAULTS, ...kept };
   render();
   emit("settings-changed", settings).catch(() => {});
   persist();
