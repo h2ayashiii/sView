@@ -201,14 +201,19 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `settings.js` listens for `settings-changed` and re-renders — but only when the settings window
   is unfocused, otherwise its own emit echoes back and fights a slider being dragged.
 - `windowSizeMode` is `"free"` or `"image"`; `"fixed"` / `"flexible"` are the 0.1-era values and
-  are still read — `LEGACY_VALUES` in `settings-defs.js` maps them. Rust does not read the
-  setting: the frontend decides and calls `set_aspect_lock` / `fit_window_to_image` accordingly.
-- Window settings (`windowSizeMode`, `alwaysOnTop`) can be overridden per media kind:
-  `windowSection(kind)` in `settings-defs.js` adds `<kind>WindowCustom` plus `<kind>WindowSizeMode` /
-  `<kind>AlwaysOnTop` to that kind's tab (rows with `enabledBy` are greyed out while the toggle is
-  off). Always read them through `windowSetting(settings, shownKind(), key)`, which falls back to
-  the general value. Because the startup kind is unknown in `setup()`, `restore_window_state`
-  always stores `PendingPosition`; `fit_window_to_image` ignores it once the window has moved.
+  are still read — `LEGACY_VALUES` in `settings-defs.js` maps them for the frontend, and
+  `fits_window_to_image()` accepts `"flexible"` on the Rust side (Rust reads `settings.json`
+  raw, so it never sees the frontend's mapping).
+- `windowPerKind` ("ファイルの種類ごとにウィンドウを保持する") keeps one size + position per media
+  kind in `window.json` (`WindowState.kinds`, keyed `"image"` / `"video"` / `"audio"`).
+  `show()` calls `syncWindowKind()` → `set_window_kind(kind, perKind)`; Rust tracks the last kind
+  in `WindowKind` and, on a change, stores the outgoing kind's geometry and `place_window`s the
+  incoming one's (also on the first kind after launch, since the restored window may belong to
+  another kind). It resets `AspectLock` to the restored area first (so the `set_size` echo is not
+  taken for a drag) and re-arms `PendingPosition` in "image" mode; `fitWindowToImage` awaits
+  `windowKindSync` so the aspect fit runs after the restore. `save_window_state` also writes the
+  current kind's entry. The startup file is opened only after `load_settings` resolves
+  (`openStartupFile`), otherwise the first `set_window_kind` would carry the default `perKind`.
 - File associations are one `type: "associations"` row per kind tab (`associationSection(kind)`).
   On Windows `register()` rebuilds the whole set, so a row's apply also sends the other kinds'
   currently associated extensions; on macOS it sends only its own kind.

@@ -45,8 +45,6 @@ invoke("app_version")
 
 let settings = { ...SETTINGS_DEFAULTS };
 const controls = new Map(); // key -> 値を書き戻す関数
-// enabledBy を持つ行。そのトグルがオフの間は操作できないようにする
-const dependents = []; // { row, enabledBy }
 
 function setStatus(text, isError) {
   statusEl.textContent = text;
@@ -131,7 +129,6 @@ async function persist() {
 function update(key, value) {
   settings[key] = value;
   applyTheme();
-  syncEnabled();
   emit("settings-changed", settings).catch(() => {});
   persist();
 }
@@ -230,17 +227,7 @@ function buildRow(item) {
   }
 
   row.append(label, control);
-  if (item.enabledBy) dependents.push({ row, enabledBy: item.enabledBy });
   return row;
-}
-
-// 「個別の設定を使う」がオフの間は、その下の項目を薄くして触れないようにする
-function syncEnabled() {
-  for (const { row, enabledBy } of dependents) {
-    const enabled = !!settings[enabledBy];
-    row.classList.toggle("disabled", !enabled);
-    for (const el of row.querySelectorAll("input, select")) el.disabled = !enabled;
-  }
 }
 
 // 関連付けの行（画像・動画・音楽のタブに 1 つずつ）の読み直し。
@@ -399,7 +386,6 @@ function build() {
 function render() {
   for (const [key, apply] of controls) apply(settings[key]);
   applyTheme();
-  syncEnabled();
 }
 
 // 本体ウィンドウ側でも設定は変わる（削除確認の「今後確認しない」）。

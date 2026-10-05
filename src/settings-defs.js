@@ -9,59 +9,12 @@ const SETTINGS_TABS = [
   { id: "audio", label: "音楽" },
 ];
 
-// 種類（画像・動画・音楽）ごとに持てるウィンドウの設定。
-// "<種類>WindowCustom" がオンの種類だけ "<種類><項目名>" を使い、オフなら「全般」の値を使う
-// （windowSetting() で引く）
 const MEDIA_KIND_LABELS = { image: "画像", video: "動画", audio: "音楽" };
 
 const WINDOW_SIZE_OPTIONS = [
   ["free", "自由に変更"],
   ["image", "画像に合わせる"],
 ];
-
-// 種類ごとの設定のキー（例: video + "windowSizeMode" → "videoWindowSizeMode"）
-function kindKey(kind, key) {
-  return kind + key[0].toUpperCase() + key.slice(1);
-}
-
-function windowSection(kind) {
-  const name = MEDIA_KIND_LABELS[kind];
-  const custom = kindKey(kind, "windowCustom");
-  return {
-    id: `${kind}-window`,
-    tab: kind,
-    label: "ウィンドウ",
-    items: [
-      {
-        key: custom,
-        label: `${name}専用の設定を使う`,
-        hint: `オフのときは「全般」のウィンドウの設定を使います。オンにすると、${name}を表示している間だけ下の設定に切り替えます`,
-        type: "toggle",
-        default: false,
-      },
-      {
-        key: kindKey(kind, "windowSizeMode"),
-        label: "ウィンドウのサイズ",
-        hint:
-          kind === "audio"
-            ? "「画像に合わせる」ではアートワークと曲名の帯の形にウィンドウを合わせます"
-            : `「画像に合わせる」では表示中の${name}の縦横比にウィンドウの形を合わせます`,
-        type: "select",
-        options: WINDOW_SIZE_OPTIONS,
-        default: "free",
-        enabledBy: custom,
-      },
-      {
-        key: kindKey(kind, "alwaysOnTop"),
-        label: "常に最前面に表示する",
-        hint: "他のアプリの後ろに隠れなくなります",
-        type: "toggle",
-        default: false,
-        enabledBy: custom,
-      },
-    ],
-  };
-}
 
 function associationSection(kind) {
   const name = MEDIA_KIND_LABELS[kind];
@@ -72,7 +25,7 @@ function associationSection(kind) {
     items: [
       {
         // 値は settings.json ではなく OS 側にあるので default を持たない
-        key: kindKey(kind, "fileAssociations"),
+        key: `${kind}FileAssociations`,
         label: `sView で開く${name}の種類`,
         hint:
           "チェックした拡張子を、ダブルクリックしたときに sView で開くようにします。" +
@@ -129,7 +82,6 @@ const SETTINGS_SECTIONS = [
         key: "windowSizeMode",
         label: "ウィンドウのサイズ",
         hint:
-          "「画像」「動画」「音楽」の各タブで個別の設定をオンにしていない種類に使います。" +
           "「自由に変更」は縦横どちらにも自由に広げられ、画像を切り替えても大きさは変わりません。" +
           "「画像に合わせる」は余白が出ないよう、表示中の画像の縦横比にウィンドウの形を合わせます" +
           "（端や角をドラッグしても縦横比のまま変わります。立ち上げて最初に開くときだけ、" +
@@ -138,6 +90,16 @@ const SETTINGS_SECTIONS = [
         type: "select",
         options: WINDOW_SIZE_OPTIONS,
         default: "free",
+      },
+      {
+        key: "windowPerKind",
+        label: "ファイルの種類ごとにウィンドウを保持する",
+        hint:
+          "画像・動画・音楽それぞれで、最後に使ったウィンドウの大きさと位置を覚えておき、" +
+          "表示する種類が変わったらその種類のものへ戻します。" +
+          "オフのときは種類にかかわらず同じウィンドウのまま表示します",
+        type: "toggle",
+        default: false,
       },
       {
         key: "alwaysOnTop",
@@ -186,7 +148,6 @@ const SETTINGS_SECTIONS = [
       },
     ],
   },
-  windowSection("image"),
   associationSection("image"),
   {
     id: "video",
@@ -211,7 +172,6 @@ const SETTINGS_SECTIONS = [
       },
     ],
   },
-  windowSection("video"),
   associationSection("video"),
   {
     id: "audio",
@@ -243,7 +203,6 @@ const SETTINGS_SECTIONS = [
       },
     ],
   },
-  windowSection("audio"),
   associationSection("audio"),
   {
     id: "input",
@@ -345,14 +304,6 @@ const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted"];
 const LEGACY_VALUES = {
   windowSizeMode: { fixed: "free", flexible: "image" },
 };
-
-// 表示中の種類（"image" / "video" / "audio"、何も開いていなければ null）で使う
-// ウィンドウの設定。その種類で「個別の設定を使う」がオフなら「全般」の値
-function windowSetting(settings, kind, key) {
-  return kind && settings[kindKey(kind, "windowCustom")]
-    ? settings[kindKey(kind, key)]
-    : settings[key];
-}
 
 // 保存値に既定値を補い、欠けたキーのない設定オブジェクトを作る
 function normalizeSettings(raw) {

@@ -250,12 +250,6 @@ body {
   background: var(--hover);
 }
 
-/* 「個別の設定を使う」がオフの間の行 */
-.row.disabled .label,
-.row.disabled .control {
-  opacity: 0.45;
-}
-
 .row .label {
   flex: 1;
   min-width: 0;

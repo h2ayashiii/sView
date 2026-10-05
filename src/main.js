@@ -384,20 +384,28 @@ function onVideoReady(run) {
   else video.addEventListener("loadedmetadata", run, { once: true });
 }
 
-// 表示中のファイルの種類。ウィンドウの設定を種類ごとに切り替えるのに使う
+function fitsToImage() {
+  return settings.windowSizeMode === "image";
+}
+
+// 表示中のファイルの種類（何も開いていなければ null）
 function shownKind() {
   if (index < 0) return null;
   return showingVideo ? "video" : showingAudio ? "audio" : "image";
 }
 
-function fitsToImage() {
-  return windowSetting(settings, shownKind(), "windowSizeMode") === "image";
-}
+// 表示する種類を Rust 側へ知らせる。設定「ファイルの種類ごとにウィンドウを保持する」が
+// オンなら、種類が変わったところでその種類の大きさ・位置へ戻る。
+// 縦横比合わせ（fitWindowToImage）はその後に行うので、終わるのを待てるよう覚えておく
+let windowKindSync = Promise.resolve();
 
-// 「常に最前面に表示する」を表示中の種類の設定に合わせる
-function applyAlwaysOnTop() {
-  const onTop = !!windowSetting(settings, shownKind(), "alwaysOnTop");
-  appWindow.setAlwaysOnTop(onTop).catch(() => {});
+function syncWindowKind() {
+  const kind = shownKind();
+  if (!kind) return;
+  windowKindSync = invoke("set_window_kind", {
+    kind,
+    perKind: !!settings.windowPerKind,
+  }).catch(() => {});
 }
 
 // 「画像に合わせる」のとき、ウィンドウの縦横比を表示中の画像に固定する。
@@ -415,6 +423,7 @@ function syncAspectLock() {
 // 「画像に合わせる」のとき、余白が出ないようウィンドウを画像の縦横比に合わせる。
 // 大きさ（広さ）は Rust 側が覚えていて、手でサイズを変えたときだけ変わる
 async function fitWindowToImage() {
+  await windowKindSync;
   await syncAspectLock();
   if (!fitsToImage()) return;
   const size = mediaSize();
@@ -451,7 +460,7 @@ async function show() {
   video.hidden = !showingVideo;
   audioBox.hidden = !showingAudio;
   img.hidden = showingMedia;
-  applyAlwaysOnTop();
+  syncWindowKind();
   setFitMode();
   placeholder.hidden = true;
   updateChrome();
@@ -882,7 +891,6 @@ function clearView() {
   setFitMode();
   placeholder.hidden = false;
   updateChrome();
-  applyAlwaysOnTop();
   syncAspectLock();
 }
 
@@ -1463,12 +1471,15 @@ listen("tauri://drag-drop", (event) => {
 // macOS の Dock / Finder からの "Opened" イベント（起動後）
 listen("open-file", (event) => openPath(event.payload));
 
-// CLI 引数 / 関連付け起動（Windows）、または起動前に届いた macOS の Opened
-invoke("get_startup_file")
-  .then((path) => {
-    if (path) openPath(path);
-  })
-  .catch(() => {});
+// CLI 引数 / 関連付け起動（Windows）、または起動前に届いた macOS の Opened。
+// 設定を読み終えてから開く（種類ごとのウィンドウや自動再生を設定どおりにするため）
+function openStartupFile() {
+  invoke("get_startup_file")
+    .then((path) => {
+      if (path) openPath(path);
+    })
+    .catch(() => {});
+}
 
 // ---- settings ----
 // 設定ウィンドウからの変更は "settings-changed" で届き、その場で反映する
@@ -1485,7 +1496,8 @@ function applySettings() {
   img.style.imageRendering = settings.imageRendering;
   video.loop = mediaLoop();
   setVolume(mediaVolume());
-  applyAlwaysOnTop();
+  appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
+  syncWindowKind();
   syncWatcher();
 }
 
@@ -1646,11 +1658,11 @@ window.addEventListener("blur", hideContextMenu);
 window.addEventListener("resize", hideContextMenu);
 
 listen("settings-changed", (event) => {
-  const wasFitting = fitsToImage();
+  const previousMode = settings.windowSizeMode;
   settings = normalizeSettings(event.payload);
   applySettings();
   // 「画像に合わせる」に切り替えた直後は、今の大きさを基準に縦横比だけ合わせる
-  if (fitsToImage() !== wasFitting) fitWindowToImage();
+  if (settings.windowSizeMode !== previousMode) fitWindowToImage();
 });
 
 invoke("load_settings")
@@ -1658,4 +1670,5 @@ invoke("load_settings")
     settings = normalizeSettings(saved);
     applySettings();
   })
-  .catch(() => applySettings());
+  .catch(() => applySettings())
+  .finally(openStartupFile);
