@@ -685,7 +685,10 @@ body {
 #app.hide-filename #counter,
 /* 動画・音楽では前後のファイルへの移動は再生操作カードの ⏮ ⏭ で行う */
 #app.video .nav,
-#app.audio .nav,
+#app.audio .nav {
+  display: none;
+}
+
 /* ---- context menu ---- */
 #ctxmenu {
   position: absolute;
