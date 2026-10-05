@@ -13,7 +13,7 @@ const MEDIA_KIND_LABELS = { image: "画像", video: "動画", audio: "音楽" };
 
 const WINDOW_SIZE_OPTIONS = [
   ["free", "自由に変更"],
-  ["image", "画像に合わせる"],
+  ["image", "メディアに合わせる"],
 ];
 
 function associationSection(kind) {
@@ -82,8 +82,9 @@ const SETTINGS_SECTIONS = [
         key: "windowSizeMode",
         label: "ウィンドウのサイズ",
         hint:
-          "「自由に変更」は縦横どちらにも自由に広げられ、画像を切り替えても大きさは変わりません。" +
-          "「画像に合わせる」は余白が出ないよう、表示中の画像の縦横比にウィンドウの形を合わせます" +
+          "「自由に変更」は縦横どちらにも自由に広げられ、ファイルを切り替えても大きさは変わりません。" +
+          "「メディアに合わせる」は余白が出ないよう、表示中の画像・動画の縦横比" +
+          "（音楽はアートワークと曲名の帯の形）にウィンドウの形を合わせます" +
           "（端や角をドラッグしても縦横比のまま変わります。立ち上げて最初に開くときだけ、" +
           "画面に収まるよう 95% までに抑えます）。" +
           "どちらでも、開いたときの大きさと位置は前回閉じたときのものです。",
@@ -164,11 +165,18 @@ const SETTINGS_SECTIONS = [
         default: true,
       },
       {
-        key: "videoLoop",
-        label: "動画を繰り返し再生する",
-        hint: "最後まで再生したら先頭に戻って続けます",
-        type: "toggle",
-        default: true,
+        key: "videoEnd",
+        label: "動画が終わったら",
+        hint:
+          "「次の動画へ進む」は同じフォルダの次の動画ファイルを続けて再生します。" +
+          "最後の動画のあとは「端で最初 / 最後へ折り返す」がオンのときだけ先頭に戻ります",
+        type: "select",
+        options: [
+          ["next", "次の動画へ進む"],
+          ["repeat", "同じ動画を繰り返す"],
+          ["stop", "止める"],
+        ],
+        default: "repeat",
       },
     ],
   },
@@ -297,7 +305,7 @@ const SETTINGS_DEFAULTS = {
 };
 
 // 廃止した項目。古い settings.json に残っていても読み捨てる
-const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted"];
+const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted", "videoLoop"];
 
 // 選択肢の名前を変えたときの読み替え表（古い settings.json をそのまま読めるようにする）。
 // windowSizeMode: 0.1 系までは "fixed" / "flexible" だった
@@ -310,6 +318,10 @@ function normalizeSettings(raw) {
   const saved = raw && typeof raw === "object" ? raw : {};
   const settings = { ...SETTINGS_DEFAULTS, ...saved };
   for (const key of OBSOLETE_KEYS) delete settings[key];
+  // 動画の終わりはオン / オフ（videoLoop）だった。まだ選んでいなければ引き継ぐ
+  if (!("videoEnd" in saved) && "videoLoop" in saved) {
+    settings.videoEnd = saved.videoLoop ? "repeat" : "stop";
+  }
   // 音量は動画と音楽で共通（videoVolume）だった。音楽の音量がまだ無ければ引き継ぐ
   if (!("audioVolume" in saved) && "videoVolume" in saved) settings.audioVolume = saved.videoVolume;
   for (const [key, table] of Object.entries(LEGACY_VALUES)) {

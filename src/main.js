@@ -180,7 +180,7 @@ function setFitMode() {
 // ---- ウィンドウのサイズ変更中は画像を据え置く ----
 // ドラッグの間じゅう画像を拡大縮小し直すと、そのたびに描き直しになって重く、
 // 絵が揺れて見える。手を離してウィンドウの大きさが決まってから合わせ直す
-// （「画像に合わせる」のときだけ。ウィンドウの形が画像と揃っているので、
+// （「メディアに合わせる」のときだけ。ウィンドウの形が画像と揃っているので、
 // 据え置いても最後に合わせ直せば同じ見た目に落ち着く）
 let frozenSize = false;
 // 画像を切り替えて自分でウィンドウを合わせ直したあと、手で変えたのではないと
@@ -345,7 +345,7 @@ function mediaEl() {
 // 表示中の画像・動画の実寸。まだ分からなければ null。
 // 音楽はアートワークの実寸に加えて、周りの余白と曲名の帯の大きさ（px で固定。
 // ウィンドウの大きさによらない）を extraWidth / extraHeight で返す。
-// 「画像に合わせる」では Rust 側がこの分を除いた残りをアートワークの縦横比に合わせる
+// 「メディアに合わせる」では Rust 側がこの分を除いた残りをアートワークの縦横比に合わせる
 // （固定の分を今のウィンドウ幅で比率に直して縦横比に混ぜると、直前のウィンドウの形に
 // 引きずられ、同じ曲でも開き直すたびに大きさが少しずつ変わってしまう）
 function mediaSize() {
@@ -408,7 +408,7 @@ function syncWindowKind() {
   }).catch(() => {});
 }
 
-// 「画像に合わせる」のとき、ウィンドウの縦横比を表示中の画像に固定する。
+// 「メディアに合わせる」のとき、ウィンドウの縦横比を表示中の画像に固定する。
 // 以後は端や角をドラッグしている最中も Rust 側が縦横比を保つ。
 // 「自由に変更」や画像を開いていないときは解除する
 function syncAspectLock() {
@@ -420,7 +420,7 @@ function syncAspectLock() {
   }).catch(() => {});
 }
 
-// 「画像に合わせる」のとき、余白が出ないようウィンドウを画像の縦横比に合わせる。
+// 「メディアに合わせる」のとき、余白が出ないようウィンドウを画像の縦横比に合わせる。
 // 大きさ（広さ）は Rust 側が覚えていて、手でサイズを変えたときだけ変わる
 async function fitWindowToImage() {
   await windowKindSync;
@@ -525,9 +525,14 @@ function loadVideo(src, autoplay) {
   if (autoplay) playVideo();
 }
 
-// 繰り返し再生するか。音楽は「曲が終わったら」が「同じ曲を繰り返す」のときだけ
+// 設定「動画が終わったら」「曲が終わったら」（"next" / "repeat" / "stop"）
+function mediaEnd() {
+  return showingAudio ? settings.audioEnd : settings.videoEnd;
+}
+
+// 繰り返し再生するか（「同じ動画 / 曲を繰り返す」のとき）
 function mediaLoop() {
-  return showingAudio ? settings.audioEnd === "repeat" : !!settings.videoLoop;
+  return mediaEnd() === "repeat";
 }
 
 // src を外して読み込み直すと、WebView はファイルを手放す
@@ -712,24 +717,26 @@ async function loadAudioInfo(path, token) {
   });
 }
 
-// 次に再生する曲の位置。一覧は同じ種類だけなので通常は隣の曲だが、念のため音楽以外は飛ばす。無ければ -1
+// 次に再生するファイルの位置。一覧は同じ種類だけなので通常は隣のファイルだが、
+// 念のため表示中と別の種類は飛ばす。無ければ -1
 // （最後まで来たら、設定「端で最初 / 最後へ折り返す」のときだけ先頭から探す）
-function nextAudioIndex() {
+function nextMediaIndex() {
+  const sameKind = showingAudio ? isAudioPath : isVideoPath;
   for (let off = 1; off < images.length; off++) {
     let i = index + off;
     if (i >= images.length) {
       if (!settings.wrapAround) return -1;
       i -= images.length;
     }
-    if (isAudioPath(images[i])) return i;
+    if (sameKind(images[i])) return i;
   }
   return -1;
 }
 
-// 設定「曲が終わったら」が「次の曲へ進む」なら、同じフォルダの次の曲を続けて再生する
+// 設定「動画が終わったら」「曲が終わったら」が「次の〜へ進む」なら、次のファイルを続けて再生する
 video.addEventListener("ended", () => {
-  if (!showingAudio || settings.audioEnd !== "next") return;
-  const next = nextAudioIndex();
+  if (!showingMedia || mediaEnd() !== "next") return;
+  const next = nextMediaIndex();
   if (next < 0) return;
   index = next;
   continuePlayback = true;
@@ -1419,7 +1426,7 @@ btnMax.addEventListener("click", () => {
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
 // サイズ変更が落ち着いたときの後始末。ドラッグ中は何度も届くので 1 回だけ行う。
 // タイトルバーのダブルクリックや OS 側の操作でも最大化の状態は変わるので、
-// 見た目（アイコン）を合わせ直し、「画像に合わせる」では縦横比の基準を
+// 見た目（アイコン）を合わせ直し、「メディアに合わせる」では縦横比の基準を
 // 今の大きさに取り直す（ドラッグ中、OS は掴んだときの大きさを基準に
 // 動かし続けるので、終わったところで実際の大きさに戻しておく）。
 // 縦横比を保つこと自体は Rust 側の仕事で、ここでは何もしない
@@ -1434,7 +1441,7 @@ function onResizeSettled() {
 
 appWindow
   .onResized(() => {
-    // 「画像に合わせる」で手でサイズを変えている間だけ、画像を据え置く
+    // 「メディアに合わせる」で手でサイズを変えている間だけ、画像を据え置く
     if (fitsToImage() && Date.now() - selfResizedAt > SELF_RESIZE_MS) freezeImageSize();
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(onResizeSettled, RESIZE_SETTLE_MS);
@@ -1661,7 +1668,7 @@ listen("settings-changed", (event) => {
   const previousMode = settings.windowSizeMode;
   settings = normalizeSettings(event.payload);
   applySettings();
-  // 「画像に合わせる」に切り替えた直後は、今の大きさを基準に縦横比だけ合わせる
+  // 「メディアに合わせる」に切り替えた直後は、今の大きさを基準に縦横比だけ合わせる
   if (settings.windowSizeMode !== previousMode) fitWindowToImage();
 });
 

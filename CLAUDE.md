@@ -152,9 +152,10 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   (`--audio-panel-h`) — which `set_aspect_lock` / `fit_window_to_image` store as
   `AspectState.extra`; `sized_to_aspect` / `dragged_area` keep the ratio on the window **minus**
   that margin (images / videos pass 0). Don't fold the margin into the ratio at the current
-  window width: the ratio then depends on the previous window shape and the size drifts. `audioEnd: "next"` advances on `ended`
-  to the next *audio* entry (the list is audio-only anyway; wraps only with `wrapAround`) and
-  forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
+  window width: the ratio then depends on the previous window shape and the size drifts. `audioEnd` / `videoEnd` (`mediaEnd()`:
+  `"next"` / `"repeat"` / `"stop"`; `videoEnd` replaced the old `videoLoop` toggle, migrated in
+  `normalizeSettings`) — `"next"` advances on `ended` to the next entry of the same kind
+  (`nextMediaIndex`; wraps only with `wrapAround`) and forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
   slider value (`getVolume` / `setVolume` wrap `video.volume`; never read or write it directly for
   the user-facing volume). The volume is stored per kind (`videoVolume` / `audioVolume`, picked by
   `volumeKey()`); both are `HIDDEN_DEFAULTS` in `settings-defs.js` — stored in `settings.json` but not
@@ -200,7 +201,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - `main.js` can write `settings.json` too (the "今後確認しない" checkbox → `saveSettings()`), so
   `settings.js` listens for `settings-changed` and re-renders — but only when the settings window
   is unfocused, otherwise its own emit echoes back and fights a slider being dragged.
-- `windowSizeMode` is `"free"` or `"image"`; `"fixed"` / `"flexible"` are the 0.1-era values and
+- `windowSizeMode` is `"free"` or `"image"` (shown as "メディアに合わせる": it fits videos and audio too); `"fixed"` / `"flexible"` are the 0.1-era values and
   are still read — `LEGACY_VALUES` in `settings-defs.js` maps them for the frontend, and
   `fits_window_to_image()` accepts `"flexible"` on the Rust side (Rust reads `settings.json`
   raw, so it never sees the frontend's mapping).
