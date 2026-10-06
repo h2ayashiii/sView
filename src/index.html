@@ -12,7 +12,7 @@
          動画と音楽は OS の WebView が持つデコーダで再生する（コーデックは同梱しない）。
          音楽も #video で鳴らし（映像は出さない）、代わりに #audio にアートワークと曲名を出す -->
     <div id="stage" data-tauri-drag-region>
-      <img id="image" alt="" draggable="false" />
+      <img id="image" alt="" draggable="false" hidden />
       <video id="video" hidden playsinline preload="metadata" disablepictureinpicture></video>
       <!-- 音楽を表示しているときだけ出す。上にアートワーク、下の帯（ウィンドウの「＋α」の部分）に
            曲名・アーティストと細い再生位置のバーを出す。再生操作のカードはこの帯の上に重なる -->

@@ -70,6 +70,8 @@ body {
 #artwork.frozen {
   max-width: none;
   max-height: none;
+  /* ウィンドウより大きくなっても flex に縮められないようにする */
+  flex: none;
 }
 
 /* ---- 音楽 ----

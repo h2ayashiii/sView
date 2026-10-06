@@ -465,6 +465,34 @@ mod tests {
     }
 
     #[test]
+    fn sizing_area_follows_the_pulled_edge_and_is_continuous_at_corners() {
+        let limit = (1728.0, 972.0);
+        let ratio = 16.0 / 9.0;
+        let size = |h, v, w, ht| {
+            sized_to_aspect(
+                ratio,
+                (0.0, 0.0),
+                sizing_area(h, v, LogicalSize::new(w, ht), ratio, (0.0, 0.0)),
+                limit,
+            )
+        };
+        // 左右の辺: 横はそのまま、縦が縦横比で決まる
+        let (w, h) = size(true, false, 1000.0, 450.0);
+        assert!((w - 1000.0).abs() < 1e-9 && (h - 1000.0 / ratio).abs() < 1e-9);
+        // 上下の辺: 縦はそのまま、横が縦横比で決まる
+        let (w, h) = size(false, true, 800.0, 600.0);
+        assert!((h - 600.0).abs() < 1e-9 && (w - 600.0 * ratio).abs() < 1e-9);
+        // 角: 大きい方に合わせる（縦横比から外れた位置でも、縦横比のまま覆う大きさ）
+        let (w, h) = size(true, true, 1000.0, 600.0);
+        assert!((w - 600.0 * ratio).abs() < 1e-9 && (h - 600.0).abs() < 1e-9);
+        // 角: マウスが少し動いただけなら大きさも少ししか変わらない（どちらの辺が
+        // 大きく動いたかで行き来しない）
+        let (w1, _) = size(true, true, 1000.0, 562.0);
+        let (w2, _) = size(true, true, 1001.0, 562.5);
+        assert!((w2 - w1).abs() < 2.0);
+    }
+
+    #[test]
     fn sized_to_aspect_keeps_the_ratio_outside_the_fixed_margin() {
         let limit = (1728.0, 972.0);
         // 音楽: アートワークの周りの余白（横 56、縦 186）はウィンドウの大きさによらず一定。
@@ -2027,6 +2055,58 @@ fn dragged_area(
     }
 }
 
+/// 端・角を引っ張っている最中に、OS が大きさを決める前の段階で縦横比へ合わせるときの広さ。
+/// horizontal / vertical は、引っ張られているのが左右の辺 / 上下の辺か（角なら両方）。
+/// 角のときは「横に合わせた広さ」と「縦に合わせた広さ」の大きい方をとる。
+/// どちらもマウスの位置に対して連続に変わるので、斜めに動かしても大きさが飛ばない
+/// （変化の大きい方を毎回選び直すと、選ぶ辺が入れ替わるたびに大きさが行き来してちらつく）
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn sizing_area(
+    horizontal: bool,
+    vertical: bool,
+    now: LogicalSize<f64>,
+    ratio: f64,
+    extra: (f64, f64),
+) -> f64 {
+    let (ex, ey) = extra;
+    let by_width = now.width * ((now.width - ex).max(0.0) / ratio + ey);
+    let by_height = now.height * ((now.height - ey).max(0.0) * ratio + ex);
+    match (horizontal, vertical) {
+        (true, false) => by_width,
+        (false, true) => by_height,
+        _ => by_width.max(by_height),
+    }
+}
+
+/// マウスのボタンが押されたままか（どのボタンでも）。
+/// ウィンドウの端を引っ張っている間は OS がマウスを握っていて WebView に mouseup が届かないので、
+/// フロントエンドはサイズ変更の通知が途切れたときにこれで「まだ引っ張っているか」を確かめ、
+/// 手を離すまで表示中のコンテンツの大きさを据え置く
+#[tauri::command]
+fn mouse_button_down() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetAsyncKeyState(key: i32) -> i16;
+        }
+        // VK_LBUTTON / VK_RBUTTON / VK_MBUTTON。左右を入れ替えた設定でも物理ボタンで見るので両方調べる
+        [0x01, 0x02, 0x04]
+            .iter()
+            .any(|&key| (unsafe { GetAsyncKeyState(key) } as u16 & 0x8000) != 0)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let buttons: usize =
+            unsafe { objc2::msg_send![objc2::class!(NSEvent), pressedMouseButtons] };
+        buttons != 0
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        false
+    }
+}
+
 /// 大きさが変わるたびに、ウィンドウを画像の縦横比へ引き戻す。
 /// ドラッグの最中も届くので、どの辺・どの角を引っ張っても縦横比のまま変わる
 /// （OS に縦横比を渡す仕組みが Tauri には無いため、届いたその場で直している）。
@@ -2787,6 +2867,157 @@ mod mac_assoc {
     }
 }
 
+/// Windows: 「メディアに合わせる」で端・角を引っ張っている間、OS が大きさを
+/// 決める前（WM_SIZING）に縦横比へ合わせる。
+///
+/// Resized を受けてから set_size で直すだけだと、マウスごとに「OS が決めた大きさ」と
+/// 「直した大きさ」の 2 回描かれるうえ、角を引っ張ったときは直す基準の辺が
+/// マウスの細かな動きで入れ替わり、ウィンドウと表示がちらつく。WM_SIZING なら
+/// 引っ張られている辺・角が分かり、変わる前の四角形を書き換えられるので、
+/// 縦横比どおりの大きさが 1 回だけ描かれる。ここで直した大きさは AspectLock に
+/// 書いておくので、続いて届く Resized は keep_aspect_on_resize が跳ね返りとして見送る
+#[cfg(target_os = "windows")]
+mod win_sizing {
+    use super::{sized_to_aspect, sizing_area, AspectLock, NO_LIMIT};
+    use tauri::{AppHandle, LogicalSize, Manager, PhysicalSize, WebviewWindow};
+
+    type Hwnd = isize;
+    type SubclassProc = unsafe extern "system" fn(Hwnd, u32, usize, isize, usize, usize) -> isize;
+
+    #[repr(C)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[link(name = "comctl32")]
+    extern "system" {
+        fn SetWindowSubclass(hwnd: Hwnd, proc: SubclassProc, id: usize, data: usize) -> i32;
+        fn DefSubclassProc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
+        fn GetClientRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
+        fn GetDpiForWindow(hwnd: Hwnd) -> u32;
+    }
+
+    const WM_SIZING: u32 = 0x0214;
+    const WMSZ_LEFT: usize = 1;
+    const WMSZ_RIGHT: usize = 2;
+    const WMSZ_TOP: usize = 3;
+    const WMSZ_TOPLEFT: usize = 4;
+    const WMSZ_TOPRIGHT: usize = 5;
+    const WMSZ_BOTTOM: usize = 6;
+    const WMSZ_BOTTOMLEFT: usize = 7;
+    const WMSZ_BOTTOMRIGHT: usize = 8;
+    const SUBCLASS_ID: usize = 0x5356_4945; // "SVIE"
+
+    pub fn install(window: &WebviewWindow) -> Result<(), String> {
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as Hwnd;
+        // サブクラスはウィンドウと同じだけ生きるので、AppHandle は手放さない
+        let data = Box::into_raw(Box::new(window.app_handle().clone())) as usize;
+        if unsafe { SetWindowSubclass(hwnd, proc, SUBCLASS_ID, data) } == 0 {
+            drop(unsafe { Box::from_raw(data as *mut AppHandle) });
+            return Err("ウィンドウのサブクラス化に失敗しました".to_string());
+        }
+        Ok(())
+    }
+
+    unsafe extern "system" fn proc(
+        hwnd: Hwnd,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+        _id: usize,
+        data: usize,
+    ) -> isize {
+        if msg == WM_SIZING && lparam != 0 && data != 0 {
+            let app = &*(data as *const AppHandle);
+            if constrain(app, hwnd, wparam, &mut *(lparam as *mut Rect)) {
+                return 1;
+            }
+        }
+        DefSubclassProc(hwnd, msg, wparam, lparam)
+    }
+
+    /// 引っ張られている辺・角 edge に合わせて、これからなる四角形 rect（外枠・物理ピクセル）を
+    /// 縦横比へ合わせる。反対側の辺・角は動かさない。書き換えたら true
+    fn constrain(app: &AppHandle, hwnd: Hwnd, edge: usize, rect: &mut Rect) -> bool {
+        let (horizontal, vertical) = match edge {
+            WMSZ_LEFT | WMSZ_RIGHT => (true, false),
+            WMSZ_TOP | WMSZ_BOTTOM => (false, true),
+            WMSZ_TOPLEFT | WMSZ_TOPRIGHT | WMSZ_BOTTOMLEFT | WMSZ_BOTTOMRIGHT => (true, true),
+            _ => return false,
+        };
+        let lock = app.state::<AspectLock>();
+        // 取れないときは今回だけ OS に任せる（あとの Resized で直る）
+        let Ok(mut state) = lock.0.try_lock() else {
+            return false;
+        };
+        let Some(ratio) = state.ratio else {
+            return false;
+        };
+
+        // 外枠と中身の差（枠なしでも Windows は見えない影の分だけ外枠が大きい）
+        let mut outer = Rect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let mut client = Rect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if unsafe { GetWindowRect(hwnd, &mut outer) } == 0
+            || unsafe { GetClientRect(hwnd, &mut client) } == 0
+        {
+            return false;
+        }
+        let border_w = (outer.right - outer.left) - (client.right - client.left);
+        let border_h = (outer.bottom - outer.top) - (client.bottom - client.top);
+        let dpi = unsafe { GetDpiForWindow(hwnd) };
+        let scale = if dpi > 0 { dpi as f64 / 96.0 } else { 1.0 };
+
+        let inner = PhysicalSize::new(
+            (rect.right - rect.left - border_w).max(1) as u32,
+            (rect.bottom - rect.top - border_h).max(1) as u32,
+        );
+        let now = inner.to_logical::<f64>(scale);
+        let area = sizing_area(horizontal, vertical, now, ratio, state.extra);
+        let (width, height) = sized_to_aspect(ratio, state.extra, area, NO_LIMIT);
+        let fixed: PhysicalSize<u32> = LogicalSize::new(width, height).to_physical(scale);
+
+        // 続く Resized が跳ね返りだと分かるように、ここで決めた大きさを覚えておく
+        state.last = fixed;
+        state.reported = fixed;
+        state.area = width * height;
+        drop(state);
+
+        let w = fixed.width as i32 + border_w;
+        let h = fixed.height as i32 + border_h;
+        // 引っ張っている側を動かし、反対側は据え置く。
+        // 辺のときは、縦横比で決まるもう一方は右・下へ伸び縮みさせる
+        if matches!(edge, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) {
+            rect.left = rect.right - w;
+        } else {
+            rect.right = rect.left + w;
+        }
+        if matches!(edge, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) {
+            rect.top = rect.bottom - h;
+        } else {
+            rect.bottom = rect.top + h;
+        }
+        true
+    }
+}
+
 /// macOS: メインウィンドウへのカーソルの出入りと移動をフロントエンドへ知らせる。
 ///
 /// WKWebView 自身の追跡範囲は「キーウィンドウのときだけ」有効なので、ウィンドウが
@@ -3015,6 +3246,11 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 restore_window_state(&window.as_ref().window());
+                // 失敗しても、縦横比はあとから直す方法（keep_aspect_on_resize）で保たれる
+                #[cfg(target_os = "windows")]
+                if let Err(e) = win_sizing::install(&window) {
+                    log::warn!("ウィンドウのサイズ変更を縦横比に合わせられません: {e}");
+                }
                 // 失敗しても表示の自動非表示が待ち時間頼みになるだけなので起動は続ける
                 #[cfg(target_os = "macos")]
                 if let Err(e) = mac_pointer::install(&window) {
@@ -3045,6 +3281,7 @@ pub fn run() {
             open_log_folder,
             fit_window_to_image,
             set_aspect_lock,
+            mouse_button_down,
             delete_image,
             audio_info,
             audio_artwork,

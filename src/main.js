@@ -179,9 +179,10 @@ function setFitMode() {
 
 // ---- ウィンドウのサイズ変更中は画像を据え置く ----
 // ドラッグの間じゅう画像を拡大縮小し直すと、そのたびに描き直しになって重く、
-// 絵が揺れて見える。手を離してウィンドウの大きさが決まってから合わせ直す
-// （「メディアに合わせる」のときだけ。ウィンドウの形が画像と揃っているので、
-// 据え置いても最後に合わせ直せば同じ見た目に落ち着く）
+// 絵がちらついて見える（角を引っ張って縦横が同時に変わるときに目立つ）。
+// 端・角のどこを引っ張っても、マウスを離してウィンドウの大きさが決まるまでは
+// 画像・動画・アートワークの大きさを変えず、離してから合わせ直す
+// （ウィンドウサイズの設定によらない）
 let frozenSize = false;
 // 画像を切り替えて自分でウィンドウを合わせ直したあと、手で変えたのではないと
 // みなす時間。この間は据え置かず、ウィンドウと一緒に画像も合わせる
@@ -402,10 +403,14 @@ let windowKindSync = Promise.resolve();
 function syncWindowKind() {
   const kind = shownKind();
   if (!kind) return;
+  // 種類ごとの大きさへ戻すのは自分で変えたもの（据え置かずに一緒に合わせる）
+  selfResizedAt = Date.now();
   windowKindSync = invoke("set_window_kind", {
     kind,
     perKind: !!settings.windowPerKind,
-  }).catch(() => {});
+  })
+    .catch(() => {})
+    .then(() => (selfResizedAt = Date.now()));
 }
 
 // 「メディアに合わせる」のとき、ウィンドウの縦横比を表示中の画像に固定する。
@@ -893,7 +898,9 @@ function clearView() {
   video.hidden = true;
   audioBox.hidden = true;
   setArtwork(null);
-  img.hidden = false;
+  // src の無い <img> を見せたままにすると、フィット表示の箱（ウィンドウいっぱい）に
+  // 読み込み失敗の枠が出て、案内が横へ押し出される
+  img.hidden = true;
   img.removeAttribute("src");
   setFitMode();
   placeholder.hidden = false;
@@ -1118,6 +1125,7 @@ async function openFolderDialog() {
 }
 
 function toggleFullscreen() {
+  selfResizedAt = Date.now();
   appWindow.isFullscreen()
     .then((fs) => appWindow.setFullscreen(!fs))
     .catch(() => {});
@@ -1421,6 +1429,7 @@ document.getElementById("btn-min").addEventListener("click", () => {
   appWindow.minimize().catch(() => {});
 });
 btnMax.addEventListener("click", () => {
+  selfResizedAt = Date.now();
   appWindow.toggleMaximize().then(syncMaximized).catch(() => {});
 });
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
@@ -1432,8 +1441,19 @@ document.getElementById("btn-close").addEventListener("click", () => appWindow.c
 // 縦横比を保つこと自体は Rust 側の仕事で、ここでは何もしない
 const RESIZE_SETTLE_MS = 200;
 let resizeTimer = null;
+// 通知が来るたびに増やす。マウスの状態を問い合わせている間に次の通知が来たら、
+// 古い問い合わせの結果では何もしない
+let resizeSeq = 0;
 
-function onResizeSettled() {
+async function onResizeSettled() {
+  const seq = resizeSeq;
+  // 通知が途切れても、ボタンを押したままなら引っ張っている途中で止まっているだけ。
+  // 離すまで据え置いたまま待つ（途中で合わせ直すと、動かし直したときにちらつく）
+  if (frozenSize && (await invoke("mouse_button_down").catch(() => false))) {
+    if (seq === resizeSeq) resizeTimer = setTimeout(onResizeSettled, RESIZE_SETTLE_MS);
+    return;
+  }
+  if (seq !== resizeSeq) return;
   unfreezeImageSize();
   syncMaximized();
   syncAspectLock();
@@ -1441,8 +1461,10 @@ function onResizeSettled() {
 
 appWindow
   .onResized(() => {
-    // 「メディアに合わせる」で手でサイズを変えている間だけ、画像を据え置く
-    if (fitsToImage() && Date.now() - selfResizedAt > SELF_RESIZE_MS) freezeImageSize();
+    // 手でサイズを変えている間は、画像を据え置く
+    // （画像の切り替えや最大化など、自分で変えたときは一緒に合わせる）
+    if (Date.now() - selfResizedAt > SELF_RESIZE_MS) freezeImageSize();
+    resizeSeq++;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(onResizeSettled, RESIZE_SETTLE_MS);
   })

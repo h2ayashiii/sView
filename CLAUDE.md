@@ -232,8 +232,13 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   sized past the bottom of the screen — that is deliberate.
 - The aspect lock is enforced in `WindowEvent::Resized` (`keep_aspect_on_resize`), which also
   arrives mid-drag, so the window can only be dragged along the image's ratio. Tauri exposes no
-  native aspect hint (no `WM_SIZING` / `setAspectRatio:` / GTK geometry hints), so this is a
-  correct-it-as-it-arrives loop, and two details keep it from misbehaving: write
+  native aspect hint, so on Windows `win_sizing` subclasses the main window and rewrites the
+  proposed rect in `WM_SIZING` (it knows the edge / corner being pulled; corners take the larger of
+  the width- and height-driven sizes, `sizing_area`, which is continuous in the mouse position) and
+  writes `last` / `reported` / `area` into `AspectLock`, so the following `Resized` is an echo.
+  Without it a corner drag flickered: each mouse move painted the OS size and then our correction,
+  and the "larger relative change" axis choice in `dragged_area` flipped between events.
+  Elsewhere (macOS) it is still a correct-it-as-it-arrives loop, and two details keep it from misbehaving: write
   `AspectLock.last` **before** calling `set_size` (on Windows the event can come back
   synchronously, and a size equal to `last` is how the echo is recognised), and **drop the
   mutex guard before** `set_size` — holding it across that call deadlocks on the re-entrant
@@ -243,8 +248,13 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   width/height captured on the first resize event) and is re-fitted only once `onResized` goes
   quiet — re-laying out the image on every frame is what made a drag feel heavy. `setFitMode`
   and `enterZoomMode` both thaw it, the latter because a zoom factor derived from the frozen
-  size would apply twice. A resize we caused ourselves (`selfResizedAt`, `SELF_RESIZE_MS`) is
-  not frozen, so paging images does not leave the picture a step behind the window.
+  size would apply twice. This applies in both size modes. A pause mid-drag also makes `onResized`
+  go quiet, so `onResizeSettled` asks Rust `mouse_button_down` (`GetAsyncKeyState` /
+  `NSEvent.pressedMouseButtons`; the OS owns the mouse during a resize, so no `mouseup` reaches the
+  WebView) and keeps waiting while a button is held — thawing at the pause is what made a diagonal
+  drag flicker. A resize we caused ourselves (`selfResizedAt`, `SELF_RESIZE_MS`) is
+  not frozen, so paging images does not leave the picture a step behind the window (maximize,
+  fullscreen and `set_window_kind` stamp it too).
 - Which edge is being dragged is decided against `AspectLock.reported` — the size the OS last
   announced — **never** against the size we applied. A drag keeps reporting from the rect the
   window had when it was grabbed, so it re-sends the other axis unchanged; measuring against our
