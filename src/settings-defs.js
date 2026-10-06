@@ -270,6 +270,21 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
+    id: "shortcuts",
+    tab: "general",
+    label: "ショートカット",
+    items: [
+      {
+        key: "openShortcuts",
+        label: "ショートカット一覧",
+        hint: "キーボードとマウスの操作を Windows / macOS 別に一覧で表示します",
+        type: "action",
+        action: "openShortcuts",
+        buttonLabel: "表示",
+      },
+    ],
+  },
+  {
     id: "logs",
     tab: "general",
     label: "ログ",

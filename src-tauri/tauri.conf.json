@@ -40,6 +40,22 @@
         "visible": false,
         "transparent": true,
         "dragDropEnabled": false
+      },
+      {
+        "label": "shortcuts",
+        "create": false,
+        "title": "sView のショートカット",
+        "url": "shortcuts.html",
+        "width": 560,
+        "height": 600,
+        "minWidth": 420,
+        "minHeight": 300,
+        "center": true,
+        "resizable": true,
+        "decorations": false,
+        "visible": false,
+        "transparent": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {

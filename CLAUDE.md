@@ -27,6 +27,8 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
 | `src/main.js` | Main window: navigation, zoom, input, context menu |
 | `src/settings-defs.js` | `SETTINGS_SECTIONS` (single source of truth) + `SETTINGS_DEFAULTS` |
 | `src/settings.js` / `settings.html` | Settings window, UI generated from `SETTINGS_SECTIONS` |
+| `src/shortcuts.js` / `shortcuts.html` | Shortcut list window (opened from the settings window). `SHORTCUT_SECTIONS` is a hand-written copy of the key handling in `main.js` — update it when a key changes |
+| `src/theme.js` | `applyTheme(settings)`, shared by the settings and shortcut windows (`settings.css` too) |
 | `src-tauri/src/lib.rs` | **All** backend logic + inline `#[cfg(test)] mod tests` |
 | `README.md` | Entry point only: overview, download, first launch, short usage, links. Detailed behaviour goes in `docs/` |
 | `docs/` | `architecture.md`, `development.md` (build / CI / release), `specs/*.md` (one file per feature, Japanese). Update the matching spec when behaviour changes |
@@ -35,7 +37,7 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
 | `src-tauri/src/main.rs` | Only calls `sview_lib::run()` |
 | `src-tauri/tauri.conf.json` | Windows, CSP, bundle, file associations |
 | `src-tauri/installer-hooks.nsh` | Windows インストーラ (NSIS) のフック。旧ユーザー単位インストールの後始末 |
-| `src-tauri/capabilities/` | `default.json` (main) and `settings.json` — per-window permissions |
+| `src-tauri/capabilities/` | `default.json` (main), `settings.json` and `shortcuts.json` — per-window permissions |
 | `scripts/` | `build.sh` / `build.ps1` — thin `npm install && npm run build` wrappers; `set-version.mjs` — writes a release tag's version into `tauri.conf.json` / `Cargo.toml` / `Cargo.lock` (sview's own entry, or `cargo --locked` fails) / `package.json`; `gen-third-party-notices.mjs` — regenerates `THIRD-PARTY-NOTICES` from `cargo metadata` |
 | `.github/workflows/ci.yml` | `test` job: `cargo test` on `ubuntu-latest`, runs on PRs and pushes to `main` (needs the GTK/WebKit apt packages) |
 | `.github/workflows/build.yml` | `build` / `release` jobs: `cargo test` + `npm run build` for Windows/macOS, **only** on `v*` tags and manual dispatch; tag runs attach the `.dmg` / `.exe` to a GitHub Release. Manual runs set the version to `<last tag>-dev.<commits>.g<sha>` via `git describe` |

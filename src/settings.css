@@ -507,3 +507,34 @@ button.ghost.primary {
 .assoc-note:empty {
   display: none;
 }
+
+/* ---- ショートカット一覧ウィンドウ（shortcuts.html） ---- */
+.sc-row {
+  display: grid;
+  grid-template-columns: 1fr 9.5em 9.5em;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+.sc-row:hover {
+  background: var(--hover);
+}
+
+.sc-head {
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+
+.sc-head:hover {
+  background: none;
+}
+
+.sc-key {
+  color: var(--fg-faint);
+}
+
+.sc-key.current {
+  color: var(--fg);
+}

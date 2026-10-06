@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>sView のショートカット</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <div id="win">
+    <!-- 設定ウィンドウと同じ枠なしの見た目（settings.css を共用） -->
+    <div id="s-titlebar" data-tauri-drag-region>
+      <span id="s-title" data-tauri-drag-region>ショートカット</span>
+      <button id="s-close" title="閉じる (Esc)" aria-label="閉じる">
+        <span class="i-other" aria-hidden="true">&#x2715;</span>
+        <svg class="i-mac" viewBox="0 0 12 12" aria-hidden="true"><path d="M3.6 3.6l4.8 4.8M8.4 3.6l-4.8 4.8" /></svg>
+      </button>
+    </div>
+
+    <!-- 中身は shortcuts.js が SHORTCUT_SECTIONS から作る -->
+    <div id="s-body"></div>
+  </div>
+
+  <script src="settings-defs.js"></script>
+  <script src="theme.js"></script>
+  <script src="shortcuts.js"></script>
+</body>
+</html>
