@@ -1610,30 +1610,6 @@ function buildContextMenu() {
     { label: "フォルダを開く…", accel: "D", action: openFolderDialog },
     { label: "再読み込み", accel: "R", disabled: !hasFile, action: rescan },
     { separator: true },
-    ...(showingMedia
-      ? [
-          {
-            label: video.paused || video.ended ? "再生" : "一時停止",
-            accel: "Space",
-            action: togglePlay,
-          },
-          { label: video.muted ? "消音を解除" : "消音", accel: "M", action: toggleMute },
-          { separator: true },
-        ]
-      : []),
-    // 動画・音楽は常にウィンドウに合わせて表示する（拡大縮小しない）
-    {
-      label: "ウィンドウに合わせる",
-      accel: "0",
-      disabled: !hasFile || showingMedia,
-      action: setFitMode,
-    },
-    {
-      label: "等倍 (100%)",
-      accel: "1",
-      disabled: !hasFile || showingMedia,
-      action: () => zoomTo(1),
-    },
     { label: "全画面表示", accel: "F", action: toggleFullscreen },
     { separator: true },
     { label: "設定…", accel: SETTINGS_ACCEL, action: openSettings },
