@@ -298,6 +298,9 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `main.js` feeds both into `showChrome` / `hideChrome`. The window controls are drawn as
   traffic lights in CSS (`#app.mac`), greyed out via `#app.inactive`; the settings window's close
   button does the same (`#win.mac` / `#win.inactive` in `settings.css`).
+- macOS: the main window has `acceptFirstMouse: true` (`tauri.conf.json`). Without it AppKit swallows the
+  first click on an inactive window (it only activates it), so `data-tauri-drag-region` could not start a
+  move until the window had been clicked once.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a
