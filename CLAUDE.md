@@ -240,7 +240,10 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   writes `last` / `reported` / `area` into `AspectLock`, so the following `Resized` is an echo.
   Without it a corner drag flickered: each mouse move painted the OS size and then our correction,
   and the "larger relative change" axis choice in `dragged_area` flipped between events.
-  Elsewhere (macOS) it is still a correct-it-as-it-arrives loop, and two details keep it from misbehaving: write
+  Elsewhere (macOS) it is still a correct-it-as-it-arrives loop. The pulled edges are taken from
+  `AspectState.grab` (the size when the drag started, reset by `set_aspect_lock` / `fit_window_to_image`)
+  and stay set (`pulled`) for the rest of the drag, so a corner always goes through `sizing_area`; picking
+  the axis per event (`dragged_area`, only a fallback now) made macOS corner drags flicker. Two details keep it from misbehaving: write
   `AspectLock.last` **before** calling `set_size` (on Windows the event can come back
   synchronously, and a size equal to `last` is how the echo is recognised), and **drop the
   mutex guard before** `set_size` — holding it across that call deadlocks on the re-entrant

@@ -110,6 +110,12 @@ struct AspectState {
     /// 直した大きさは見ていない。どの辺が引っ張られたかは、実際の大きさではなく
     /// 「前に知らせてきた大きさ」と比べないと分からない
     reported: PhysicalSize<u32>,
+    /// ドラッグを始めたときの大きさ（物理ピクセル）。基準を取り直すたびに今の大きさにする
+    grab: PhysicalSize<u32>,
+    /// このドラッグで引っ張られた辺（左右の辺 / 上下の辺）。grab から動いた辺を足していき、
+    /// 基準を取り直すまで戻さない。角を斜めに引っ張っている途中で片方の辺が掴んだときの
+    /// 長さへたまたま戻っても、角のまま扱う（辺の扱いが入れ替わると大きさが飛んでちらつく）
+    pulled: (bool, bool),
     /// 画像を切り替えても保つ広さ（論理ピクセルの面積）。
     /// 手で大きさを変えたときだけ更新する
     area: f64,
@@ -2027,6 +2033,8 @@ fn set_aspect_lock(
         // （ドラッグが終わったあとも呼ばれ、基準を実際の大きさに戻す）
         state.last = size;
         state.reported = size;
+        state.grab = size;
+        state.pulled = (false, false);
         // 広さは覚えていればそのまま使う（画像ごとに取り直すと、画面に収める
         // 丸め込みのぶんだけ縦長の画像のたびに少しずつ縮んでしまう）
         if state.area <= 0.0 {
@@ -2060,7 +2068,6 @@ fn dragged_area(
 /// 角のときは「横に合わせた広さ」と「縦に合わせた広さ」の大きい方をとる。
 /// どちらもマウスの位置に対して連続に変わるので、斜めに動かしても大きさが飛ばない
 /// （変化の大きい方を毎回選び直すと、選ぶ辺が入れ替わるたびに大きさが行き来してちらつく）
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn sizing_area(
     horizontal: bool,
     vertical: bool,
@@ -2144,7 +2151,18 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
     let before = state.reported.to_logical::<f64>(scale);
     state.reported = size;
     let extra = state.extra;
-    let area = dragged_area(now, before, ratio, extra);
+    // 掴んだときの大きさから動いた辺を、引っ張られている辺とする。
+    // 角なら sizing_area が横・縦に合わせた広さの大きい方をとるので、マウスを斜めに
+    // 動かしても大きさが連続に変わる（変化の大きい方を毎回選び直すと、選ぶ辺が
+    // 入れ替わるたびに拡大と縮小を繰り返してちらつく。macOS で角を引っ張ったときがこれ）
+    if state.grab.width > 0 && state.grab.height > 0 {
+        state.pulled.0 |= size.width != state.grab.width;
+        state.pulled.1 |= size.height != state.grab.height;
+    }
+    let area = match state.pulled {
+        (false, false) => dragged_area(now, before, ratio, extra),
+        (horizontal, vertical) => sizing_area(horizontal, vertical, now, ratio, extra),
+    };
     // 手で変えている間は画面に収める判定をしない（引っ張った先で止められない）
     let (width, height) = sized_to_aspect(ratio, extra, area, NO_LIMIT);
     let fixed: PhysicalSize<u32> = LogicalSize::new(width, height).to_physical(scale);
@@ -2256,6 +2274,8 @@ fn fit_window_to_image(
     if let Ok(mut state) = lock.0.lock() {
         state.last = new_inner;
         state.reported = new_inner;
+        state.grab = new_inner;
+        state.pulled = (false, false);
         if first {
             state.area = w * h;
         }
