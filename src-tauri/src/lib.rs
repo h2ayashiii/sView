@@ -110,11 +110,28 @@ struct AspectState {
     /// 直した大きさは見ていない。どの辺が引っ張られたかは、実際の大きさではなく
     /// 「前に知らせてきた大きさ」と比べないと分からない
     reported: PhysicalSize<u32>,
+    /// macOS で端・角を引っ張っている間の様子（mac_sizing が引っ張り始めに作る）
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    live: Option<LiveResize>,
     /// 画像を切り替えても保つ広さ（論理ピクセルの面積）。
     /// 手で大きさを変えたときだけ更新する
     area: f64,
 }
 struct AspectLock(Mutex<AspectState>);
+
+/// macOS で端・角を引っ張っている間の様子
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Clone, Copy)]
+struct LiveResize {
+    /// 引っ張り始めたカーソルが近かった辺（左右の辺 / 上下の辺）。引っ張れる辺の候補
+    edges: (bool, bool),
+    /// 引っ張り始めたときの中身の大きさ（論理ピクセル）
+    grab: LogicalSize<f64>,
+    /// 実際に引っ張られた辺。候補の辺のうち grab から動いたものを足していき、
+    /// 引っ張り終えるまで戻さない（角を斜めに引っ張っている途中で、片方の辺が掴んだときの
+    /// 長さへたまたま戻っても角のまま扱う。扱いが入れ替わると大きさが飛んでちらつく）
+    pulled: (bool, bool),
+}
 
 /// 表示中のフォルダの監視。フォルダを開いている間だけ生き、
 /// 書庫を開いたときや閉じたときは None に戻す（= ネイティブの監視も解除される）
@@ -2060,7 +2077,7 @@ fn dragged_area(
 /// 角のときは「横に合わせた広さ」と「縦に合わせた広さ」の大きい方をとる。
 /// どちらもマウスの位置に対して連続に変わるので、斜めに動かしても大きさが飛ばない
 /// （変化の大きい方を毎回選び直すと、選ぶ辺が入れ替わるたびに大きさが行き来してちらつく）
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
 fn sizing_area(
     horizontal: bool,
     vertical: bool,
@@ -2075,6 +2092,29 @@ fn sizing_area(
         (true, false) => by_width,
         (false, true) => by_height,
         _ => by_width.max(by_height),
+    }
+}
+
+/// ウィンドウの移動を始める（ドラッグ領域を押したとき）。
+/// macOS では Tauri の start_dragging だと、非アクティブのウィンドウを掴んだときに
+/// ウィンドウの左上がカーソルへ飛ぶので、自前で移動を始める（mac_drag）
+#[tauri::command]
+fn start_window_drag(window: WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let target = window.clone();
+        window
+            .run_on_main_thread(move || {
+                if let Ok(ptr) = target.ns_window() {
+                    // SAFETY: メインスレッドで、生きている NSWindow を指す
+                    mac_drag::start(unsafe { &*ptr.cast::<objc2_app_kit::NSWindow>() });
+                }
+            })
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.start_dragging().map_err(|e| e.to_string())
     }
 }
 
@@ -2131,6 +2171,13 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
         || window.is_maximized().unwrap_or(false)
         || window.is_fullscreen().unwrap_or(false)
     {
+        return;
+    }
+    // macOS で端・角を引っ張っている間は、OS が大きさを決める前に mac_sizing が
+    // 縦横比へ合わせ済み。ここで直し直すと（set_size は後から非同期で効く）
+    // OS の大きさとこちらの大きさが交互に描かれてちらつく
+    #[cfg(target_os = "macos")]
+    if mac_sizing::in_live_resize(window) {
         return;
     }
     // 自分で直したぶんの跳ね返り
@@ -3153,6 +3200,238 @@ mod mac_pointer {
     }
 }
 
+/// macOS で端・角を引っ張っている最中に、OS が大きさを決める前の段階で縦横比へ合わせる
+/// （Windows の win_sizing にあたる）。tao のウィンドウの delegate に
+/// `windowWillResize:toSize:` を足し、OS が出した大きさを縦横比に沿った大きさへ差し替える。
+/// Resized が届いてから set_size で直すやり方は、tao の set_size が後から非同期で効くため、
+/// OS の大きさとこちらの大きさが交互に描かれてちらつき、角では縦横比も崩れていた
+#[cfg(target_os = "macos")]
+mod mac_sizing {
+    use std::sync::OnceLock;
+
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+    use objc2::{msg_send, sel};
+    use objc2_app_kit::{NSEvent, NSWindow};
+    use objc2_foundation::NSSize;
+    use tauri::{AppHandle, LogicalSize, Manager, PhysicalSize, WebviewWindow};
+
+    use super::{sized_to_aspect, sizing_area, AspectLock, LiveResize, NO_LIMIT};
+
+    /// 引っ張り始めたカーソルが、ウィンドウの辺からこれ以内なら、その辺を引っ張っているとみなす
+    /// （論理ピクセル）。左右・上下の両方の辺に近ければ角
+    const EDGE_PX: f64 = 16.0;
+
+    struct Main {
+        app: AppHandle,
+        /// メインウィンドウの NSWindow のアドレス。delegate のクラスはほかのウィンドウとも
+        /// 共通なので、呼ばれたのがメインウィンドウかをこれで見分ける
+        window: usize,
+    }
+    static MAIN: OnceLock<Main> = OnceLock::new();
+
+    fn main_of(sender: *mut AnyObject) -> Option<(&'static Main, &'static NSWindow)> {
+        let main = MAIN.get()?;
+        if sender.is_null() || sender as usize != main.window {
+            return None;
+        }
+        // SAFETY: メインウィンドウはアプリと同じだけ生き、delegate はメインスレッドで呼ばれる
+        Some((main, unsafe { &*sender.cast::<NSWindow>() }))
+    }
+
+    /// 引っ張り始め。カーソルの位置から、引っ張られている辺を決めて覚える
+    unsafe extern "C-unwind" fn will_start_live_resize(
+        _this: *mut AnyObject,
+        _sel: Sel,
+        notification: *mut AnyObject,
+    ) {
+        let object: *mut AnyObject = msg_send![notification, object];
+        let Some((main, window)) = main_of(object) else {
+            return;
+        };
+        let mouse = NSEvent::mouseLocation();
+        let frame = window.frame();
+        let dx = (mouse.x - frame.origin.x).min(frame.origin.x + frame.size.width - mouse.x);
+        let dy = (mouse.y - frame.origin.y).min(frame.origin.y + frame.size.height - mouse.y);
+        // どちらの辺にも近くないとき（引っ張れる範囲が思ったより広いなど）は両方を候補にする
+        let edges = match (dx <= EDGE_PX, dy <= EDGE_PX) {
+            (false, false) => (true, true),
+            edges => edges,
+        };
+        let content = window.contentRectForFrameRect(frame);
+        if let Ok(mut state) = main.app.state::<AspectLock>().0.lock() {
+            state.live = Some(LiveResize {
+                edges,
+                grab: LogicalSize::new(content.size.width, content.size.height),
+                pulled: (false, false),
+            });
+        }
+    }
+
+    /// 引っ張っている最中。OS が出した大きさ（外枠）を縦横比に沿った大きさへ差し替えて返す
+    unsafe extern "C-unwind" fn will_resize(
+        _this: *mut AnyObject,
+        _sel: Sel,
+        sender: *mut AnyObject,
+        size: NSSize,
+    ) -> NSSize {
+        let Some((main, window)) = main_of(sender) else {
+            return size;
+        };
+        let lock = main.app.state::<AspectLock>();
+        let Ok(mut state) = lock.0.lock() else {
+            return size;
+        };
+        let Some(ratio) = state.ratio else {
+            return size;
+        };
+        // 渡されるのは外枠の大きさ。縦横比は中身に対して保つので、枠の分を除いて考える
+        let frame = window.frame();
+        let content = window.contentRectForFrameRect(frame);
+        let border_w = frame.size.width - content.size.width;
+        let border_h = frame.size.height - content.size.height;
+        let now = LogicalSize::new(size.width - border_w, size.height - border_h);
+        // 引っ張り始めが分からないときは、今の大きさを基準にする
+        let mut live = state.live.unwrap_or(LiveResize {
+            edges: (true, true),
+            grab: LogicalSize::new(content.size.width, content.size.height),
+            pulled: (false, false),
+        });
+        // 端だけを引っ張っているなら、もう一方の辺は OS が掴んだときの長さのまま渡してくる
+        live.pulled.0 |= live.edges.0 && (now.width - live.grab.width).abs() >= 0.5;
+        live.pulled.1 |= live.edges.1 && (now.height - live.grab.height).abs() >= 0.5;
+        state.live = Some(live);
+        let (horizontal, vertical) = live.pulled;
+        if !horizontal && !vertical {
+            return size;
+        }
+        let extra = state.extra;
+        let area = sizing_area(horizontal, vertical, now, ratio, extra);
+        let (width, height) = sized_to_aspect(ratio, extra, area, NO_LIMIT);
+        // 続く Resized をドラッグ後の基準に使えるよう、ここで決めた大きさを覚えておく
+        let fixed: PhysicalSize<u32> =
+            LogicalSize::new(width, height).to_physical(window.backingScaleFactor());
+        state.last = fixed;
+        state.reported = fixed;
+        state.area = width * height;
+        NSSize::new(width + border_w, height + border_h)
+    }
+
+    /// 端・角を引っ張っている最中か（その間の Resized は keep_aspect_on_resize で直さない）。
+    /// 取り付けに失敗していたら false（keep_aspect_on_resize に直させる）
+    pub fn in_live_resize(window: &tauri::Window) -> bool {
+        if MAIN.get().is_none() {
+            return false;
+        }
+        let Ok(ptr) = window.ns_window() else {
+            return false;
+        };
+        // SAFETY: Resized はメインスレッドで届き、ptr は生きている NSWindow を指す
+        unsafe { &*ptr.cast::<NSWindow>() }.inLiveResize()
+    }
+
+    unsafe fn add_method(
+        class: *mut AnyClass,
+        name: Sel,
+        imp: Imp,
+        types: &std::ffi::CStr,
+    ) -> Result<(), String> {
+        if objc2::ffi::class_addMethod(class, name, imp, types.as_ptr()).as_bool() {
+            Ok(())
+        } else {
+            Err(format!("{name} を追加できません（すでにあります）"))
+        }
+    }
+
+    /// メインウィンドウの delegate に、サイズ変更を縦横比に合わせる処理を足す。
+    /// setup() から（メインスレッドで）呼ぶ
+    pub fn install(window: &WebviewWindow) -> Result<(), String> {
+        let ptr = window
+            .ns_window()
+            .map_err(|e| format!("NSWindow を取得できません: {e}"))?;
+        // SAFETY: Tauri が返すのは生きている NSWindow へのポインタ
+        let ns_window = unsafe { Retained::retain(ptr.cast::<NSWindow>()) }
+            .ok_or("NSWindow を取得できません")?;
+        let delegate: *mut AnyObject = unsafe { msg_send![&*ns_window, delegate] };
+        if delegate.is_null() {
+            return Err("ウィンドウの delegate がありません".to_string());
+        }
+
+        type WillResize =
+            unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, NSSize) -> NSSize;
+        type WillStart = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
+        unsafe {
+            let class = objc2::ffi::object_getClass(delegate) as *mut AnyClass;
+            add_method(
+                class,
+                sel!(windowWillStartLiveResize:),
+                std::mem::transmute::<WillStart, Imp>(will_start_live_resize),
+                c"v@:@",
+            )?;
+            add_method(
+                class,
+                sel!(windowWillResize:toSize:),
+                std::mem::transmute::<WillResize, Imp>(will_resize),
+                c"{CGSize=dd}@:@{CGSize=dd}",
+            )?;
+            // NSWindow は delegate を設定したときに、delegate が応えるメソッドを調べて覚える。
+            // 設定し直して、足したメソッドに気づかせる
+            let _: () = msg_send![&*ns_window, setDelegate: std::ptr::null_mut::<AnyObject>()];
+            let _: () = msg_send![&*ns_window, setDelegate: delegate];
+        }
+        // 足し終えてから、メインウィンドウとして呼び分けを始める
+        MAIN.set(Main {
+            app: window.app_handle().clone(),
+            window: Retained::as_ptr(&ns_window) as usize,
+        })
+        .map_err(|_| "二重に取り付けようとしました".to_string())?;
+        Ok(())
+    }
+}
+
+/// macOS でウィンドウの移動を始める。
+/// Tauri の start_dragging（tao）は、そのときの NSApp.currentEvent が押下のイベントでないと、
+/// 画面上の座標をウィンドウ内の座標として入れた押下イベントを作って移動を始める。
+/// 非アクティブのウィンドウを掴んだときがこれに当たり、ウィンドウの左上がカーソルへ飛んでいた。
+/// ここではカーソルのウィンドウ内の座標を入れた押下イベントを作るので、掴んだ位置のまま動く
+#[cfg(target_os = "macos")]
+mod mac_drag {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_app_kit::{NSEvent, NSWindow};
+    use objc2_foundation::NSPoint;
+
+    /// NSEventTypeLeftMouseDown
+    const LEFT_MOUSE_DOWN: usize = 1;
+
+    /// メインスレッドから呼ぶ
+    pub fn start(window: &NSWindow) {
+        let mouse = NSEvent::mouseLocation();
+        let frame = window.frame();
+        // ウィンドウ内の座標は、外枠の左下を原点とする
+        let location = NSPoint::new(mouse.x - frame.origin.x, mouse.y - frame.origin.y);
+        unsafe {
+            let info: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
+            let timestamp: f64 = msg_send![info, systemUptime];
+            let event: *mut AnyObject = msg_send![
+                class!(NSEvent),
+                mouseEventWithType: LEFT_MOUSE_DOWN,
+                location: location,
+                modifierFlags: 0usize,
+                timestamp: timestamp,
+                windowNumber: window.windowNumber(),
+                context: std::ptr::null_mut::<AnyObject>(),
+                eventNumber: 0isize,
+                clickCount: 1isize,
+                pressure: 1.0f32,
+            ];
+            if !event.is_null() {
+                let _: () = msg_send![window, performWindowDragWithEvent: event];
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn is_associated(_app: &AppHandle, ext: &str) -> bool {
     win_assoc::is_associated(ext)
@@ -3268,6 +3547,10 @@ pub fn run() {
                 }
                 // 失敗しても表示の自動非表示が待ち時間頼みになるだけなので起動は続ける
                 #[cfg(target_os = "macos")]
+                if let Err(e) = mac_sizing::install(&window) {
+                    log::warn!("ウィンドウのサイズ変更を縦横比に合わせられません: {e}");
+                }
+                #[cfg(target_os = "macos")]
                 if let Err(e) = mac_pointer::install(&window) {
                     log::warn!("カーソルの追跡を開始できません: {e}");
                 }
@@ -3298,6 +3581,7 @@ pub fn run() {
             fit_window_to_image,
             set_aspect_lock,
             mouse_button_down,
+            start_window_drag,
             delete_image,
             audio_info,
             audio_artwork,

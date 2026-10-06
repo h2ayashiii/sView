@@ -171,7 +171,7 @@ function setFitMode() {
   img.style.position = "";
   unfreezeImageSize();
   // 動画・音楽の上はクリックで再生 / 一時停止にするので、ウィンドウのドラッグ領域にしない
-  // （押したまま動かしたときは自分で startDragging() を呼ぶ）
+  // （押したまま動かしたときは自分で startWindowDrag() を呼ぶ）
   if (showingMedia) stage.removeAttribute("data-tauri-drag-region");
   else stage.setAttribute("data-tauri-drag-region", "");
   stage.classList.remove("panning");
@@ -1369,7 +1369,7 @@ window.addEventListener("mouseup", () => (panning = null));
 // ---- input: 動画・音楽の上の押下（すぐ離すと再生 / 一時停止、押したまま動かすとウィンドウ移動） ----
 // 動画・音楽の表示中の #stage はドラッグ領域にしない（setFitMode）。付けたままだと押した瞬間に
 // OS のウィンドウ移動が始まり、離したことが WebView に届かずクリックと区別できないため。
-// 代わりに一定以上動いたところで自分で startDragging() を呼ぶ
+// 代わりに一定以上動いたところで自分で startWindowDrag() を呼ぶ
 const VIDEO_DRAG_THRESHOLD_PX = 4;
 const VIDEO_CLICK_MS = 350;
 // 開いていたメニューを閉じるための押下では切り替えない
@@ -1389,7 +1389,7 @@ window.addEventListener("mousemove", (e) => {
   }
   if (Math.hypot(e.clientX - videoPress.x, e.clientY - videoPress.y) < VIDEO_DRAG_THRESHOLD_PX) return;
   videoPress = null;
-  appWindow.startDragging().catch(() => {});
+  startWindowDrag();
 });
 window.addEventListener("mouseup", (e) => {
   if (e.button !== 0 || !videoPress) return;
@@ -1470,6 +1470,50 @@ appWindow
   })
   .catch(() => {});
 syncMaximized();
+
+// ウィンドウの移動を始める。macOS では Tauri の startDragging() だと、非アクティブの
+// ウィンドウを掴んだときにウィンドウの左上がカーソルへ飛ぶので、Rust 側の自前の処理を使う
+function startWindowDrag() {
+  if (IS_MAC) invoke("start_window_drag").catch(() => {});
+  else appWindow.startDragging().catch(() => {});
+}
+
+// Tauri の判定（drag.js の isDragRegion）と同じ。押せる要素の上ではドラッグ領域にしない
+const CLICKABLE_TAGS = new Set(["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "LABEL", "SUMMARY"]);
+const INTERACTIVE_ROLES = new Set(["button", "link", "menuitem", "tab", "checkbox", "radio", "switch", "option"]);
+function isDragRegion(path) {
+  for (const el of path) {
+    if (!(el instanceof HTMLElement)) continue;
+    const attr = el.getAttribute("data-tauri-drag-region");
+    const clickable =
+      CLICKABLE_TAGS.has(el.tagName) ||
+      (el.hasAttribute("contenteditable") && el.getAttribute("contenteditable") !== "false") ||
+      (el.hasAttribute("tabindex") && el.getAttribute("tabindex") !== "-1") ||
+      INTERACTIVE_ROLES.has(el.getAttribute("role"));
+    if (clickable && attr === null) return false;
+    if (attr === null) continue;
+    if (attr === "false") return false;
+    if (attr === "deep") return true;
+    if (attr === "" || attr === "true") return el === path[0];
+  }
+  return false;
+}
+
+// macOS ではドラッグ領域の押下を Tauri より先に拾い、startWindowDrag() で移動を始める。
+// ダブルクリック（最大化）は Tauri に任せる。ほかの window の capture リスナー
+// （メニューを閉じるなど）は動くよう、止めるのは伝播だけにする
+if (IS_MAC) {
+  window.addEventListener(
+    "mousedown",
+    (e) => {
+      if (e.button !== 0 || e.detail !== 1 || !isDragRegion(e.composedPath())) return;
+      e.preventDefault();
+      e.stopPropagation();
+      startWindowDrag();
+    },
+    true
+  );
+}
 
 // Tauri はドラッグ領域のダブルクリックを最大化に割り当てる。
 // OS の慣習どおりタイトルバーだけ通し、画像やステータスバーの上では止める

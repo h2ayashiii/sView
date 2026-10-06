@@ -23,7 +23,8 @@
         "decorations": false,
         "visible": false,
         "transparent": true,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "acceptFirstMouse": true
       },
       {
         "label": "settings",

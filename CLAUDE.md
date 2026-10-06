@@ -240,7 +240,14 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   writes `last` / `reported` / `area` into `AspectLock`, so the following `Resized` is an echo.
   Without it a corner drag flickered: each mouse move painted the OS size and then our correction,
   and the "larger relative change" axis choice in `dragged_area` flipped between events.
-  Elsewhere (macOS) it is still a correct-it-as-it-arrives loop, and two details keep it from misbehaving: write
+  On macOS `mac_sizing` does the same by adding `windowWillResize:toSize:` and
+  `windowWillStartLiveResize:` to tao's window-delegate class at runtime (then re-setting the delegate so
+  NSWindow re-checks what it responds to). The pulled edges are the edges the cursor was near when the
+  live resize started (`LiveResize.edges`), counted only once that axis actually moves from the grab size
+  (`pulled`, sticky for the drag), then `sizing_area`. `keep_aspect_on_resize` returns early while the
+  window is `inLiveResize`: tao's `set_size` is `setContentSize` dispatched **async**, so correcting from
+  `Resized` mid-drag painted the OS size and our size alternately (flicker) and, at corners, left the
+  ratio broken. Outside a live resize it is still a correct-it-as-it-arrives loop. Two details keep it from misbehaving: write
   `AspectLock.last` **before** calling `set_size` (on Windows the event can come back
   synchronously, and a size equal to `last` is how the echo is recognised), and **drop the
   mutex guard before** `set_size` — holding it across that call deadlocks on the re-entrant
@@ -295,6 +302,15 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `main.js` feeds both into `showChrome` / `hideChrome`. The window controls are drawn as
   traffic lights in CSS (`#app.mac`), greyed out via `#app.inactive`; the settings window's close
   button does the same (`#win.mac` / `#win.inactive` in `settings.css`).
+- macOS: the main window has `acceptFirstMouse: true` (`tauri.conf.json`). Without it AppKit swallows the
+  first click on an inactive window (it only activates it), so `data-tauri-drag-region` could not start a
+  move until the window had been clicked once.
+  Window moves on macOS go through `start_window_drag` (`mac_drag`), not Tauri's `startDragging()`: tao's
+  `drag_window` builds a fake mouse-down with **screen** coordinates as the window location whenever
+  `NSApp.currentEvent` isn't a mouse event (the case right after activation), so the window's top-left
+  jumped to the cursor. `main.js` catches drag-region presses in a capture listener (`isDragRegion`, a copy
+  of Tauri's `drag.js` check) and leaves double clicks to Tauri; the video press-and-move path calls
+  `startWindowDrag()` too.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a
