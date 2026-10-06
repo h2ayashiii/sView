@@ -9,6 +9,37 @@ const SETTINGS_TABS = [
   { id: "audio", label: "音楽" },
 ];
 
+const MEDIA_KIND_LABELS = { image: "画像", video: "動画", audio: "音楽" };
+
+const WINDOW_SIZE_OPTIONS = [
+  ["free", "自由に変更"],
+  ["image", "メディアに合わせる"],
+];
+
+function associationSection(kind) {
+  const name = MEDIA_KIND_LABELS[kind];
+  return {
+    id: `${kind}-association`,
+    tab: kind,
+    label: "関連付け",
+    items: [
+      {
+        // 値は settings.json ではなく OS 側にあるので default を持たない
+        key: `${kind}FileAssociations`,
+        label: `sView で開く${name}の種類`,
+        hint:
+          "チェックした拡張子を、ダブルクリックしたときに sView で開くようにします。" +
+          "Windows では sView を登録したあと「既定のアプリ」の設定画面が開くので、そこで確定してください" +
+          "（Windows はアプリが既定を直接変えることを認めていません）。" +
+          "macOS ではその場で切り替わります。解除するときは Finder の「情報を見る」で別のアプリを選んでください",
+        type: "associations",
+        kind,
+        buttonLabel: "関連付ける",
+      },
+    ],
+  };
+}
+
 const SETTINGS_SECTIONS = [
   {
     id: "appearance",
@@ -40,13 +71,6 @@ const SETTINGS_SECTIONS = [
         type: "toggle",
         default: true,
       },
-      {
-        key: "showNavButtons",
-        label: "左右の移動ボタンを表示する",
-        hint: "マウスを動かしたときに出る ❮ ❯ ボタンです",
-        type: "toggle",
-        default: true,
-      },
     ],
   },
   {
@@ -58,24 +82,25 @@ const SETTINGS_SECTIONS = [
         key: "windowSizeMode",
         label: "ウィンドウのサイズ",
         hint:
-          "「自由に変更」は縦横どちらにも自由に広げられ、画像を切り替えても大きさは変わりません。" +
-          "「画像に合わせる」は余白が出ないよう、表示中の画像の縦横比にウィンドウの形を合わせます" +
+          "「自由に変更」は縦横どちらにも自由に広げられ、ファイルを切り替えても大きさは変わりません。" +
+          "「メディアに合わせる」は余白が出ないよう、表示中の画像・動画の縦横比" +
+          "（音楽はアートワークと曲名の帯の形）にウィンドウの形を合わせます" +
           "（端や角をドラッグしても縦横比のまま変わります。立ち上げて最初に開くときだけ、" +
           "画面に収まるよう 95% までに抑えます）。" +
           "どちらでも、開いたときの大きさと位置は前回閉じたときのものです。",
         type: "select",
-        options: [
-          ["free", "自由に変更"],
-          ["image", "画像に合わせる"],
-        ],
+        options: WINDOW_SIZE_OPTIONS,
         default: "free",
       },
       {
-        key: "roundedCorners",
-        label: "ウィンドウの角を丸くする",
-        hint: "オフにすると四角いウィンドウになります。最大化している間は常に四角です",
+        key: "windowPerKind",
+        label: "ファイルの種類ごとにウィンドウを保持する",
+        hint:
+          "画像・動画・音楽それぞれで、最後に使ったウィンドウの大きさと位置を覚えておき、" +
+          "表示する種類が変わったらその種類のものへ戻します。" +
+          "オフのときは種類にかかわらず同じウィンドウのまま表示します",
         type: "toggle",
-        default: true,
+        default: false,
       },
       {
         key: "alwaysOnTop",
@@ -124,6 +149,7 @@ const SETTINGS_SECTIONS = [
       },
     ],
   },
+  associationSection("image"),
   {
     id: "video",
     tab: "video",
@@ -139,14 +165,22 @@ const SETTINGS_SECTIONS = [
         default: true,
       },
       {
-        key: "videoLoop",
-        label: "動画を繰り返し再生する",
-        hint: "最後まで再生したら先頭に戻って続けます",
-        type: "toggle",
-        default: true,
+        key: "videoEnd",
+        label: "動画が終わったら",
+        hint:
+          "「次の動画へ進む」は同じフォルダの次の動画ファイルを続けて再生します。" +
+          "最後の動画のあとは「端で最初 / 最後へ折り返す」がオンのときだけ先頭に戻ります",
+        type: "select",
+        options: [
+          ["next", "次の動画へ進む"],
+          ["repeat", "同じ動画を繰り返す"],
+          ["stop", "止める"],
+        ],
+        default: "repeat",
       },
     ],
   },
+  associationSection("video"),
   {
     id: "audio",
     tab: "audio",
@@ -177,31 +211,7 @@ const SETTINGS_SECTIONS = [
       },
     ],
   },
-  {
-    id: "sound",
-    tab: "general",
-    label: "音量",
-    items: [
-      {
-        key: "videoMuted",
-        label: "音を消す",
-        hint: "動画と音楽で共通です。再生中に M キーや音量ボタンで切り替えた状態もここに保存されます",
-        type: "toggle",
-        default: false,
-      },
-      {
-        key: "videoVolume",
-        label: "音量",
-        hint: "動画と音楽で共通です。再生中の音量バーで変えた値もここに保存されます",
-        type: "range",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        default: 100,
-      },
-    ],
-  },
+  associationSection("audio"),
   {
     id: "input",
     tab: "general",
@@ -260,25 +270,6 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
-    id: "association",
-    tab: "general",
-    label: "関連付け",
-    items: [
-      {
-        // 値は settings.json ではなく OS 側にあるので default を持たない
-        key: "fileAssociations",
-        label: "sView で開くファイルの種類",
-        hint:
-          "チェックした拡張子（画像・動画・音楽）を、ダブルクリックしたときに sView で開くようにします。" +
-          "Windows では sView を登録したあと「既定のアプリ」の設定画面が開くので、そこで確定してください" +
-          "（Windows はアプリが既定を直接変えることを認めていません）。" +
-          "macOS ではその場で切り替わります。解除するときは Finder の「情報を見る」で別のアプリを選んでください",
-        type: "associations",
-        buttonLabel: "関連付ける",
-      },
-    ],
-  },
-  {
     id: "logs",
     tab: "general",
     label: "ログ",
@@ -295,13 +286,26 @@ const SETTINGS_SECTIONS = [
   },
 ];
 
+// 設定ウィンドウには出さず、本体だけが読み書きする値（再生中の音量。0〜100%）。
+// 動画と音楽で別々に持ち、再生操作のつまみ・↑ ↓ キー・ホイールで変える
+const HIDDEN_DEFAULTS = {
+  videoVolume: 100,
+  audioVolume: 100,
+};
+
 // type: "action" の行はボタンだけで、保存する値を持たない（default がない）。
 // フィルタを外すと undefined が settings.json に書き込まれてしまう
-const SETTINGS_DEFAULTS = Object.fromEntries(
-  SETTINGS_SECTIONS.flatMap((s) =>
-    s.items.filter((i) => "default" in i).map((i) => [i.key, i.default])
-  )
-);
+const SETTINGS_DEFAULTS = {
+  ...Object.fromEntries(
+    SETTINGS_SECTIONS.flatMap((s) =>
+      s.items.filter((i) => "default" in i).map((i) => [i.key, i.default])
+    )
+  ),
+  ...HIDDEN_DEFAULTS,
+};
+
+// 廃止した項目。古い settings.json に残っていても読み捨てる
+const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted", "videoLoop"];
 
 // 選択肢の名前を変えたときの読み替え表（古い settings.json をそのまま読めるようにする）。
 // windowSizeMode: 0.1 系までは "fixed" / "flexible" だった
@@ -311,7 +315,15 @@ const LEGACY_VALUES = {
 
 // 保存値に既定値を補い、欠けたキーのない設定オブジェクトを作る
 function normalizeSettings(raw) {
-  const settings = { ...SETTINGS_DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
+  const saved = raw && typeof raw === "object" ? raw : {};
+  const settings = { ...SETTINGS_DEFAULTS, ...saved };
+  for (const key of OBSOLETE_KEYS) delete settings[key];
+  // 動画の終わりはオン / オフ（videoLoop）だった。まだ選んでいなければ引き継ぐ
+  if (!("videoEnd" in saved) && "videoLoop" in saved) {
+    settings.videoEnd = saved.videoLoop ? "repeat" : "stop";
+  }
+  // 音量は動画と音楽で共通（videoVolume）だった。音楽の音量がまだ無ければ引き継ぐ
+  if (!("audioVolume" in saved) && "videoVolume" in saved) settings.audioVolume = saved.videoVolume;
   for (const [key, table] of Object.entries(LEGACY_VALUES)) {
     const value = settings[key];
     // 継承したプロパティ（"constructor" など）を拾わないよう自前の値だけ見る

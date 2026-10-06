@@ -152,11 +152,15 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   (`--audio-panel-h`) — which `set_aspect_lock` / `fit_window_to_image` store as
   `AspectState.extra`; `sized_to_aspect` / `dragged_area` keep the ratio on the window **minus**
   that margin (images / videos pass 0). Don't fold the margin into the ratio at the current
-  window width: the ratio then depends on the previous window shape and the size drifts. `audioEnd: "next"` advances on `ended`
-  to the next *audio* entry (the list is audio-only anyway; wraps only with `wrapAround`) and
-  forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
+  window width: the ratio then depends on the previous window shape and the size drifts. `audioEnd` / `videoEnd` (`mediaEnd()`:
+  `"next"` / `"repeat"` / `"stop"`; `videoEnd` replaced the old `videoLoop` toggle, migrated in
+  `normalizeSettings`) — `"next"` advances on `ended` to the next entry of the same kind
+  (`nextMediaIndex`; wraps only with `wrapAround`) and forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
   slider value (`getVolume` / `setVolume` wrap `video.volume`; never read or write it directly for
-  the user-facing volume). `#audio-art` has fixed-px padding (left / right / top) that `mediaSize()`
+  the user-facing volume). The volume is stored per kind (`videoVolume` / `audioVolume`, picked by
+  `volumeKey()`); both are `HIDDEN_DEFAULTS` in `settings-defs.js` — stored in `settings.json` but not
+  shown in the settings window, and kept by "Reset to defaults". Mute is never saved: every launch
+  starts unmuted. `#audio-art` has fixed-px padding (left / right / top) that `mediaSize()`
   reads via `getComputedStyle`. `layoutArtwork()` sizes `#artwork` to the drawn picture (instead
   of `object-fit` on a full box) so its `border-radius` (`--window-radius`, same as `#app`)
   rounds the picture itself.
@@ -197,10 +201,23 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - `main.js` can write `settings.json` too (the "今後確認しない" checkbox → `saveSettings()`), so
   `settings.js` listens for `settings-changed` and re-renders — but only when the settings window
   is unfocused, otherwise its own emit echoes back and fights a slider being dragged.
-- `windowSizeMode` is `"free"` or `"image"`; `"fixed"` / `"flexible"` are the 0.1-era values and
+- `windowSizeMode` is `"free"` or `"image"` (shown as "メディアに合わせる": it fits videos and audio too); `"fixed"` / `"flexible"` are the 0.1-era values and
   are still read — `LEGACY_VALUES` in `settings-defs.js` maps them for the frontend, and
   `fits_window_to_image()` accepts `"flexible"` on the Rust side (Rust reads `settings.json`
   raw, so it never sees the frontend's mapping).
+- `windowPerKind` ("ファイルの種類ごとにウィンドウを保持する") keeps one size + position per media
+  kind in `window.json` (`WindowState.kinds`, keyed `"image"` / `"video"` / `"audio"`).
+  `show()` calls `syncWindowKind()` → `set_window_kind(kind, perKind)`; Rust tracks the last kind
+  in `WindowKind` and, on a change, stores the outgoing kind's geometry and `place_window`s the
+  incoming one's (also on the first kind after launch, since the restored window may belong to
+  another kind). It resets `AspectLock` to the restored area first (so the `set_size` echo is not
+  taken for a drag) and re-arms `PendingPosition` in "image" mode; `fitWindowToImage` awaits
+  `windowKindSync` so the aspect fit runs after the restore. `save_window_state` also writes the
+  current kind's entry. The startup file is opened only after `load_settings` resolves
+  (`openStartupFile`), otherwise the first `set_window_kind` would carry the default `perKind`.
+- File associations are one `type: "associations"` row per kind tab (`associationSection(kind)`).
+  On Windows `register()` rebuilds the whole set, so a row's apply also sends the other kinds'
+  currently associated extensions; on macOS it sends only its own kind.
 - In `"image"` mode only the **aspect ratio** comes from the image; the size does not.
   `sized_to_aspect` turns an area (logical px²) plus the aspect into a size, so paging between
   portrait and landscape keeps the window equally big. That area lives in `AspectLock` on the

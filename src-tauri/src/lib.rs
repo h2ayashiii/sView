@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -76,6 +77,16 @@ struct RestoredPosition {
     placed: (f64, f64),
 }
 struct PendingPosition(Mutex<Option<RestoredPosition>>);
+
+/// 表示中のファイルの種類と、設定「ファイルの種類ごとにウィンドウを保持する」。
+/// フロントエンドが set_window_kind で知らせる
+#[derive(Default)]
+struct KindState {
+    /// 最後に表示した種類（何も開いていない間も前の種類を覚えたまま）
+    kind: Option<MediaKind>,
+    per_kind: bool,
+}
+struct WindowKind(Mutex<KindState>);
 
 /// 画面に収まる大きさへ抑えるのは、立ち上げてから最初にウィンドウを開くときだけ。
 /// true の間がその 1 回で、済ませたら false にして、終了するまで戻さない
@@ -278,6 +289,36 @@ mod tests {
             clamp_to_area(100.0, 100.0, 2500.0, 600.0, &area),
             (0.0, 100.0)
         );
+    }
+
+    #[test]
+    fn window_state_reads_old_files_and_keeps_kinds() {
+        // 種類ごとの分が無い古い window.json もそのまま読める
+        let old: WindowState =
+            serde_json::from_str(r#"{"width":800,"height":600,"x":10,"y":20}"#).unwrap();
+        assert_eq!(old.width, Some(800.0));
+        assert!(old.kinds.is_empty());
+        // 種類ごとの分が無ければ書き出しにも出さない
+        assert!(!serde_json::to_string(&old).unwrap().contains("kinds"));
+
+        let mut state = old.clone();
+        let mut video = WindowState::default();
+        copy_geometry(
+            &mut video,
+            &WindowState {
+                width: Some(1280.0),
+                height: Some(720.0),
+                ..WindowState::default()
+            },
+        );
+        state
+            .kinds
+            .insert(kind_key(MediaKind::Video).to_string(), video);
+        let text = serde_json::to_string(&state).unwrap();
+        let read: WindowState = serde_json::from_str(&text).unwrap();
+        assert_eq!(read.kinds["video"].width, Some(1280.0));
+        assert_eq!(read.kinds["video"].x, None);
+        assert_eq!(read.x, Some(10.0));
     }
 
     #[test]
@@ -1528,13 +1569,70 @@ fn window_state_file(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// 各項目は Option。古い window.json（大きさだけ）もそのまま読めるようにし、
 /// 保存できなかった項目は既定の挙動（中央・既定サイズ）に任せる
-#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct WindowState {
     width: Option<f64>,
     height: Option<f64>,
     x: Option<f64>,
     y: Option<f64>,
+    /// 種類（"image" / "video" / "audio"）ごとの大きさと位置。
+    /// 設定「ファイルの種類ごとにウィンドウを保持する」がオンのときだけ使う
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    kinds: BTreeMap<String, WindowState>,
+}
+
+/// 種類を window.json のキーにする
+fn kind_key(kind: MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Image => "image",
+        MediaKind::Video => "video",
+        MediaKind::Audio => "audio",
+    }
+}
+
+fn write_window_state(app: &AppHandle, state: &WindowState) {
+    let Ok(path) = window_state_file(app) else {
+        return;
+    };
+    if let (Some(dir), Ok(text)) = (path.parent(), serde_json::to_string_pretty(state)) {
+        let _ = fs::create_dir_all(dir);
+        let _ = fs::write(&path, text);
+    }
+}
+
+/// 今のウィンドウの位置と大きさ（論理ピクセル）。
+/// 最小化中・最大化中・全画面中は普段の姿と違うので None
+fn current_geometry(window: &tauri::Window) -> Option<WindowState> {
+    let scale = window.scale_factor().ok()?;
+    if window.is_minimized().unwrap_or(false)
+        || window.is_maximized().unwrap_or(false)
+        || window.is_fullscreen().unwrap_or(false)
+    {
+        return None;
+    }
+    let mut state = WindowState::default();
+    if let Ok(pos) = window.outer_position() {
+        let pos = pos.to_logical::<f64>(scale);
+        state.x = Some(pos.x);
+        state.y = Some(pos.y);
+    }
+    if let Ok(size) = window.inner_size() {
+        let size = size.to_logical::<f64>(scale);
+        if size.width >= 1.0 && size.height >= 1.0 {
+            state.width = Some(size.width);
+            state.height = Some(size.height);
+        }
+    }
+    Some(state)
+}
+
+/// geometry の大きさ・位置を state に書き写す（kinds はそのまま）
+fn copy_geometry(state: &mut WindowState, geometry: &WindowState) {
+    state.x = geometry.x.or(state.x);
+    state.y = geometry.y.or(state.y);
+    state.width = geometry.width.or(state.width);
+    state.height = geometry.height.or(state.height);
 }
 
 fn read_window_state(app: &AppHandle) -> Option<WindowState> {
@@ -1544,44 +1642,23 @@ fn read_window_state(app: &AppHandle) -> Option<WindowState> {
 }
 
 /// 前回の続きから開けるよう、閉じるときのウィンドウの位置と大きさを保存する。
-/// どちらのサイズ設定でも両方を覚える（次回は必ずこの大きさ・この場所で開く）
+/// どちらのサイズ設定でも両方を覚える（次回は必ずこの大きさ・この場所で開く）。
+/// 種類ごとに保持する設定なら、表示していた種類の分としても覚える
 fn save_window_state(window: &tauri::Window) {
     let app = window.app_handle();
-    let Ok(path) = window_state_file(app) else {
-        return;
-    };
-    let Ok(scale) = window.scale_factor() else {
-        return;
-    };
     // 最小化中・最大化中・全画面中は位置も大きさも普段の姿と違うので触らない
     // （その状態のまま閉じたときは、そうする前の姿を覚えたままにする）
-    if window.is_minimized().unwrap_or(false)
-        || window.is_maximized().unwrap_or(false)
-        || window.is_fullscreen().unwrap_or(false)
-    {
+    let Some(geometry) = current_geometry(window) else {
         return;
-    }
-
+    };
     let mut state = read_window_state(app).unwrap_or_default();
-
-    if let Ok(pos) = window.outer_position() {
-        let pos = pos.to_logical::<f64>(scale);
-        state.x = Some(pos.x);
-        state.y = Some(pos.y);
-    }
-
-    if let Ok(size) = window.inner_size() {
-        let size = size.to_logical::<f64>(scale);
-        if size.width >= 1.0 && size.height >= 1.0 {
-            state.width = Some(size.width);
-            state.height = Some(size.height);
+    copy_geometry(&mut state, &geometry);
+    if let Ok(kind) = app.state::<WindowKind>().0.lock() {
+        if let (true, Some(k)) = (kind.per_kind, kind.kind) {
+            state.kinds.insert(kind_key(k).to_string(), geometry);
         }
     }
-
-    if let (Some(dir), Ok(text)) = (path.parent(), serde_json::to_string_pretty(&state)) {
-        let _ = fs::create_dir_all(dir);
-        let _ = fs::write(&path, text);
-    }
+    write_window_state(app, &state);
 }
 
 /// 画面上の長方形。ディスプレイの範囲や作業領域を表す。
@@ -1729,8 +1806,6 @@ fn fits_window_to_image(app: &AppHandle) -> bool {
 
 /// 起動時に、前回閉じたときのウィンドウを復元する。
 /// 大きさも位置も、どちらのサイズ設定でも戻す。
-/// ウィンドウ全体が作業領域に収まるよう寄せる（ディスプレイの構成が
-/// 変わっていたり、前回より大きく開いたりしたときに画面外へ出さない）。
 /// 「画像に合わせる」では最初の画像で縦横比を合わせ直すので、そのときも
 /// 前回と同じ左上に置けるよう、保存した位置を PendingPosition に残しておく
 fn restore_window_state(window: &tauri::Window) {
@@ -1738,9 +1813,26 @@ fn restore_window_state(window: &tauri::Window) {
     let Some(state) = read_window_state(app) else {
         return;
     };
-    let Ok(scale) = window.scale_factor() else {
+    let placed = place_window(window, &state);
+    remember_placement(app, placed);
+}
+
+/// 「画像に合わせる」なら、最初の fit_window_to_image が置いた左上に合わせるよう残す
+fn remember_placement(app: &AppHandle, placed: Option<RestoredPosition>) {
+    if placed.is_none() || !fits_window_to_image(app) {
         return;
-    };
+    }
+    if let Ok(mut pending) = app.state::<PendingPosition>().0.lock() {
+        *pending = placed;
+    }
+}
+
+/// 保存した大きさ・位置にウィンドウを置く。
+/// ウィンドウ全体が作業領域に収まるよう寄せる（ディスプレイの構成が
+/// 変わっていたり、前回より大きく開いたりしたときに画面外へ出さない）。
+/// 位置を戻したときは、保存した左上と実際に置いた左上を返す
+fn place_window(window: &tauri::Window, state: &WindowState) -> Option<RestoredPosition> {
+    let scale = window.scale_factor().ok()?;
     // 中身の大きさ（論理ピクセル）。保存した大きさがあればそれにする
     let mut inner = window
         .inner_size()
@@ -1753,12 +1845,8 @@ fn restore_window_state(window: &tauri::Window) {
         }
     }
 
-    let (Some(saved_x), Some(saved_y)) = (state.x, state.y) else {
-        return;
-    };
-    let Some(work_area) = work_area_at(window, saved_x, saved_y) else {
-        return;
-    };
+    let (saved_x, saved_y) = (state.x?, state.y?);
+    let work_area = work_area_at(window, saved_x, saved_y)?;
 
     // 外枠の大きさ = 中身 + 枠（Windows の枠なしウィンドウの影のぶん）
     let frame = match (window.outer_size(), window.inner_size()) {
@@ -1769,15 +1857,67 @@ fn restore_window_state(window: &tauri::Window) {
     let outer_height = inner.height + f64::from(frame.1) / scale;
     let (x, y) = clamp_to_area(saved_x, saved_y, outer_width, outer_height, &work_area);
     let _ = window.set_position(LogicalPosition::new(x, y));
+    Some(RestoredPosition {
+        saved: (saved_x, saved_y),
+        placed: (x, y),
+    })
+}
 
-    if fits_window_to_image(app) {
-        if let Ok(mut pending) = app.state::<PendingPosition>().0.lock() {
-            *pending = Some(RestoredPosition {
-                saved: (saved_x, saved_y),
-                placed: (x, y),
-            });
+/// 表示するファイルの種類が変わったことを受け取る。
+/// 設定「ファイルの種類ごとにウィンドウを保持する」がオンなら、それまでの種類の
+/// 大きさと位置を window.json に覚え、新しい種類で前に使っていた大きさと位置へ戻す
+/// （その種類をまだ表示したことがなければ今のまま）。
+/// 起動して最初の種類のときは、前回閉じたときの姿（restore_window_state で戻したもの）が
+/// 別の種類のものかもしれないので、その種類の分があればそちらへ置き直す。
+/// 最大化中・全画面中・最小化中は覚えも戻しもしない（解けてしまう・普段の姿ではない）
+#[tauri::command]
+fn set_window_kind(
+    window: WebviewWindow,
+    state: State<WindowKind>,
+    lock: State<AspectLock>,
+    kind: MediaKind,
+    per_kind: bool,
+) {
+    let previous = {
+        let Ok(mut current) = state.0.lock() else {
+            return;
+        };
+        current.per_kind = per_kind;
+        current.kind.replace(kind)
+    };
+    if !per_kind || previous == Some(kind) {
+        return;
+    }
+    let window = window.as_ref().window();
+    let Some(geometry) = current_geometry(&window) else {
+        return;
+    };
+    let app = window.app_handle();
+    let mut saved = read_window_state(app).unwrap_or_default();
+    if let Some(previous) = previous {
+        saved
+            .kinds
+            .insert(kind_key(previous).to_string(), geometry.clone());
+        write_window_state(app, &saved);
+    }
+    let Some(target) = saved.kinds.get(kind_key(kind)) else {
+        return;
+    };
+
+    // 縦横比の固定を外し、戻した広さを次の縦横比合わせの基準にする
+    // （外さないと、set_size の通知を手で変えたものと取り違えて縦横比へ引き戻す。
+    // 固定はこのあとフロントエンドが表示する画像に合わせてかけ直す）。
+    // ロックは set_size の前に手放す（その場で Resized が呼ばれると止まる）
+    if let (Some(width), Some(height)) = (target.width, target.height) {
+        if let Ok(mut aspect) = lock.0.lock() {
+            *aspect = AspectState {
+                area: width * height,
+                ..AspectState::default()
+            };
         }
     }
+    let placed = place_window(&window, target);
+    remember_placement(app, placed);
 }
 
 /// 立ち上げて最初に開くときの、ウィンドウの大きさの上限（作業領域に対する割合）。
@@ -2888,10 +3028,12 @@ pub fn run() {
         .manage(StartupFile(Mutex::new(startup_file_from_args())))
         .manage(ArchiveCache(Mutex::new(None)))
         .manage(PendingPosition(Mutex::new(None)))
+        .manage(WindowKind(Mutex::new(KindState::default())))
         .manage(AspectLock(Mutex::new(AspectState::default())))
         .manage(StartupFit(Mutex::new(true)))
         .manage(FolderWatcher(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
+            set_window_kind,
             list_images,
             read_archive_image,
             get_startup_file,

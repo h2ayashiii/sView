@@ -180,7 +180,7 @@ function setFitMode() {
 // ---- ウィンドウのサイズ変更中は画像を据え置く ----
 // ドラッグの間じゅう画像を拡大縮小し直すと、そのたびに描き直しになって重く、
 // 絵が揺れて見える。手を離してウィンドウの大きさが決まってから合わせ直す
-// （「画像に合わせる」のときだけ。ウィンドウの形が画像と揃っているので、
+// （「メディアに合わせる」のときだけ。ウィンドウの形が画像と揃っているので、
 // 据え置いても最後に合わせ直せば同じ見た目に落ち着く）
 let frozenSize = false;
 // 画像を切り替えて自分でウィンドウを合わせ直したあと、手で変えたのではないと
@@ -345,7 +345,7 @@ function mediaEl() {
 // 表示中の画像・動画の実寸。まだ分からなければ null。
 // 音楽はアートワークの実寸に加えて、周りの余白と曲名の帯の大きさ（px で固定。
 // ウィンドウの大きさによらない）を extraWidth / extraHeight で返す。
-// 「画像に合わせる」では Rust 側がこの分を除いた残りをアートワークの縦横比に合わせる
+// 「メディアに合わせる」では Rust 側がこの分を除いた残りをアートワークの縦横比に合わせる
 // （固定の分を今のウィンドウ幅で比率に直して縦横比に混ぜると、直前のウィンドウの形に
 // 引きずられ、同じ曲でも開き直すたびに大きさが少しずつ変わってしまう）
 function mediaSize() {
@@ -388,7 +388,27 @@ function fitsToImage() {
   return settings.windowSizeMode === "image";
 }
 
-// 「画像に合わせる」のとき、ウィンドウの縦横比を表示中の画像に固定する。
+// 表示中のファイルの種類（何も開いていなければ null）
+function shownKind() {
+  if (index < 0) return null;
+  return showingVideo ? "video" : showingAudio ? "audio" : "image";
+}
+
+// 表示する種類を Rust 側へ知らせる。設定「ファイルの種類ごとにウィンドウを保持する」が
+// オンなら、種類が変わったところでその種類の大きさ・位置へ戻る。
+// 縦横比合わせ（fitWindowToImage）はその後に行うので、終わるのを待てるよう覚えておく
+let windowKindSync = Promise.resolve();
+
+function syncWindowKind() {
+  const kind = shownKind();
+  if (!kind) return;
+  windowKindSync = invoke("set_window_kind", {
+    kind,
+    perKind: !!settings.windowPerKind,
+  }).catch(() => {});
+}
+
+// 「メディアに合わせる」のとき、ウィンドウの縦横比を表示中の画像に固定する。
 // 以後は端や角をドラッグしている最中も Rust 側が縦横比を保つ。
 // 「自由に変更」や画像を開いていないときは解除する
 function syncAspectLock() {
@@ -400,9 +420,10 @@ function syncAspectLock() {
   }).catch(() => {});
 }
 
-// 「画像に合わせる」のとき、余白が出ないようウィンドウを画像の縦横比に合わせる。
+// 「メディアに合わせる」のとき、余白が出ないようウィンドウを画像の縦横比に合わせる。
 // 大きさ（広さ）は Rust 側が覚えていて、手でサイズを変えたときだけ変わる
 async function fitWindowToImage() {
+  await windowKindSync;
   await syncAspectLock();
   if (!fitsToImage()) return;
   const size = mediaSize();
@@ -439,6 +460,7 @@ async function show() {
   video.hidden = !showingVideo;
   audioBox.hidden = !showingAudio;
   img.hidden = showingMedia;
+  syncWindowKind();
   setFitMode();
   placeholder.hidden = true;
   updateChrome();
@@ -497,16 +519,20 @@ let autoplayMuteNoticed = false;
 
 function loadVideo(src, autoplay) {
   video.loop = mediaLoop();
-  video.muted = !!settings.videoMuted;
-  setVolume(videoVolume());
+  setVolume(mediaVolume());
   video.src = src;
   syncVideoBar();
   if (autoplay) playVideo();
 }
 
-// 繰り返し再生するか。音楽は「曲が終わったら」が「同じ曲を繰り返す」のときだけ
+// 設定「動画が終わったら」「曲が終わったら」（"next" / "repeat" / "stop"）
+function mediaEnd() {
+  return showingAudio ? settings.audioEnd : settings.videoEnd;
+}
+
+// 繰り返し再生するか（「同じ動画 / 曲を繰り返す」のとき）
 function mediaLoop() {
-  return showingAudio ? settings.audioEnd === "repeat" : !!settings.videoLoop;
+  return mediaEnd() === "repeat";
 }
 
 // src を外して読み込み直すと、WebView はファイルを手放す
@@ -520,7 +546,7 @@ function unloadVideo() {
 }
 
 // 音楽は動画より音が大きいことが多いので、同じ音量つまみの位置でも実際の音量を半分にする
-// （つまみ・↑ ↓ キー・保存する値は動画と共通の 0〜100%。100% のとき素材の音量の半分で鳴る）
+// （つまみ・↑ ↓ キー・保存する値は 0〜100%。100% のとき素材の音量の半分で鳴る）
 const AUDIO_VOLUME_GAIN = 0.5;
 
 function volumeGain() {
@@ -536,8 +562,13 @@ function setVolume(v) {
   video.volume = Math.min(1, Math.max(0, v)) * volumeGain();
 }
 
-function videoVolume() {
-  const v = Number(settings.videoVolume);
+// 音量は動画と音楽で別々に保存する（0〜100%）
+function volumeKey() {
+  return showingAudio ? "audioVolume" : "videoVolume";
+}
+
+function mediaVolume() {
+  const v = Number(settings[volumeKey()]);
   return Number.isFinite(v) ? Math.min(1, Math.max(0, v / 100)) : 1;
 }
 
@@ -561,12 +592,10 @@ function togglePlay() {
   else video.pause();
 }
 
-// 消音の状態は設定に保存して、次の動画・次回の起動にも持ち越す
+// 消音は保存しない（起動したときは常に音が出る。起動している間は次のファイルにも持ち越す）
 function toggleMute() {
   if (!showingMedia) return;
-  settings.videoMuted = !video.muted;
-  video.muted = settings.videoMuted;
-  saveSettings();
+  video.muted = !video.muted;
 }
 
 function seekBy(seconds) {
@@ -580,12 +609,9 @@ function changeVolumeBy(delta) {
   if (!showingMedia) return;
   const volume = Math.min(1, Math.max(0, Math.round((getVolume() + delta) * 100) / 100));
   setVolume(volume);
-  settings.videoVolume = Math.round(volume * 100);
+  settings[volumeKey()] = Math.round(volume * 100);
   // 音量を上げたら消音も解く（再生バーの音量つまみと同じ扱い）
-  if (delta > 0 && video.muted) {
-    video.muted = false;
-    settings.videoMuted = false;
-  }
+  if (delta > 0 && video.muted) video.muted = false;
   clearTimeout(volumeSaveTimer);
   volumeSaveTimer = setTimeout(saveSettings, VOLUME_SAVE_DELAY_MS);
   // 音量つまみで結果が見えるよう、再生操作を出す
@@ -691,24 +717,26 @@ async function loadAudioInfo(path, token) {
   });
 }
 
-// 次に再生する曲の位置。一覧は同じ種類だけなので通常は隣の曲だが、念のため音楽以外は飛ばす。無ければ -1
+// 次に再生するファイルの位置。一覧は同じ種類だけなので通常は隣のファイルだが、
+// 念のため表示中と別の種類は飛ばす。無ければ -1
 // （最後まで来たら、設定「端で最初 / 最後へ折り返す」のときだけ先頭から探す）
-function nextAudioIndex() {
+function nextMediaIndex() {
+  const sameKind = showingAudio ? isAudioPath : isVideoPath;
   for (let off = 1; off < images.length; off++) {
     let i = index + off;
     if (i >= images.length) {
       if (!settings.wrapAround) return -1;
       i -= images.length;
     }
-    if (isAudioPath(images[i])) return i;
+    if (sameKind(images[i])) return i;
   }
   return -1;
 }
 
-// 設定「曲が終わったら」が「次の曲へ進む」なら、同じフォルダの次の曲を続けて再生する
+// 設定「動画が終わったら」「曲が終わったら」が「次の〜へ進む」なら、次のファイルを続けて再生する
 video.addEventListener("ended", () => {
-  if (!showingAudio || settings.audioEnd !== "next") return;
-  const next = nextAudioIndex();
+  if (!showingMedia || mediaEnd() !== "next") return;
+  const next = nextMediaIndex();
   if (next < 0) return;
   index = next;
   continuePlayback = true;
@@ -813,14 +841,11 @@ video.addEventListener("volumechange", () => {
 vbVolume.addEventListener("input", () => {
   setVolume(Number(vbVolume.value) / 100);
   // 音量を上げたら消音も解く（上げても聞こえないのは分かりにくい）
-  if (video.volume > 0 && video.muted) {
-    video.muted = false;
-    settings.videoMuted = false;
-  }
+  if (video.volume > 0 && video.muted) video.muted = false;
 });
 // 保存はつまみを離したときだけ（ドラッグ中に何度も書き込まない）
 vbVolume.addEventListener("change", () => {
-  settings.videoVolume = Number(vbVolume.value);
+  settings[volumeKey()] = Number(vbVolume.value);
   saveSettings();
   vbVolume.blur();
 });
@@ -1375,7 +1400,7 @@ navNext.addEventListener("click", () => step(1));
 // もう一度押すと元の大きさに戻る
 // 最大化中は画面の隅と食い違うので角は丸めない
 function applyCorners() {
-  const round = settings.roundedCorners && !app.classList.contains("maximized");
+  const round = !app.classList.contains("maximized");
   app.style.borderRadius = round ? "8px" : "0";
 }
 
@@ -1401,7 +1426,7 @@ btnMax.addEventListener("click", () => {
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
 // サイズ変更が落ち着いたときの後始末。ドラッグ中は何度も届くので 1 回だけ行う。
 // タイトルバーのダブルクリックや OS 側の操作でも最大化の状態は変わるので、
-// 見た目（アイコン）を合わせ直し、「画像に合わせる」では縦横比の基準を
+// 見た目（アイコン）を合わせ直し、「メディアに合わせる」では縦横比の基準を
 // 今の大きさに取り直す（ドラッグ中、OS は掴んだときの大きさを基準に
 // 動かし続けるので、終わったところで実際の大きさに戻しておく）。
 // 縦横比を保つこと自体は Rust 側の仕事で、ここでは何もしない
@@ -1416,7 +1441,7 @@ function onResizeSettled() {
 
 appWindow
   .onResized(() => {
-    // 「画像に合わせる」で手でサイズを変えている間だけ、画像を据え置く
+    // 「メディアに合わせる」で手でサイズを変えている間だけ、画像を据え置く
     if (fitsToImage() && Date.now() - selfResizedAt > SELF_RESIZE_MS) freezeImageSize();
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(onResizeSettled, RESIZE_SETTLE_MS);
@@ -1453,12 +1478,15 @@ listen("tauri://drag-drop", (event) => {
 // macOS の Dock / Finder からの "Opened" イベント（起動後）
 listen("open-file", (event) => openPath(event.payload));
 
-// CLI 引数 / 関連付け起動（Windows）、または起動前に届いた macOS の Opened
-invoke("get_startup_file")
-  .then((path) => {
-    if (path) openPath(path);
-  })
-  .catch(() => {});
+// CLI 引数 / 関連付け起動（Windows）、または起動前に届いた macOS の Opened。
+// 設定を読み終えてから開く（種類ごとのウィンドウや自動再生を設定どおりにするため）
+function openStartupFile() {
+  invoke("get_startup_file")
+    .then((path) => {
+      if (path) openPath(path);
+    })
+    .catch(() => {});
+}
 
 // ---- settings ----
 // 設定ウィンドウからの変更は "settings-changed" で届き、その場で反映する
@@ -1472,12 +1500,11 @@ function applySettings() {
   app.style.background = hexToRgba(settings.backgroundColor, settings.backgroundOpacity / 100);
   applyCorners();
   app.classList.toggle("hide-filename", !settings.showFilename);
-  app.classList.toggle("hide-nav", !settings.showNavButtons);
   img.style.imageRendering = settings.imageRendering;
   video.loop = mediaLoop();
-  setVolume(videoVolume());
-  video.muted = !!settings.videoMuted;
+  setVolume(mediaVolume());
   appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
+  syncWindowKind();
   syncWatcher();
 }
 
@@ -1641,7 +1668,7 @@ listen("settings-changed", (event) => {
   const previousMode = settings.windowSizeMode;
   settings = normalizeSettings(event.payload);
   applySettings();
-  // 「画像に合わせる」に切り替えた直後は、今の大きさを基準に縦横比だけ合わせる
+  // 「メディアに合わせる」に切り替えた直後は、今の大きさを基準に縦横比だけ合わせる
   if (settings.windowSizeMode !== previousMode) fitWindowToImage();
 });
 
@@ -1650,4 +1677,5 @@ invoke("load_settings")
     settings = normalizeSettings(saved);
     applySettings();
   })
-  .catch(() => applySettings());
+  .catch(() => applySettings())
+  .finally(openStartupFile);
