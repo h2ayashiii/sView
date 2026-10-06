@@ -2027,6 +2027,35 @@ fn dragged_area(
     }
 }
 
+/// マウスのボタンが押されたままか（どのボタンでも）。
+/// ウィンドウの端を引っ張っている間は OS がマウスを握っていて WebView に mouseup が届かないので、
+/// フロントエンドはサイズ変更の通知が途切れたときにこれで「まだ引っ張っているか」を確かめ、
+/// 手を離すまで表示中のコンテンツの大きさを据え置く
+#[tauri::command]
+fn mouse_button_down() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetAsyncKeyState(key: i32) -> i16;
+        }
+        // VK_LBUTTON / VK_RBUTTON / VK_MBUTTON。左右を入れ替えた設定でも物理ボタンで見るので両方調べる
+        [0x01, 0x02, 0x04]
+            .iter()
+            .any(|&key| (unsafe { GetAsyncKeyState(key) } as u16 & 0x8000) != 0)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let buttons: usize =
+            unsafe { objc2::msg_send![objc2::class!(NSEvent), pressedMouseButtons] };
+        buttons != 0
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        false
+    }
+}
+
 /// 大きさが変わるたびに、ウィンドウを画像の縦横比へ引き戻す。
 /// ドラッグの最中も届くので、どの辺・どの角を引っ張っても縦横比のまま変わる
 /// （OS に縦横比を渡す仕組みが Tauri には無いため、届いたその場で直している）。
@@ -3045,6 +3074,7 @@ pub fn run() {
             open_log_folder,
             fit_window_to_image,
             set_aspect_lock,
+            mouse_button_down,
             delete_image,
             audio_info,
             audio_artwork,
