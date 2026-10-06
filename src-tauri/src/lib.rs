@@ -2351,6 +2351,21 @@ fn open_settings_window(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("設定ウィンドウを前面にできません: {e}"))
 }
 
+/// ショートカット一覧ウィンドウを開く（設定ウィンドウの「ショートカット一覧」から）。
+/// 設定ウィンドウと同じく、起動時に非表示で作ったものを表示して前面に出すだけ
+#[tauri::command]
+fn open_shortcuts_window(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("shortcuts")
+        .ok_or("ショートカット一覧のウィンドウがありません")?;
+    window
+        .show()
+        .map_err(|e| format!("ショートカット一覧を表示できません: {e}"))?;
+    window
+        .set_focus()
+        .map_err(|e| format!("ショートカット一覧を前面にできません: {e}"))
+}
+
 /// ログの置き場所（設定フォルダ / sview / logs）。
 /// settings.json と同じ場所にまとめて、バグ報告のときに 1 箇所を見れば済むようにする
 fn log_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -3207,7 +3222,7 @@ pub fn run() {
             tauri::WindowEvent::CloseRequested { api, .. } => match window.label() {
                 // 設定ウィンドウは閉じずに隠す。破棄してしまうと
                 // 開き直すたびに作り直しになり、閉じ忘れるとアプリが残り続ける
-                "settings" => {
+                "settings" | "shortcuts" => {
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -3277,6 +3292,7 @@ pub fn run() {
             load_settings,
             save_settings,
             open_settings_window,
+            open_shortcuts_window,
             reveal_in_file_manager,
             open_log_folder,
             fit_window_to_image,
