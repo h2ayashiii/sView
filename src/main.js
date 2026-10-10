@@ -1233,7 +1233,7 @@ async function refreshFolder() {
   if (added > 0) showToast(`ファイルが ${added} 件増えました`, "notice");
 }
 
-listen("folder-changed", scheduleRefresh);
+appWindow.listen("folder-changed", scheduleRefresh);
 
 // ---- 削除 ----
 // 完全削除はせず OS のゴミ箱へ送る。書庫の中身はファイルとして存在しないので対象外
@@ -1389,8 +1389,8 @@ window.addEventListener("blur", hideChrome);
 // macOS の WKWebView はウィンドウがアクティブなときしかカーソルを追わないので、
 // 非アクティブ中の移動や外へ出たことは Rust 側（mac_pointer）から知らせてもらう
 if (IS_MAC) {
-  listen("pointer-inside", (e) => (e.payload ? showChrome() : hideChrome()));
-  listen("pointer-moved", showChrome);
+  appWindow.listen("pointer-inside", (e) => (e.payload ? showChrome() : hideChrome()));
+  appWindow.listen("pointer-moved", showChrome);
 }
 
 // 非アクティブの間はウィンドウ操作ボタンを灰色にする（macOS の見た目）
@@ -1776,8 +1776,12 @@ listen("tauri://drag-drop", (event) => {
 });
 
 // ---- startup ----
-// macOS の Dock / Finder からの "Opened" イベント（起動後）
-listen("open-file", (event) => openPath(event.payload));
+// macOS の Dock / Finder からの "Opened" イベント（このウィンドウに割り当てられたファイル）。
+// 同じファイルは get_startup_file にも預けられているので、二重に開かないよう取り除いておく
+appWindow.listen("open-file", (event) => {
+  invoke("get_startup_file").catch(() => {});
+  openPath(event.payload);
+});
 
 // CLI 引数 / 関連付け起動（Windows）、または起動前に届いた macOS の Opened。
 // 設定を読み終えてから開く（種類ごとのウィンドウや自動再生を設定どおりにするため）

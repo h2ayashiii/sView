@@ -322,7 +322,17 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   jumped to the cursor. `main.js` catches drag-region presses in a capture listener (`isDragRegion`, a copy
   of Tauri's `drag.js` check) and leaves double clicks to Tauri; the video press-and-move path calls
   `startWindowDrag()` too.
-- macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv.
+- macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv. `open_in_viewer` opens it
+  in a viewer window that has shown nothing yet (`KindState.kind` is `None` and not `claimed` — e.g. `main`
+  right after launch), otherwise in a **new** viewer window (`create_viewer_window`: label `viewer-N`, built
+  from `main`'s config, cascaded `CASCADE_OFFSET` from the focused viewer). Every per-window Rust state
+  (`AspectLock`, `WindowKind`, `PendingPosition`, `FirstFitDone`, `FolderWatcher`, `StartupFile`) is a
+  `PerWindow<T>` map keyed by window label and dropped in `forget_window` on close; closing the last viewer
+  (`is_viewer`) exits. Window-targeted events (`folder-changed`, `pointer-*`, `open-file`) go out with
+  `emit_to(label)` and `main.js` must receive them with `appWindow.listen`, since the global `listen` also
+  catches events aimed at other windows. `capabilities/default.json` covers `viewer-*`. `ArchiveCache` stays
+  app-wide (it re-opens on a path change). Windows has no in-process multi-window (each file launch is its
+  own process).
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a
   parent-directory path under `_up_/` in the bundle, because `resource_relpath()` rewrites `..`.
