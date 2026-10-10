@@ -74,6 +74,29 @@ body {
   flex: none;
 }
 
+/* ---- 本モード ----
+   2 ページを隙間なく並べ、同じ高さにそろえる。#book の大きさは main.js の layoutBook() が
+   px で入れ（フィット表示ならウィンドウに収まる大きさ、拡大中は実寸）、各ページは
+   その高さに合わせて縦横比のまま幅が決まる */
+#book {
+  display: flex;
+  flex: none;
+  pointer-events: none;
+  transform-origin: 0 0;
+}
+
+#book[hidden],
+#book img[hidden] {
+  display: none;
+}
+
+#book img {
+  display: block;
+  flex: none;
+  height: 100%;
+  width: auto;
+}
+
 /* ---- 音楽 ----
    上にアートワーク、下に曲名などの帯（--audio-panel-h）。「メディアに合わせる」では
    ウィンドウをアートワーク＋この帯の形にする（main.js の mediaSize）。
@@ -704,11 +727,13 @@ body {
 }
 
 .ctx-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 18px;
   width: 100%;
-  padding: 6px 10px;
+  /* 左はチェック・丸の分を空けておく（どの項目も文字の頭をそろえる） */
+  padding: 6px 10px 6px 26px;
   border: none;
   border-radius: 5px;
   background: transparent;
@@ -719,7 +744,7 @@ body {
   cursor: pointer;
 }
 
-.ctx-item span:first-child {
+.ctx-label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -734,6 +759,32 @@ body {
 .ctx-item:disabled {
   color: #5c5c65;
   cursor: default;
+}
+
+/* チェック（本モード）と丸（左開き / 右開き）。字形の有無に左右されないよう CSS で描く */
+.ctx-item[aria-checked="true"]::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+}
+
+.ctx-item[role="menuitemcheckbox"][aria-checked="true"]::before {
+  left: 12px;
+  width: 4px;
+  height: 8px;
+  margin-top: -6px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.ctx-item[role="menuitemradio"][aria-checked="true"]::before {
+  left: 11px;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .ctx-accel {

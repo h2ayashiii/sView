@@ -8,6 +8,9 @@ const appWindow = window.__TAURI__.window.getCurrentWindow();
 const app = document.getElementById("app");
 const stage = document.getElementById("stage");
 const img = document.getElementById("image");
+const bookEl = document.getElementById("book");
+const bookLeft = document.getElementById("book-left");
+const bookRight = document.getElementById("book-right");
 const video = document.getElementById("video");
 const videobar = document.getElementById("videobar");
 const vbPlay = document.getElementById("vb-play");
@@ -93,11 +96,18 @@ let showingVideo = false;
 let showingAudio = false;
 // 動画か音楽（どちらも #video で再生し、再生操作のカードを出す）
 let showingMedia = false;
+// 本モード（画像を 2 ページずつ並べる）を選んでいるか。保存はせず、起動中だけ覚える。
+// 画像の一覧でだけ使え、動画・音楽の一覧を開いたら解く
+let bookMode = false;
+// 表示中のものが本モードの見開きなら true（#image の代わりに #book を使う）。
+// 見開きは images[index]（前のページ）と images[index + 1]（後のページ。最後の 1 枚なら無し）
+let showingBook = false;
 
 // ---- 書庫内画像の遅延ロード ----
 // 書庫は一括展開せず、表示するエントリだけを Rust 側から取り出して
 // blob URL 化する。前後の先読み分を含め数枚だけ保持する
-const BLOB_CACHE_MAX = 5;
+// （本モードでは見開きの 2 枚と、前後の見開き 2 枚ずつ）
+const BLOB_CACHE_MAX = 6;
 const blobCache = new Map(); // entry -> blob URL（挿入順 = LRU 順）
 
 function extOf(name) {
@@ -119,12 +129,19 @@ function clearBlobCache() {
 }
 
 function trimBlobCache() {
-  while (blobCache.size > BLOB_CACHE_MAX) {
-    const [oldest, url] = blobCache.entries().next().value;
-    if (oldest === images[index]) break; // 表示中のものは残す
+  const shown = shownEntries();
+  for (const [entry, url] of blobCache) {
+    if (blobCache.size <= BLOB_CACHE_MAX) break;
+    if (shown.includes(entry)) continue; // 表示中のものは残す
     URL.revokeObjectURL(url);
-    blobCache.delete(oldest);
+    blobCache.delete(entry);
   }
+}
+
+// 表示中のエントリ（本モードでは見開きの 1〜2 枚）
+function shownEntries() {
+  if (index < 0 || index >= images.length) return [];
+  return showingBook ? images.slice(index, index + 2) : [images[index]];
 }
 
 // Rust から返る生バイト列の受け取り方は IPC の経路によって変わる
@@ -167,8 +184,10 @@ function setFitMode() {
   img.className = "fit";
   video.className = "fit";
   artwork.className = "fit";
-  img.style.transform = "";
-  img.style.position = "";
+  for (const el of [img, bookEl]) {
+    el.style.transform = "";
+    el.style.position = "";
+  }
   unfreezeImageSize();
   // 動画・音楽の上はクリックで再生 / 一時停止にするので、ウィンドウのドラッグ領域にしない
   // （押したまま動かしたときは自分で startWindowDrag() を呼ぶ）
@@ -202,12 +221,13 @@ function freezeImageSize() {
 
 function unfreezeImageSize() {
   frozenSize = false;
-  for (const el of [img, video, artwork]) {
+  for (const el of [img, video, artwork, bookEl]) {
     el.style.width = "";
     el.style.height = "";
     el.classList.remove("frozen");
   }
   layoutArtwork();
+  layoutBook();
 }
 
 // アートワークの箱を、実際に描かれる絵の大きさにする。
@@ -228,29 +248,84 @@ function layoutArtwork() {
   artwork.style.height = `${h * s}px`;
 }
 
+// ---- 本モードの見開き ----
+// 表示する 2 ページ（最後の 1 枚だけのときは 1 ページ）の要素
+function bookPages() {
+  return [bookLeft, bookRight].filter((el) => !el.hidden);
+}
+
+// 見開きの実寸。2 ページを高い方のページの高さにそろえて横に並べた大きさ。
+// まだ読み込めていなければ null
+function bookSize() {
+  const pages = bookPages();
+  if (!pages.length || pages.some((el) => !el.complete || !el.naturalWidth)) return null;
+  const height = Math.max(...pages.map((el) => el.naturalHeight));
+  const width = pages.reduce((sum, el) => sum + (el.naturalWidth * height) / el.naturalHeight, 0);
+  return { width, height };
+}
+
+// 見開きの箱の大きさを決める（中のページは高さ 100% で、縦横比のまま幅が決まる）。
+// フィット表示ならウィンドウに収まる大きさ、拡大中は実寸にして倍率は transform で掛ける
+function layoutBook() {
+  if (!showingBook || frozenSize) return;
+  const size = bookSize();
+  if (!size) {
+    // 読み込み中。実寸のままだとウィンドウからはみ出して見えるので、何も出さない
+    bookEl.style.width = "0px";
+    bookEl.style.height = "0px";
+    return;
+  }
+  const s = mode === "zoom"
+    ? 1
+    : Math.min(stage.clientWidth / size.width, stage.clientHeight / size.height);
+  bookEl.style.width = `${size.width * s}px`;
+  bookEl.style.height = `${size.height * s}px`;
+}
+
+new ResizeObserver(() => layoutBook()).observe(stage);
+
+function releaseBookPages() {
+  for (const el of [bookLeft, bookRight]) el.removeAttribute("src");
+}
+
+// 拡大縮小する要素とその実寸（本モードは見開き全体を 1 枚の絵として扱う）
+function zoomEl() {
+  return showingBook ? bookEl : img;
+}
+
+function zoomNaturalSize() {
+  if (showingBook) return bookSize();
+  return img.src && img.naturalWidth ? { width: img.naturalWidth, height: img.naturalHeight } : null;
+}
+
 // 動画・音楽は拡大縮小しない（常にウィンドウに合わせて表示する）
 function enterZoomMode() {
-  if (mode === "zoom" || showingMedia || !img.src || !img.naturalWidth) return;
+  if (mode === "zoom" || showingMedia) return;
+  const natural = zoomNaturalSize();
+  if (!natural) return;
   // 据え置き中なら先に戻す（据え置きの大きさから倍率を出すと二重にかかる）
   unfreezeImageSize();
   // フィット表示の <img> は箱がウィンドウ全体で、絵は object-fit: contain で中に収まっている。
   // 箱ではなく実際に描かれている絵の大きさと位置から倍率を出す
-  const rect = img.getBoundingClientRect();
-  scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
-  tx = rect.left + (rect.width - img.naturalWidth * scale) / 2;
-  ty = rect.top + (rect.height - img.naturalHeight * scale) / 2;
+  // （見開きの箱は layoutBook() が絵の大きさにしているので、箱がそのまま絵になる）
+  const el = zoomEl();
+  const rect = el.getBoundingClientRect();
+  scale = Math.min(rect.width / natural.width, rect.height / natural.height);
+  tx = rect.left + (rect.width - natural.width * scale) / 2;
+  ty = rect.top + (rect.height - natural.height * scale) / 2;
   mode = "zoom";
-  img.className = "";
-  img.style.position = "absolute";
-  img.style.left = "0";
-  img.style.top = "0";
+  if (showingBook) layoutBook();
+  else img.className = "";
+  el.style.position = "absolute";
+  el.style.left = "0";
+  el.style.top = "0";
   stage.removeAttribute("data-tauri-drag-region");
   stage.classList.add("panning");
   applyTransform();
 }
 
 function applyTransform() {
-  img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  zoomEl().style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
 }
 
 function zoomAt(cx, cy, factor) {
@@ -305,15 +380,23 @@ function updateChrome() {
   app.classList.remove("no-image");
   // 書庫内やサブフォルダまで読んだフォルダは同名ファイルが別フォルダに並びうるので、
   // 共通フォルダ（開いたフォルダ）を除いた相対パスで表示する
-  // （単一フォルダの書庫なら結果的にファイル名だけになる）
-  const name = entryPrefix && images[index].startsWith(entryPrefix)
-    ? images[index].slice(entryPrefix.length)
-    : baseName(images[index]);
+  // （単一フォルダの書庫なら結果的にファイル名だけになる）。
+  // 本モードでは見開きの 2 枚をページ順に並べる
+  const shown = shownEntries();
+  const name = shown
+    .map((entry) => (entryPrefix && entry.startsWith(entryPrefix)
+      ? entry.slice(entryPrefix.length)
+      : baseName(entry)))
+    .join(" ＋ ");
   filenameEl.textContent = archivePath ? `${baseName(archivePath)} / ${name}` : name;
-  filenameEl.title = archivePath ? `${archivePath} :: ${images[index]}` : images[index];
-  counterEl.textContent = `${index + 1} / ${images.length}`;
+  filenameEl.title = shown
+    .map((entry) => (archivePath ? `${archivePath} :: ${entry}` : entry))
+    .join("\n");
+  counterEl.textContent = shown.length > 1
+    ? `${index + 1}-${index + shown.length} / ${images.length}`
+    : `${index + 1} / ${images.length}`;
   navPrev.disabled = index === 0;
-  navNext.disabled = index === images.length - 1;
+  navNext.disabled = index + shown.length >= images.length;
   // 動画・音楽の前後移動は再生操作カードのボタンだけ（端で折り返す設定なら端でも押せる）
   vbPrev.disabled = !settings.wrapAround && index === 0;
   vbNext.disabled = !settings.wrapAround && index === images.length - 1;
@@ -322,7 +405,8 @@ function updateChrome() {
 
 function preloadNeighbors() {
   if (!settings.preload || images.length < 2) return;
-  for (const off of [1, -1]) {
+  // 本モードでは次の見開き（2 枚）と前の見開き（2 枚）
+  for (const off of showingBook ? [2, 3, -1, -2] : [1, -1]) {
     // 端で折り返さないので、範囲外は先読みしない
     const i = index + off;
     if (i < 0 || i >= images.length) continue;
@@ -337,13 +421,14 @@ function preloadNeighbors() {
   }
 }
 
-// 表示中の要素（画像か動画。音楽ならアートワーク）
+// 表示中の要素（画像か動画。音楽ならアートワーク、本モードなら見開きの箱）
 function mediaEl() {
   if (showingAudio) return artwork;
+  if (showingBook) return bookEl;
   return showingVideo ? video : img;
 }
 
-// 表示中の画像・動画の実寸。まだ分からなければ null。
+// 表示中の画像・動画の実寸（本モードは見開き全体）。まだ分からなければ null。
 // 音楽はアートワークの実寸に加えて、周りの余白と曲名の帯の大きさ（px で固定。
 // ウィンドウの大きさによらない）を extraWidth / extraHeight で返す。
 // 「メディアに合わせる」では Rust 側がこの分を除いた残りをアートワークの縦横比に合わせる
@@ -361,6 +446,7 @@ function mediaSize() {
       extraHeight: parseFloat(pad.paddingTop) + audioPanel.offsetHeight,
     };
   }
+  if (showingBook) return bookSize();
   const [width, height] = showingVideo
     ? [video.videoWidth, video.videoHeight]
     : [img.naturalWidth, img.naturalHeight];
@@ -389,10 +475,13 @@ function fitsToImage() {
   return settings.windowSizeMode === "image";
 }
 
-// 表示中のファイルの種類（何も開いていなければ null）
+// 表示中のファイルの種類（何も開いていなければ null）。
+// 本モードはウィンドウの大きさ・位置を画像とは別に覚えるので "book" とする
 function shownKind() {
   if (index < 0) return null;
-  return showingVideo ? "video" : showingAudio ? "audio" : "image";
+  if (showingVideo) return "video";
+  if (showingAudio) return "audio";
+  return showingBook ? "book" : "image";
 }
 
 // 表示する種類を Rust 側へ知らせる。設定「ファイルの種類ごとにウィンドウを保持する」が
@@ -460,17 +549,20 @@ async function show() {
   showingVideo = !archivePath && isVideoPath(images[index]);
   showingAudio = !archivePath && isAudioPath(images[index]);
   showingMedia = showingVideo || showingAudio;
+  showingBook = bookMode && !showingMedia;
   app.classList.toggle("video", showingVideo);
   app.classList.toggle("audio", showingAudio);
   video.hidden = !showingVideo;
   audioBox.hidden = !showingAudio;
-  img.hidden = showingMedia;
+  img.hidden = showingMedia || showingBook;
+  bookEl.hidden = !showingBook;
   syncWindowKind();
   setFitMode();
   placeholder.hidden = true;
   updateChrome();
   if (showingMedia) {
     img.removeAttribute("src");
+    releaseBookPages();
     const autoplay = continuing || (showingAudio ? settings.audioAutoplay : settings.videoAutoplay);
     loadVideo(convertFileSrc(images[index]), autoplay);
     if (showingAudio) {
@@ -485,10 +577,14 @@ async function show() {
     return;
   }
   setArtwork(null);
+  if (showingBook) {
+    await showBook(token);
+    if (token === showToken) preloadNeighbors();
+    return;
+  }
+  releaseBookPages();
   try {
-    const src = archivePath
-      ? await archiveBlobUrl(images[index])
-      : convertFileSrc(images[index]);
+    const src = await entrySrc(images[index]);
     if (token !== showToken) return; // 既に別の画像へ移動している
     img.src = src;
     onImageReady(async () => {
@@ -507,6 +603,63 @@ async function show() {
 img.addEventListener("error", () => {
   if (img.src) showError(`読み込みに失敗しました: ${baseName(images[index] ?? "")}`);
 });
+
+// 画像の表示に使う URL（書庫の中なら取り出して blob URL にする）
+async function entrySrc(entry) {
+  return archivePath ? archiveBlobUrl(entry) : convertFileSrc(entry);
+}
+
+// 読み込みが終わる（失敗も含む）のを待つ
+function imageSettled(el) {
+  return new Promise((resolve) => {
+    if (el.complete && el.naturalWidth) {
+      resolve();
+      return;
+    }
+    el.addEventListener("load", resolve, { once: true });
+    el.addEventListener("error", resolve, { once: true });
+  });
+}
+
+// 見開きの [前のページ, 後のページ] を置く要素。
+// 左開き（横書きの本など）は前のページが左、右開き（日本の漫画など）は前のページが右
+function bookPageEls() {
+  return settings.bookBinding === "right" ? [bookRight, bookLeft] : [bookLeft, bookRight];
+}
+
+// 本モードの見開きを表示する。最後の 1 枚だけが残ったときは 1 ページだけ出す
+async function showBook(token) {
+  img.removeAttribute("src");
+  let srcs;
+  try {
+    srcs = await Promise.all(shownEntries().map(entrySrc));
+  } catch (e) {
+    if (token === showToken) showError(e);
+    return;
+  }
+  if (token !== showToken) return; // 既に別のページへ移動している
+  bookPageEls().forEach((el, i) => {
+    el.hidden = !srcs[i];
+    if (srcs[i]) el.src = srcs[i];
+    else el.removeAttribute("src");
+  });
+  // 読み込むまでは大きさが分からないので、箱をいったん空にする（実寸ではみ出さないように）
+  layoutBook();
+  await Promise.all(bookPages().map(imageSettled));
+  if (token !== showToken) return;
+  layoutBook();
+  await fitWindowToImage();
+  if (token !== showToken) return;
+  applyStartupZoom();
+}
+
+for (const el of [bookLeft, bookRight]) {
+  el.addEventListener("error", () => {
+    if (!showingBook || !el.getAttribute("src")) return;
+    const entry = shownEntries()[bookPageEls().indexOf(el)];
+    showError(`読み込みに失敗しました: ${baseName(entry ?? "")}`);
+  });
+}
 
 // ---- 動画 ----
 // 再生は OS の WebView 任せ（Windows: WebView2 / macOS: WKWebView）。
@@ -871,6 +1024,8 @@ async function openPath(path, opts = {}) {
     folderPath = res.dir ?? null;
     listKind = res.kind ?? null;
     listDepth = res.depth ?? 1;
+    // 本モードは画像の一覧でだけ使う（動画・音楽を開いたら解く）
+    if (listKind !== "image") bookMode = false;
     entryPrefix = res.prefix ?? "";
     images = res.images;
     const at = opts.current != null ? images.indexOf(opts.current) : -1;
@@ -894,9 +1049,12 @@ function clearView() {
   showingVideo = false;
   showingAudio = false;
   showingMedia = false;
+  showingBook = false;
   app.classList.remove("video", "audio");
   video.hidden = true;
   audioBox.hidden = true;
+  bookEl.hidden = true;
+  releaseBookPages();
   setArtwork(null);
   // src の無い <img> を見せたままにすると、フィット表示の箱（ウィンドウいっぱい）に
   // 読み込み失敗の枠が出て、案内が横へ押し出される
@@ -910,6 +1068,11 @@ function clearView() {
 
 function step(delta) {
   if (images.length === 0) return;
+  // 本モードは見開きごと（2 ページずつ）めくる
+  if (showingBook) {
+    stepBook(delta * 2);
+    return;
+  }
   let next = index + delta;
   if (next < 0 || next >= images.length) {
     if (!settings.wrapAround) {
@@ -921,6 +1084,60 @@ function step(delta) {
   }
   index = next;
   show();
+}
+
+// ---- 本モード ----
+// 画像を 2 ページずつ並べて表示する。← → は見開きごと（AB → CD → EF）、
+// ↑ ↓ は 1 ページずつ（AB → BC → CD）で、ページの組み合わせのずれを直すのに使う。
+// 左開き / 右開きを切り替えても、← が前・→ が次なのは変わらない
+
+// 最後の見開き（最後の 2 ページ）の先頭の位置
+function lastSpreadIndex() {
+  return Math.max(images.length - 2, 0);
+}
+
+// delta が ±2 なら見開きごと、±1 なら 1 ページずつ動かす。
+// 1 ページずつのときは最後の 2 ページまでしか進まない（後ろのページが無くならないように）。
+// 見開きごとのときは、奇数ページの本なら最後は 1 ページだけになる
+function stepBook(delta) {
+  if (images.length === 0) return;
+  const lastStart = lastSpreadIndex();
+  const end = Math.abs(delta) === 1 ? lastStart : images.length - 1;
+  let next = index + delta;
+  // 1 ページずらした見開き（BC など）から戻るときは、先頭の見開きで止める
+  if (next < 0 && index > 0) next = 0;
+  if (next < 0 || next > end) {
+    if (!settings.wrapAround) {
+      showToast(next < 0 ? "最初のページです" : "最後のページです", "notice");
+      return;
+    }
+    next = next < 0 ? lastStart : 0;
+  }
+  if (next === index) return;
+  index = next;
+  show();
+}
+
+// 画像の一覧を表示しているときだけ本モードにできる
+function canUseBookMode() {
+  return index >= 0 && listKind === "image";
+}
+
+function toggleBookMode() {
+  if (!bookMode && !canUseBookMode()) {
+    showToast("本モードは画像を表示しているときだけ使えます", "notice");
+    return;
+  }
+  bookMode = !bookMode;
+  show();
+}
+
+// 左開き（"left"）/ 右開き（"right"）。次に起動したときも同じ向きで開く
+function setBookBinding(binding) {
+  if (settings.bookBinding === binding) return;
+  settings.bookBinding = binding;
+  saveSettings();
+  if (showingBook) show();
 }
 
 async function rescan() {
@@ -988,14 +1205,19 @@ async function refreshFolder() {
   // （同じフォルダでも、ファイルから開き直して深さが変わったときは捨てる）
   if (archivePath || folderPath !== dir || listDepth !== depth) return;
 
-  const current = index >= 0 ? images[index] : null;
+  const shown = shownEntries();
+  const current = shown[0] ?? null;
   const added = res.images.length - images.length;
   images = res.images;
   // 空のフォルダを開いていたときは、ここで初めて種類が決まる
   listKind = res.kind ?? listKind;
 
   const at = current ? images.indexOf(current) : -1;
-  if (at >= 0) {
+  if (at >= 0 && showingBook && images.slice(at, at + 2).join("\n") !== shown.join("\n")) {
+    // 本モードで見開きの後のページが増減した。前のページはそのままで並べ直す
+    index = at;
+    await show();
+  } else if (at >= 0) {
     // 表示中の画像は動かさない（前に画像が増えても位置を追いかける）
     index = at;
     updateChrome();
@@ -1015,8 +1237,9 @@ appWindow.listen("folder-changed", scheduleRefresh);
 
 // ---- 削除 ----
 // 完全削除はせず OS のゴミ箱へ送る。書庫の中身はファイルとして存在しないので対象外
+// 本モードでは 2 ページのどちらを消すのか紛らわしいので消さない
 function canDelete() {
-  return !archivePath && index >= 0 && index < images.length;
+  return !archivePath && !showingBook && index >= 0 && index < images.length;
 }
 
 let confirmResolve = null;
@@ -1055,7 +1278,8 @@ confirmEl.addEventListener("mousedown", (e) => {
 
 async function deleteCurrent() {
   if (!canDelete()) {
-    if (archivePath) showToast("圧縮フォルダの中の画像は削除できません", "notice");
+    if (showingBook) showToast("本モードでは削除できません（B で 1 ページ表示に戻せます）", "notice");
+    else if (archivePath) showToast("圧縮フォルダの中の画像は削除できません", "notice");
     return;
   }
   const path = images[index];
@@ -1253,7 +1477,7 @@ window.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (showingMedia && handleVideoKey(e)) return;
   switch (e.key) {
-    // ↑ ↓ は今後の機能のために空けておく（前後移動には使わない）
+    // ← → は左開き / 右開きにかかわらず、← が前・→ が次（本モードでは見開きごと）
     case "ArrowRight":
     case "PageDown":
     case " ":
@@ -1266,11 +1490,22 @@ window.addEventListener("keydown", (e) => {
       e.preventDefault();
       step(-1);
       break;
+    // ↑ ↓ は本モードで 1 ページずつずらすのに使う。それ以外では今後の機能のために空けておく
+    case "ArrowUp":
+    case "ArrowDown":
+      if (!showingBook) break;
+      e.preventDefault();
+      stepBook(e.key === "ArrowUp" ? -1 : 1);
+      break;
     case "Home":
       if (images.length) { index = 0; show(); }
       break;
     case "End":
-      if (images.length) { index = images.length - 1; show(); }
+      if (images.length) { index = showingBook ? lastSpreadIndex() : images.length - 1; show(); }
+      break;
+    case "b":
+    case "B":
+      if (!e.repeat) toggleBookMode();
       break;
     case "+":
     case "=":
@@ -1571,6 +1806,7 @@ function applySettings() {
   applyCorners();
   app.classList.toggle("hide-filename", !settings.showFilename);
   img.style.imageRendering = settings.imageRendering;
+  bookEl.style.imageRendering = settings.imageRendering;
   video.loop = mediaLoop();
   setVolume(mediaVolume());
   appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
@@ -1654,6 +1890,28 @@ function buildContextMenu() {
       action: deleteCurrent,
     },
     { separator: true },
+    {
+      label: "本モード（2 ページ表示）",
+      accel: "B",
+      checked: showingBook,
+      disabled: !showingBook && !canUseBookMode(),
+      action: toggleBookMode,
+    },
+    {
+      label: "左開き（左から右へ読む）",
+      radio: true,
+      checked: settings.bookBinding !== "right",
+      disabled: !canUseBookMode(),
+      action: () => setBookBinding("left"),
+    },
+    {
+      label: "右開き（右から左へ読む）",
+      radio: true,
+      checked: settings.bookBinding === "right",
+      disabled: !canUseBookMode(),
+      action: () => setBookBinding("right"),
+    },
+    { separator: true },
     { label: "ファイルを開く…", accel: "O", action: openDialog },
     { label: "フォルダを開く…", accel: "D", action: openFolderDialog },
     { label: "再読み込み", accel: "R", disabled: !hasFile, action: rescan },
@@ -1677,9 +1935,16 @@ function openContextMenu(x, y) {
     const btn = document.createElement("button");
     btn.className = "ctx-item";
     btn.type = "button";
-    btn.setAttribute("role", "menuitem");
+    // checked を持つ項目はチェック（radio なら丸）を左に出す（style.css の .ctx-item::before）
+    const checkable = item.checked !== undefined;
+    btn.setAttribute(
+      "role",
+      !checkable ? "menuitem" : item.radio ? "menuitemradio" : "menuitemcheckbox"
+    );
+    if (checkable) btn.setAttribute("aria-checked", String(!!item.checked));
     btn.disabled = !!item.disabled;
     const label = document.createElement("span");
+    label.className = "ctx-label";
     label.textContent = item.label;
     const accel = document.createElement("span");
     accel.className = "ctx-accel";
@@ -1712,8 +1977,10 @@ window.addEventListener("resize", hideContextMenu);
 
 listen("settings-changed", (event) => {
   const previousMode = settings.windowSizeMode;
+  const previousBinding = settings.bookBinding;
   settings = normalizeSettings(event.payload);
   applySettings();
+  if (showingBook && settings.bookBinding !== previousBinding) show();
   // 「メディアに合わせる」に切り替えた直後は、今の大きさを基準に縦横比だけ合わせる
   if (settings.windowSizeMode !== previousMode) fitWindowToImage();
 });

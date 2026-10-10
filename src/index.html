@@ -13,6 +13,12 @@
          音楽も #video で鳴らし（映像は出さない）、代わりに #audio にアートワークと曲名を出す -->
     <div id="stage" data-tauri-drag-region>
       <img id="image" alt="" draggable="false" hidden />
+      <!-- 本モード（画像を 2 ページ並べる）のときだけ #image の代わりに出す。
+           左右どちらに前のページを置くか（左開き / 右開き）は main.js が src を振り分ける -->
+      <div id="book" hidden>
+        <img id="book-left" alt="" draggable="false" />
+        <img id="book-right" alt="" draggable="false" />
+      </div>
       <video id="video" hidden playsinline preload="metadata" disablepictureinpicture></video>
       <!-- 音楽を表示しているときだけ出す。上にアートワーク、下の帯（ウィンドウの「＋α」の部分）に
            曲名・アーティストと細い再生位置のバーを出す。再生操作のカードはこの帯の上に重なる -->
@@ -30,7 +36,7 @@
         <p class="big">sView</p>
         <p>画像・動画・音楽・フォルダ・圧縮フォルダ (zip / cbz) をここにドロップ</p>
         <p class="dim">クリック または <code>O</code> でファイル、<code>D</code> でフォルダを開く</p>
-        <p class="dim">← → で移動</p>
+        <p class="dim">← → で移動、<code>B</code> で本モード（2 ページ表示）</p>
       </div>
       <div id="error" hidden></div>
     </div>
