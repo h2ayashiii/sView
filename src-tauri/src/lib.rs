@@ -83,7 +83,7 @@ struct PendingPosition(Mutex<Option<RestoredPosition>>);
 #[derive(Default)]
 struct KindState {
     /// 最後に表示した種類（何も開いていない間も前の種類を覚えたまま）
-    kind: Option<MediaKind>,
+    kind: Option<WindowKindKey>,
     per_kind: bool,
 }
 struct WindowKind(Mutex<KindState>);
@@ -153,6 +153,17 @@ enum MediaKind {
     Image,
     Video,
     Audio,
+}
+
+/// ウィンドウの大きさと位置を種類ごとに覚えるときの区分。
+/// ファイルの種類（MediaKind）に、画像を 2 枚並べる本モードを別枠として加えたもの
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum WindowKindKey {
+    Image,
+    Video,
+    Audio,
+    Book,
 }
 
 #[derive(serde::Serialize)]
@@ -330,12 +341,27 @@ mod tests {
         );
         state
             .kinds
-            .insert(kind_key(MediaKind::Video).to_string(), video);
+            .insert(kind_key(WindowKindKey::Video).to_string(), video);
         let text = serde_json::to_string(&state).unwrap();
         let read: WindowState = serde_json::from_str(&text).unwrap();
         assert_eq!(read.kinds["video"].width, Some(1280.0));
         assert_eq!(read.kinds["video"].x, None);
         assert_eq!(read.x, Some(10.0));
+    }
+
+    #[test]
+    fn window_kind_key_includes_book_mode() {
+        // フロントエンドは種類を小文字の文字列で渡す。本モードは画像とは別の枠で覚える
+        for (text, key) in [
+            ("image", WindowKindKey::Image),
+            ("video", WindowKindKey::Video),
+            ("audio", WindowKindKey::Audio),
+            ("book", WindowKindKey::Book),
+        ] {
+            let parsed: WindowKindKey = serde_json::from_str(&format!("\"{text}\"")).unwrap();
+            assert_eq!(parsed, key);
+            assert_eq!(kind_key(key), text);
+        }
     }
 
     #[test]
@@ -1621,18 +1647,19 @@ struct WindowState {
     height: Option<f64>,
     x: Option<f64>,
     y: Option<f64>,
-    /// 種類（"image" / "video" / "audio"）ごとの大きさと位置。
+    /// 種類（"image" / "video" / "audio" / "book"）ごとの大きさと位置。
     /// 設定「ファイルの種類ごとにウィンドウを保持する」がオンのときだけ使う
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     kinds: BTreeMap<String, WindowState>,
 }
 
 /// 種類を window.json のキーにする
-fn kind_key(kind: MediaKind) -> &'static str {
+fn kind_key(kind: WindowKindKey) -> &'static str {
     match kind {
-        MediaKind::Image => "image",
-        MediaKind::Video => "video",
-        MediaKind::Audio => "audio",
+        WindowKindKey::Image => "image",
+        WindowKindKey::Video => "video",
+        WindowKindKey::Audio => "audio",
+        WindowKindKey::Book => "book",
     }
 }
 
@@ -1908,7 +1935,7 @@ fn place_window(window: &tauri::Window, state: &WindowState) -> Option<RestoredP
     })
 }
 
-/// 表示するファイルの種類が変わったことを受け取る。
+/// 表示するファイルの種類が変わったことを受け取る（画像の本モードも 1 つの種類として扱う）。
 /// 設定「ファイルの種類ごとにウィンドウを保持する」がオンなら、それまでの種類の
 /// 大きさと位置を window.json に覚え、新しい種類で前に使っていた大きさと位置へ戻す
 /// （その種類をまだ表示したことがなければ今のまま）。
@@ -1920,7 +1947,7 @@ fn set_window_kind(
     window: WebviewWindow,
     state: State<WindowKind>,
     lock: State<AspectLock>,
-    kind: MediaKind,
+    kind: WindowKindKey,
     per_kind: bool,
 ) {
     let previous = {

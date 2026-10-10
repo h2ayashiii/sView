@@ -16,6 +16,15 @@ const SHORTCUT_SECTIONS = [
     ],
   },
   {
+    label: "本モード（画像を 2 ページ並べる）",
+    items: [
+      { label: "本モードの切り替え", keys: "B" },
+      { label: "次 / 前の見開き（2 ページずつ）", keys: "→ / ←" },
+      { label: "1 ページずつずらす（次 / 前）", keys: "↓ / ↑" },
+      { label: "最初 / 最後の見開き", keys: "Home / End" },
+    ],
+  },
+  {
     label: "動画・音楽",
     items: [
       { label: "再生 / 一時停止", keys: "Space / K" },

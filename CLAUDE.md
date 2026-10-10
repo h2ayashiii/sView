@@ -136,7 +136,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   mouse — only the `#vb-prev` / `#vb-next` buttons in `#videobar` do, and the window-side `.nav`
   buttons are hidden (`#app.video` / `#app.audio`). The side buttons seek ±5 s and the wheel changes
   the volume (`wheelVolume`). For images ← / → page, the wheel zooms, and ↑ / ↓ are deliberately
-  unbound (reserved for a future feature). `setFitMode` leaves `#stage` without
+  unbound (reserved for a future feature) except in book mode. `setFitMode` leaves `#stage` without
   `data-tauri-drag-region` while a video is shown — with it, the OS move loop starts on mousedown and
   the release never reaches the WebView, so a click could not be told apart. Instead a press that moves
   `VIDEO_DRAG_THRESHOLD_PX` calls `appWindow.startDragging()`, and one released within
@@ -208,7 +208,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `fits_window_to_image()` accepts `"flexible"` on the Rust side (Rust reads `settings.json`
   raw, so it never sees the frontend's mapping).
 - `windowPerKind` ("ファイルの種類ごとにウィンドウを保持する") keeps one size + position per media
-  kind in `window.json` (`WindowState.kinds`, keyed `"image"` / `"video"` / `"audio"`).
+  kind in `window.json` (`WindowState.kinds`, keyed `"image"` / `"video"` / `"audio"` / `"book"`).
   `show()` calls `syncWindowKind()` → `set_window_kind(kind, perKind)`; Rust tracks the last kind
   in `WindowKind` and, on a change, stores the outgoing kind's geometry and `place_window`s the
   incoming one's (also on the first kind after launch, since the restored window may belong to
@@ -217,6 +217,17 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `windowKindSync` so the aspect fit runs after the restore. `save_window_state` also writes the
   current kind's entry. The startup file is opened only after `load_settings` resolves
   (`openStartupFile`), otherwise the first `set_window_kind` would carry the default `perKind`.
+- Book mode (`bookMode`, `B` / context menu; `docs/specs/book.md`) shows images two at a time in
+  `#book` (`#book-left` / `#book-right`) instead of `#image`. `showingBook` = `bookMode && !showingMedia`;
+  the spread is `images[index]` + `images[index + 1]` (`shownEntries()`), and `settings.bookBinding`
+  (`HIDDEN_DEFAULTS`, `"left"` / `"right"`) only decides which `<img>` gets the earlier page — ← is always
+  previous and → next. `step()` moves by 2 (`stepBook(±2)`), ↑ / ↓ by 1 (stops at `lastSpreadIndex()`).
+  `layoutBook()` sizes `#book` in px (pages share the taller page's height, `bookSize()`); zoom / pan /
+  freeze treat the whole spread as one picture via `zoomEl()` / `zoomNaturalSize()` / `mediaEl()`.
+  For the window it is its own kind: `shownKind()` returns `"book"` and Rust stores it under
+  `WindowKindKey::Book` (`kinds.book` in `window.json`), separate from `MediaKind`, which stays the
+  list kind. `bookMode` is not saved and is cleared when a non-image list opens; deleting is disabled
+  in book mode.
 - File associations are one `type: "associations"` row per kind tab (`associationSection(kind)`).
   On Windows `register()` rebuilds the whole set, so a row's apply also sends the other kinds'
   currently associated extensions; on macOS it sends only its own kind.
