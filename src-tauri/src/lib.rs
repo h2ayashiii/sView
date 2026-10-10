@@ -1,8 +1,9 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -52,9 +53,32 @@ const MAX_DEPTH: usize = 3;
 /// 展開後サイズの上限（zip bomb 対策 / 1枚あたり）
 const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 
+/// ビューアのウィンドウ（ラベル）ごとに持つ状態。
+/// macOS では開いたファイルごとにウィンドウを増やすので、ウィンドウに結びつく
+/// 状態はすべてラベルで引く。ウィンドウを閉じたら forget_window で消す
+struct PerWindow<T>(Mutex<HashMap<String, T>>);
+
+impl<T: Default> PerWindow<T> {
+    fn new() -> Self {
+        Self(Mutex::new(HashMap::new()))
+    }
+
+    /// label の分を取り出して f に渡す（無ければ既定値で作る）。ロックできなければ None
+    fn with<R>(&self, label: &str, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        let mut map = self.0.lock().ok()?;
+        Some(f(map.entry(label.to_string()).or_default()))
+    }
+
+    fn remove(&self, label: &str) {
+        if let Ok(mut map) = self.0.lock() {
+            map.remove(label);
+        }
+    }
+}
+
 /// 起動時に渡されたファイル（CLI 引数 / macOS の Opened イベント）を
-/// フロントエンドが取りに来るまで保持する
-struct StartupFile(Mutex<Option<String>>);
+/// フロントエンドが取りに来るまで、ウィンドウごとに保持する
+type StartupFile = PerWindow<Option<String>>;
 
 /// 直近に開いた書庫のハンドルを 1 つだけ保持する。
 /// ZipArchive は生成時に末尾のセントラルディレクトリだけを読むため、
@@ -76,7 +100,7 @@ struct RestoredPosition {
     /// ユーザーが動かしたものとみなし、saved には合わせない
     placed: (f64, f64),
 }
-struct PendingPosition(Mutex<Option<RestoredPosition>>);
+type PendingPosition = PerWindow<Option<RestoredPosition>>;
 
 /// 表示中のファイルの種類と、設定「ファイルの種類ごとにウィンドウを保持する」。
 /// フロントエンドが set_window_kind で知らせる
@@ -85,13 +109,16 @@ struct KindState {
     /// 最後に表示した種類（何も開いていない間も前の種類を覚えたまま）
     kind: Option<MediaKind>,
     per_kind: bool,
+    /// 開くファイルを割り当て済みか。まだ何も表示していないウィンドウでも、
+    /// 割り当て済みなら次のファイルは別のウィンドウで開く
+    claimed: bool,
 }
-struct WindowKind(Mutex<KindState>);
+type WindowKind = PerWindow<KindState>;
 
-/// 画面に収まる大きさへ抑えるのは、立ち上げてから最初にウィンドウを開くときだけ。
-/// true の間がその 1 回で、済ませたら false にして、終了するまで戻さない
+/// 画面に収まる大きさへ抑えるのは、ウィンドウを開いてから最初に合わせるときだけ。
+/// false の間がその 1 回で、済ませたら true にして、閉じるまで戻さない
 /// （動かしている間は、ユーザーが決めた大きさをそのまま尊重する）
-struct StartupFit(Mutex<bool>);
+type FirstFitDone = PerWindow<bool>;
 
 /// 「画像に合わせる」で、ウィンドウを画像の縦横比から外させないための覚え書き。
 /// ドラッグの最中も含め、大きさが変わるたびに参照する
@@ -117,7 +144,7 @@ struct AspectState {
     /// 手で大きさを変えたときだけ更新する
     area: f64,
 }
-struct AspectLock(Mutex<AspectState>);
+type AspectLock = PerWindow<AspectState>;
 
 /// macOS で端・角を引っ張っている間の様子
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -143,7 +170,7 @@ struct Watching {
     /// drop するとネイティブの監視も解除されるので、持っているだけでよい
     _watcher: RecommendedWatcher,
 }
-struct FolderWatcher(Mutex<Option<Watching>>);
+type FolderWatcher = PerWindow<Option<Watching>>;
 
 /// ファイルの種類。一覧には 1 種類だけを並べる
 /// （単体のファイルを開いたらその種類、フォルダ・書庫なら並び順で先頭のファイルの種類）
@@ -1477,15 +1504,17 @@ fn is_listing_change(event: &notify::Event, roots: &[PathBuf], depth: usize) -> 
 /// 一定時間まとめてから 1 回だけ行う
 #[tauri::command]
 fn watch_folder(
-    app: AppHandle,
+    window: WebviewWindow,
     state: State<FolderWatcher>,
     path: Option<String>,
     depth: Option<usize>,
 ) -> Result<(), String> {
-    let mut current = state
+    let label = window.label().to_string();
+    let mut watchers = state
         .0
         .lock()
         .map_err(|_| "監視の状態を取得できません".to_string())?;
+    let current = watchers.entry(label.clone()).or_default();
 
     let Some(path) = path else {
         *current = None;
@@ -1513,11 +1542,12 @@ fn watch_folder(
             roots.push(real);
         }
     }
-    let handle = app.clone();
+    let handle = window.app_handle().clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         match res {
             Ok(event) if is_listing_change(&event, &roots, depth) => {
-                let _ = handle.emit("folder-changed", ());
+                // 知らせるのは、このフォルダを開いているウィンドウだけ
+                let _ = handle.emit_to(label.as_str(), "folder-changed", ());
             }
             // 監視できなくなった場合（フォルダごと消えたなど）は記録だけして続ける。
             // 一覧は R キーで作り直せる
@@ -1547,10 +1577,10 @@ fn watch_folder(
     Ok(())
 }
 
-/// 起動引数（関連付け起動など）で渡されたファイルを一度だけ返す
+/// 起動引数（関連付け起動など）やこのウィンドウに割り当てたファイルを一度だけ返す
 #[tauri::command]
-fn get_startup_file(state: State<StartupFile>) -> Option<String> {
-    state.0.lock().unwrap().take()
+fn get_startup_file(window: WebviewWindow, state: State<StartupFile>) -> Option<String> {
+    state.with(window.label(), Option::take).flatten()
 }
 
 fn startup_file_from_args() -> Option<String> {
@@ -1698,10 +1728,12 @@ fn save_window_state(window: &tauri::Window) {
     };
     let mut state = read_window_state(app).unwrap_or_default();
     copy_geometry(&mut state, &geometry);
-    if let Ok(kind) = app.state::<WindowKind>().0.lock() {
-        if let (true, Some(k)) = (kind.per_kind, kind.kind) {
-            state.kinds.insert(kind_key(k).to_string(), geometry);
-        }
+    let kind = app
+        .state::<WindowKind>()
+        .with(window.label(), |k| k.per_kind.then_some(k.kind).flatten())
+        .flatten();
+    if let Some(k) = kind {
+        state.kinds.insert(kind_key(k).to_string(), geometry);
     }
     write_window_state(app, &state);
 }
@@ -1859,17 +1891,17 @@ fn restore_window_state(window: &tauri::Window) {
         return;
     };
     let placed = place_window(window, &state);
-    remember_placement(app, placed);
+    remember_placement(window, placed);
 }
 
 /// 「画像に合わせる」なら、最初の fit_window_to_image が置いた左上に合わせるよう残す
-fn remember_placement(app: &AppHandle, placed: Option<RestoredPosition>) {
+fn remember_placement(window: &tauri::Window, placed: Option<RestoredPosition>) {
+    let app = window.app_handle();
     if placed.is_none() || !fits_window_to_image(app) {
         return;
     }
-    if let Ok(mut pending) = app.state::<PendingPosition>().0.lock() {
-        *pending = placed;
-    }
+    app.state::<PendingPosition>()
+        .with(window.label(), |pending| *pending = placed);
 }
 
 /// 保存した大きさ・位置にウィンドウを置く。
@@ -1923,14 +1955,18 @@ fn set_window_kind(
     kind: MediaKind,
     per_kind: bool,
 ) {
-    let previous = {
-        let Ok(mut current) = state.0.lock() else {
-            return;
-        };
+    let Some(previous) = state.with(window.label(), |current| {
         current.per_kind = per_kind;
         current.kind.replace(kind)
+    }) else {
+        return;
     };
     if !per_kind || previous == Some(kind) {
+        return;
+    }
+    // あとから開いたウィンドウ（macOS）は、開いたときの姿のまま最初の種類を迎える
+    // （種類ごとに覚えた場所へ置き直すと、どのウィンドウも同じ場所に重なってしまう）
+    if previous.is_none() && window.label() != MAIN_LABEL {
         return;
     }
     let window = window.as_ref().window();
@@ -1954,15 +1990,15 @@ fn set_window_kind(
     // 固定はこのあとフロントエンドが表示する画像に合わせてかけ直す）。
     // ロックは set_size の前に手放す（その場で Resized が呼ばれると止まる）
     if let (Some(width), Some(height)) = (target.width, target.height) {
-        if let Ok(mut aspect) = lock.0.lock() {
+        lock.with(window.label(), |aspect| {
             *aspect = AspectState {
                 area: width * height,
                 ..AspectState::default()
-            };
-        }
+            }
+        });
     }
     let placed = place_window(&window, target);
-    remember_placement(app, placed);
+    remember_placement(&window, placed);
 }
 
 /// 立ち上げて最初に開くときの、ウィンドウの大きさの上限（作業領域に対する割合）。
@@ -2030,9 +2066,10 @@ fn set_aspect_lock(
     extra_width: Option<f64>,
     extra_height: Option<f64>,
 ) {
-    let Ok(mut state) = lock.0.lock() else {
+    let Ok(mut map) = lock.0.lock() else {
         return;
     };
+    let state = map.entry(window.label().to_string()).or_default();
     let Some(ratio) = ratio.filter(|r| *r > 0.0) else {
         *state = AspectState::default();
         return;
@@ -2155,9 +2192,10 @@ fn mouse_button_down() -> bool {
 fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
     let app = window.app_handle();
     let lock = app.state::<AspectLock>();
-    let Ok(mut state) = lock.0.lock() else {
+    let Ok(mut map) = lock.0.lock() else {
         return;
     };
+    let state = map.entry(window.label().to_string()).or_default();
     let Some(ratio) = state.ratio else {
         return;
     };
@@ -2209,7 +2247,7 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
     // ロックも手放しておく（持ったまま呼ぶと、その場で呼ばれたときに止まる）
     state.last = fixed;
     state.area = width * height;
-    drop(state);
+    drop(map);
 
     let _ = window.set_size(fixed);
 }
@@ -2227,7 +2265,7 @@ fn fit_window_to_image(
     window: WebviewWindow,
     pending: State<PendingPosition>,
     lock: State<AspectLock>,
-    startup: State<StartupFit>,
+    first_fit: State<FirstFitDone>,
     width: f64,
     height: f64,
     extra_width: Option<f64>,
@@ -2250,7 +2288,8 @@ fn fit_window_to_image(
     })();
 
     // 保つべき広さ。まだ覚えていなければ今のウィンドウの広さ
-    let area = lock.0.lock().map(|state| state.area).unwrap_or(0.0);
+    let label = window.label();
+    let area = lock.with(label, |state| state.area).unwrap_or(0.0);
     let area = if area > 0.0 {
         area
     } else {
@@ -2261,12 +2300,10 @@ fn fit_window_to_image(
     };
 
     let work_area = current_work_area(&window.as_ref().window());
-    // 画面に収めるのは立ち上げて最初の 1 枚だけ。前回のディスプレイ構成が
+    // 画面に収めるのはウィンドウを開いて最初の 1 枚だけ。前回のディスプレイ構成が
     // 変わっていても画面内に開くための保険で、以後は口を出さない
-    let first = startup
-        .0
-        .lock()
-        .map(|mut first| std::mem::replace(&mut *first, false))
+    let first = first_fit
+        .with(label, |done| !std::mem::replace(done, true))
         .unwrap_or(false);
     let limit = if first {
         screen_limit(work_area, scale)
@@ -2280,10 +2317,8 @@ fn fit_window_to_image(
     // 起動して最初の 1 枚は前回の左上に合わせる。ただし起動時に置いた場所から
     // 動いていたら（ユーザーが動かしていたら）そのまま中心を保つ
     let anchor = pending
-        .0
-        .lock()
-        .ok()
-        .and_then(|mut p| p.take())
+        .with(label, Option::take)
+        .flatten()
         .and_then(|restored| {
             const TOLERANCE: i32 = 2;
             let (pos, _, _) = before?;
@@ -2300,13 +2335,13 @@ fn fit_window_to_image(
     // 広さは普段は変えないが、立ち上げて最初の 1 枚で画面に収めるために縮めたときは
     // その広さを以後の基準にする（元の広さのままだと、次の画像へ移った途端に
     // 縮める前の大きさへ戻り、ウィンドウが一度だけ大きくなってしまう）
-    if let Ok(mut state) = lock.0.lock() {
+    lock.with(label, |state| {
         state.last = new_inner;
         state.reported = new_inner;
         if first {
             state.area = w * h;
         }
-    }
+    });
     // 既に縦横比どおりなら何もしない
     if before.map(|(_, _, inner)| inner) == Some(new_inner) && anchor.is_none() {
         return Ok(());
@@ -2978,12 +3013,21 @@ mod win_sizing {
     const WMSZ_BOTTOMRIGHT: usize = 8;
     const SUBCLASS_ID: usize = 0x5356_4945; // "SVIE"
 
+    /// サブクラスに持たせる、縦横比の覚え書きの引き先
+    struct Target {
+        app: AppHandle,
+        label: String,
+    }
+
     pub fn install(window: &WebviewWindow) -> Result<(), String> {
         let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as Hwnd;
-        // サブクラスはウィンドウと同じだけ生きるので、AppHandle は手放さない
-        let data = Box::into_raw(Box::new(window.app_handle().clone())) as usize;
+        // サブクラスはウィンドウと同じだけ生きるので、AppHandle とラベルは手放さない
+        let data = Box::into_raw(Box::new(Target {
+            app: window.app_handle().clone(),
+            label: window.label().to_string(),
+        })) as usize;
         if unsafe { SetWindowSubclass(hwnd, proc, SUBCLASS_ID, data) } == 0 {
-            drop(unsafe { Box::from_raw(data as *mut AppHandle) });
+            drop(unsafe { Box::from_raw(data as *mut Target) });
             return Err("ウィンドウのサブクラス化に失敗しました".to_string());
         }
         Ok(())
@@ -2998,8 +3042,8 @@ mod win_sizing {
         data: usize,
     ) -> isize {
         if msg == WM_SIZING && lparam != 0 && data != 0 {
-            let app = &*(data as *const AppHandle);
-            if constrain(app, hwnd, wparam, &mut *(lparam as *mut Rect)) {
+            let target = &*(data as *const Target);
+            if constrain(target, hwnd, wparam, &mut *(lparam as *mut Rect)) {
                 return 1;
             }
         }
@@ -3008,16 +3052,19 @@ mod win_sizing {
 
     /// 引っ張られている辺・角 edge に合わせて、これからなる四角形 rect（外枠・物理ピクセル）を
     /// 縦横比へ合わせる。反対側の辺・角は動かさない。書き換えたら true
-    fn constrain(app: &AppHandle, hwnd: Hwnd, edge: usize, rect: &mut Rect) -> bool {
+    fn constrain(target: &Target, hwnd: Hwnd, edge: usize, rect: &mut Rect) -> bool {
         let (horizontal, vertical) = match edge {
             WMSZ_LEFT | WMSZ_RIGHT => (true, false),
             WMSZ_TOP | WMSZ_BOTTOM => (false, true),
             WMSZ_TOPLEFT | WMSZ_TOPRIGHT | WMSZ_BOTTOMLEFT | WMSZ_BOTTOMRIGHT => (true, true),
             _ => return false,
         };
-        let lock = app.state::<AspectLock>();
+        let lock = target.app.state::<AspectLock>();
         // 取れないときは今回だけ OS に任せる（あとの Resized で直る）
-        let Ok(mut state) = lock.0.try_lock() else {
+        let Ok(mut map) = lock.0.try_lock() else {
+            return false;
+        };
+        let Some(state) = map.get_mut(&target.label) else {
             return false;
         };
         let Some(ratio) = state.ratio else {
@@ -3060,7 +3107,7 @@ mod win_sizing {
         state.last = fixed;
         state.reported = fixed;
         state.area = width * height;
-        drop(state);
+        drop(map);
 
         let w = fixed.width as i32 + border_w;
         let h = fixed.height as i32 + border_h;
@@ -3107,6 +3154,8 @@ mod mac_pointer {
 
     struct Ivars {
         app: AppHandle,
+        /// 知らせる先のウィンドウのラベル
+        label: String,
         window: Retained<NSWindow>,
         last_move: Cell<Option<Instant>>,
     }
@@ -3144,7 +3193,7 @@ mod mac_pointer {
                     return;
                 }
                 ivars.last_move.set(Some(now));
-                let _ = ivars.app.emit_to("main", "pointer-moved", ());
+                let _ = ivars.app.emit_to(ivars.label.as_str(), "pointer-moved", ());
             }
         }
     );
@@ -3152,11 +3201,14 @@ mod mac_pointer {
     impl PointerTracker {
         fn emit_inside(&self, inside: bool) {
             self.ivars().last_move.set(None);
-            let _ = self.ivars().app.emit_to("main", "pointer-inside", inside);
+            let ivars = self.ivars();
+            let _ = ivars
+                .app
+                .emit_to(ivars.label.as_str(), "pointer-inside", inside);
         }
     }
 
-    /// メインウィンドウに追跡範囲を取り付ける。setup() から（メインスレッドで）呼ぶ
+    /// ビューアのウィンドウに追跡範囲を取り付ける。メインスレッドで呼ぶ
     pub fn install(window: &WebviewWindow) -> Result<(), String> {
         let mtm = MainThreadMarker::new().ok_or("メインスレッド以外から呼ばれました")?;
         let ptr = window
@@ -3171,6 +3223,7 @@ mod mac_pointer {
 
         let tracker = PointerTracker::alloc(mtm).set_ivars(Ivars {
             app: window.app_handle().clone(),
+            label: window.label().to_string(),
             window: ns_window,
             last_move: Cell::new(None),
         });
@@ -3193,8 +3246,9 @@ mod mac_pointer {
             )
         };
         view.addTrackingArea(&area);
-        // NSTrackingArea は owner を保持しない。メインウィンドウはアプリと同じだけ
-        // 生きるので、owner はわざと解放しない
+        // NSTrackingArea は owner を保持しないので、owner はわざと解放しない
+        // （ウィンドウを閉じたあとに呼ばれても解放済みのものを触らないように。
+        // ウィンドウ 1 枚につき小さなオブジェクト 1 つが残るだけ）
         std::mem::forget(tracker);
         Ok(())
     }
@@ -3207,7 +3261,7 @@ mod mac_pointer {
 /// OS の大きさとこちらの大きさが交互に描かれてちらつき、角では縦横比も崩れていた
 #[cfg(target_os = "macos")]
 mod mac_sizing {
-    use std::sync::OnceLock;
+    use std::sync::{Mutex, OnceLock};
 
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
@@ -3222,21 +3276,28 @@ mod mac_sizing {
     /// （論理ピクセル）。左右・上下の両方の辺に近ければ角
     const EDGE_PX: f64 = 16.0;
 
-    struct Main {
-        app: AppHandle,
-        /// メインウィンドウの NSWindow のアドレス。delegate のクラスはほかのウィンドウとも
-        /// 共通なので、呼ばれたのがメインウィンドウかをこれで見分ける
-        window: usize,
-    }
-    static MAIN: OnceLock<Main> = OnceLock::new();
+    /// メソッドを足し終えたら入る（delegate のクラスはどのウィンドウも共通なので、足すのは 1 回だけ）
+    static APP: OnceLock<AppHandle> = OnceLock::new();
+    /// 取り付けたビューアのウィンドウ（NSWindow のアドレスとラベル）。delegate のクラスは
+    /// 設定ウィンドウなどとも共通なので、呼ばれたのがどのビューアかをこれで見分ける。
+    /// ウィンドウを閉じたら uninstall で外す
+    static WINDOWS: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
 
-    fn main_of(sender: *mut AnyObject) -> Option<(&'static Main, &'static NSWindow)> {
-        let main = MAIN.get()?;
-        if sender.is_null() || sender as usize != main.window {
+    fn viewer_of(
+        sender: *mut AnyObject,
+    ) -> Option<(&'static AppHandle, String, &'static NSWindow)> {
+        let app = APP.get()?;
+        if sender.is_null() {
             return None;
         }
-        // SAFETY: メインウィンドウはアプリと同じだけ生き、delegate はメインスレッドで呼ばれる
-        Some((main, unsafe { &*sender.cast::<NSWindow>() }))
+        let label = WINDOWS
+            .lock()
+            .ok()?
+            .iter()
+            .find(|(addr, _)| *addr == sender as usize)
+            .map(|(_, label)| label.clone())?;
+        // SAFETY: 一覧にあるのは閉じていないウィンドウだけで、delegate はメインスレッドで呼ばれる
+        Some((app, label, unsafe { &*sender.cast::<NSWindow>() }))
     }
 
     /// 引っ張り始め。カーソルの位置から、引っ張られている辺を決めて覚える
@@ -3246,7 +3307,7 @@ mod mac_sizing {
         notification: *mut AnyObject,
     ) {
         let object: *mut AnyObject = msg_send![notification, object];
-        let Some((main, window)) = main_of(object) else {
+        let Some((app, label, window)) = viewer_of(object) else {
             return;
         };
         let mouse = NSEvent::mouseLocation();
@@ -3259,13 +3320,13 @@ mod mac_sizing {
             edges => edges,
         };
         let content = window.contentRectForFrameRect(frame);
-        if let Ok(mut state) = main.app.state::<AspectLock>().0.lock() {
+        app.state::<AspectLock>().with(&label, |state| {
             state.live = Some(LiveResize {
                 edges,
                 grab: LogicalSize::new(content.size.width, content.size.height),
                 pulled: (false, false),
             });
-        }
+        });
     }
 
     /// 引っ張っている最中。OS が出した大きさ（外枠）を縦横比に沿った大きさへ差し替えて返す
@@ -3275,13 +3336,14 @@ mod mac_sizing {
         sender: *mut AnyObject,
         size: NSSize,
     ) -> NSSize {
-        let Some((main, window)) = main_of(sender) else {
+        let Some((app, label, window)) = viewer_of(sender) else {
             return size;
         };
-        let lock = main.app.state::<AspectLock>();
-        let Ok(mut state) = lock.0.lock() else {
+        let lock = app.state::<AspectLock>();
+        let Ok(mut map) = lock.0.lock() else {
             return size;
         };
+        let state = map.entry(label).or_default();
         let Some(ratio) = state.ratio else {
             return size;
         };
@@ -3320,12 +3382,15 @@ mod mac_sizing {
     /// 端・角を引っ張っている最中か（その間の Resized は keep_aspect_on_resize で直さない）。
     /// 取り付けに失敗していたら false（keep_aspect_on_resize に直させる）
     pub fn in_live_resize(window: &tauri::Window) -> bool {
-        if MAIN.get().is_none() {
-            return false;
-        }
         let Ok(ptr) = window.ns_window() else {
             return false;
         };
+        let installed = WINDOWS
+            .lock()
+            .is_ok_and(|w| w.iter().any(|(addr, _)| *addr == ptr as usize));
+        if !installed {
+            return false;
+        }
         // SAFETY: Resized はメインスレッドで届き、ptr は生きている NSWindow を指す
         unsafe { &*ptr.cast::<NSWindow>() }.inLiveResize()
     }
@@ -3343,8 +3408,8 @@ mod mac_sizing {
         }
     }
 
-    /// メインウィンドウの delegate に、サイズ変更を縦横比に合わせる処理を足す。
-    /// setup() から（メインスレッドで）呼ぶ
+    /// ビューアのウィンドウの delegate に、サイズ変更を縦横比に合わせる処理を足す。
+    /// メインスレッドで呼ぶ
     pub fn install(window: &WebviewWindow) -> Result<(), String> {
         let ptr = window
             .ns_window()
@@ -3362,30 +3427,45 @@ mod mac_sizing {
         type WillStart = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
         unsafe {
             let class = objc2::ffi::object_getClass(delegate) as *mut AnyClass;
-            add_method(
-                class,
-                sel!(windowWillStartLiveResize:),
-                std::mem::transmute::<WillStart, Imp>(will_start_live_resize),
-                c"v@:@",
-            )?;
-            add_method(
-                class,
-                sel!(windowWillResize:toSize:),
-                std::mem::transmute::<WillResize, Imp>(will_resize),
-                c"{CGSize=dd}@:@{CGSize=dd}",
-            )?;
+            // 2 枚目以降のウィンドウは、足し済みのメソッドに気づかせるだけでよい
+            if APP.get().is_none() {
+                add_method(
+                    class,
+                    sel!(windowWillStartLiveResize:),
+                    std::mem::transmute::<WillStart, Imp>(will_start_live_resize),
+                    c"v@:@",
+                )?;
+                add_method(
+                    class,
+                    sel!(windowWillResize:toSize:),
+                    std::mem::transmute::<WillResize, Imp>(will_resize),
+                    c"{CGSize=dd}@:@{CGSize=dd}",
+                )?;
+                let _ = APP.set(window.app_handle().clone());
+            }
             // NSWindow は delegate を設定したときに、delegate が応えるメソッドを調べて覚える。
             // 設定し直して、足したメソッドに気づかせる
             let _: () = msg_send![&*ns_window, setDelegate: std::ptr::null_mut::<AnyObject>()];
             let _: () = msg_send![&*ns_window, setDelegate: delegate];
         }
-        // 足し終えてから、メインウィンドウとして呼び分けを始める
-        MAIN.set(Main {
-            app: window.app_handle().clone(),
-            window: Retained::as_ptr(&ns_window) as usize,
-        })
-        .map_err(|_| "二重に取り付けようとしました".to_string())?;
+        // 足し終えてから、ビューアとして呼び分けを始める
+        WINDOWS
+            .lock()
+            .map_err(|_| "ウィンドウの一覧を取得できません".to_string())?
+            .push((
+                Retained::as_ptr(&ns_window) as usize,
+                window.label().to_string(),
+            ));
         Ok(())
+    }
+
+    /// 閉じるウィンドウを呼び分けの対象から外す（同じアドレスが別のウィンドウに使い回されても
+    /// 取り違えないように）
+    pub fn uninstall(window: &tauri::Window) {
+        let label = window.label();
+        if let Ok(mut windows) = WINDOWS.lock() {
+            windows.retain(|(_, l)| l != label);
+        }
     }
 }
 
@@ -3487,6 +3567,143 @@ fn apply_associations(_app: &AppHandle, _exts: &[String]) -> Result<String, Stri
     Err("この OS には対応していません".into())
 }
 
+/// 起動時に作るビューアのウィンドウのラベル（tauri.conf.json の定義）
+const MAIN_LABEL: &str = "main";
+
+/// あとから開くビューアのウィンドウのラベルの頭（capabilities/default.json の windows と合わせる）
+const VIEWER_LABEL_PREFIX: &str = "viewer-";
+
+/// 新しいウィンドウを、元のウィンドウからずらして置く量（論理ピクセル）
+const CASCADE_OFFSET: f64 = 24.0;
+
+/// ビューア（画像などを表示するウィンドウ）か。設定・ショートカット一覧のウィンドウは違う
+fn is_viewer(label: &str) -> bool {
+    label == MAIN_LABEL || label.starts_with(VIEWER_LABEL_PREFIX)
+}
+
+/// ビューアのウィンドウに OS ごとの仕掛けを取り付けて表示する。メインスレッドで呼ぶ
+fn setup_viewer_window(window: &WebviewWindow) {
+    // 失敗しても、縦横比はあとから直す方法（keep_aspect_on_resize）で保たれる
+    #[cfg(target_os = "windows")]
+    if let Err(e) = win_sizing::install(window) {
+        log::warn!("ウィンドウのサイズ変更を縦横比に合わせられません: {e}");
+    }
+    #[cfg(target_os = "macos")]
+    if let Err(e) = mac_sizing::install(window) {
+        log::warn!("ウィンドウのサイズ変更を縦横比に合わせられません: {e}");
+    }
+    // 失敗しても表示の自動非表示が待ち時間頼みになるだけなので続ける
+    #[cfg(target_os = "macos")]
+    if let Err(e) = mac_pointer::install(window) {
+        log::warn!("カーソルの追跡を開始できません: {e}");
+    }
+    // サイズを整えてから見せる（開いた直後のちらつきを避ける）
+    let _ = window.show();
+}
+
+/// ビューアのウィンドウをもう 1 枚作る（tauri.conf.json の main と同じ定義で）。
+/// 前面のビューアから少しずらした場所に、同じ大きさで置く。メインスレッドで呼ぶ
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn create_viewer_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    static NEXT: AtomicUsize = AtomicUsize::new(1);
+    let mut config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|c| c.label == MAIN_LABEL)
+        .cloned()
+        .ok_or("ウィンドウの定義が見つかりません")?;
+    let label = format!(
+        "{VIEWER_LABEL_PREFIX}{}",
+        NEXT.fetch_add(1, AtomicOrdering::Relaxed)
+    );
+    config.label = label.clone();
+    let mut builder = WebviewWindowBuilder::from_config(app, &config)
+        .map_err(|e| format!("ウィンドウを作れません: {e}"))?;
+    if let Some(dir) = webview_data_dir(app) {
+        builder = builder.data_directory(dir);
+    }
+    let window = builder
+        .build()
+        .map_err(|e| format!("ウィンドウを作れません: {e}"))?;
+
+    // 元にするのは前面のビューア（無ければ前回閉じたときの姿）
+    let viewers: Vec<_> = app
+        .webview_windows()
+        .into_values()
+        .filter(|w| is_viewer(w.label()) && w.label() != label)
+        .collect();
+    let source = viewers
+        .iter()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .or_else(|| viewers.first())
+        .and_then(|w| current_geometry(&w.as_ref().window()))
+        .map(|mut g| {
+            g.x = g.x.map(|x| x + CASCADE_OFFSET);
+            g.y = g.y.map(|y| y + CASCADE_OFFSET);
+            g
+        })
+        .or_else(|| read_window_state(app));
+    if let Some(state) = source {
+        let target = window.as_ref().window();
+        let placed = place_window(&target, &state);
+        remember_placement(&target, placed);
+    }
+    setup_viewer_window(&window);
+    Ok(window)
+}
+
+/// ファイルをビューアで開く。まだ何も表示していないビューア（起動直後など）があれば
+/// そこで開き、無ければ新しいウィンドウを作って開く。メインスレッドで呼ぶ
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn open_in_viewer(app: &AppHandle, path: String) {
+    let kinds = app.state::<WindowKind>();
+    let mut free = app
+        .webview_windows()
+        .into_values()
+        .filter(|w| is_viewer(w.label()))
+        .filter(|w| {
+            kinds
+                .with(w.label(), |k| k.kind.is_none() && !k.claimed)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    // main を優先する（起動直後に Finder から開いたファイルは main で開く）
+    free.sort_by_key(|w| w.label() != MAIN_LABEL);
+    let window = match free.into_iter().next() {
+        Some(window) => window,
+        None => match create_viewer_window(app) {
+            Ok(window) => window,
+            Err(e) => {
+                log::error!("{e}");
+                return;
+            }
+        },
+    };
+    let label = window.label().to_string();
+    kinds.with(&label, |k| k.claimed = true);
+    // フロントエンドが読み込み前なら get_startup_file で、読み込み済みならイベントで受け取る
+    app.state::<StartupFile>()
+        .with(&label, |file| *file = Some(path.clone()));
+    let _ = app.emit_to(label.as_str(), "open-file", path);
+    let _ = window.set_focus();
+}
+
+/// 閉じたウィンドウの分の状態を捨てる（フォルダの監視もここで止まる）
+fn forget_window(window: &tauri::Window) {
+    let app = window.app_handle();
+    let label = window.label();
+    app.state::<StartupFile>().remove(label);
+    app.state::<PendingPosition>().remove(label);
+    app.state::<WindowKind>().remove(label);
+    app.state::<FirstFitDone>().remove(label);
+    app.state::<AspectLock>().remove(label);
+    app.state::<FolderWatcher>().remove(label);
+    #[cfg(target_os = "macos")]
+    mac_sizing::uninstall(window);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_hook();
@@ -3495,7 +3712,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| match event {
             // 「画像に合わせる」のときだけ、ドラッグの最中も縦横比を保つ
-            tauri::WindowEvent::Resized(size) if window.label() == "main" => {
+            tauri::WindowEvent::Resized(size) if is_viewer(window.label()) => {
                 keep_aspect_on_resize(window, *size);
             }
             tauri::WindowEvent::CloseRequested { api, .. } => match window.label() {
@@ -3505,12 +3722,21 @@ pub fn run() {
                     api.prevent_close();
                     let _ = window.hide();
                 }
-                // 本体を閉じたらアプリごと終了する（非表示の設定ウィンドウが
-                // 残っていても終了できるようにする）。
+                // 最後のビューアを閉じたらアプリごと終了する（非表示の設定ウィンドウが
+                // 残っていても終了できるようにする）。ほかのビューアが残っていれば、
+                // そのウィンドウだけを閉じる。
                 // 閉じる直前の大きさと場所は、次回ここから開くために覚えておく
-                "main" => {
+                label if is_viewer(label) => {
                     save_window_state(window);
-                    window.app_handle().exit(0);
+                    forget_window(window);
+                    let app = window.app_handle();
+                    let others = app
+                        .webview_windows()
+                        .keys()
+                        .any(|l| is_viewer(l) && l != label);
+                    if !others {
+                        app.exit(0);
+                    }
                 }
                 _ => {}
             },
@@ -3538,34 +3764,27 @@ pub fn run() {
                 return Err(e.into());
             }
 
-            if let Some(window) = app.get_webview_window("main") {
+            // 起動引数のファイルは main で開く
+            if let Some(path) = startup_file_from_args() {
+                app.state::<StartupFile>()
+                    .with(MAIN_LABEL, |file| *file = Some(path));
+                app.state::<WindowKind>()
+                    .with(MAIN_LABEL, |k| k.claimed = true);
+            }
+
+            if let Some(window) = app.get_webview_window(MAIN_LABEL) {
                 restore_window_state(&window.as_ref().window());
-                // 失敗しても、縦横比はあとから直す方法（keep_aspect_on_resize）で保たれる
-                #[cfg(target_os = "windows")]
-                if let Err(e) = win_sizing::install(&window) {
-                    log::warn!("ウィンドウのサイズ変更を縦横比に合わせられません: {e}");
-                }
-                // 失敗しても表示の自動非表示が待ち時間頼みになるだけなので起動は続ける
-                #[cfg(target_os = "macos")]
-                if let Err(e) = mac_sizing::install(&window) {
-                    log::warn!("ウィンドウのサイズ変更を縦横比に合わせられません: {e}");
-                }
-                #[cfg(target_os = "macos")]
-                if let Err(e) = mac_pointer::install(&window) {
-                    log::warn!("カーソルの追跡を開始できません: {e}");
-                }
-                // サイズを整えてから見せる（起動直後のちらつきを避ける）
-                let _ = window.show();
+                setup_viewer_window(&window);
             }
             Ok(())
         })
-        .manage(StartupFile(Mutex::new(startup_file_from_args())))
+        .manage(StartupFile::new())
         .manage(ArchiveCache(Mutex::new(None)))
-        .manage(PendingPosition(Mutex::new(None)))
-        .manage(WindowKind(Mutex::new(KindState::default())))
-        .manage(AspectLock(Mutex::new(AspectState::default())))
-        .manage(StartupFit(Mutex::new(true)))
-        .manage(FolderWatcher(Mutex::new(None)))
+        .manage(PendingPosition::new())
+        .manage(WindowKind::new())
+        .manage(AspectLock::new())
+        .manage(FirstFitDone::new())
+        .manage(FolderWatcher::new())
         .invoke_handler(tauri::generate_handler![
             set_window_kind,
             list_images,
@@ -3604,20 +3823,17 @@ pub fn run() {
     };
 
     app.run(|_app_handle, _event| {
-        // macOS: Finder / Dock からファイルを開いたときに届く
+        // macOS: Finder / Dock からファイルを開いたときに届く。
+        // 開いているウィンドウを置き換えず、ファイルごとに新しいウィンドウで開く
+        // （起動直後でまだ何も表示していないウィンドウがあれば、そこで開く）
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = &_event {
-            if let Some(path) = urls
+            for path in urls
                 .iter()
                 .filter_map(|u| u.to_file_path().ok())
-                .find(|p| p.exists())
+                .filter(|p| p.exists())
             {
-                let path = path.to_string_lossy().into_owned();
-                // フロントエンドが未起動の場合に備えて state にも入れておく
-                if let Some(state) = _app_handle.try_state::<StartupFile>() {
-                    *state.0.lock().unwrap() = Some(path.clone());
-                }
-                let _ = _app_handle.emit("open-file", path);
+                open_in_viewer(_app_handle, path.to_string_lossy().into_owned());
             }
         }
     });
