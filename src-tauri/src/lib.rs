@@ -3686,6 +3686,16 @@ fn create_viewer_window(app: &AppHandle) -> Result<WebviewWindow, String> {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn open_in_viewer(app: &AppHandle, path: String) {
     let kinds = app.state::<WindowKind>();
+    // 起動中で setup がまだ走っていない（ビューアが 1 つも無い）ときは、
+    // これから setup で作る main に預ける。ここで新しいウィンドウを作ると、
+    // あとから作られる空の main と 2 つ並んでしまう
+    // （Finder から起動すると Opened は setup より先に届く）
+    if !app.webview_windows().keys().any(|l| is_viewer(l)) {
+        app.state::<StartupFile>()
+            .with(MAIN_LABEL, |file| *file = Some(path));
+        kinds.with(MAIN_LABEL, |k| k.claimed = true);
+        return;
+    }
     let mut free = app
         .webview_windows()
         .into_values()
@@ -3783,20 +3793,22 @@ pub fn run() {
                 std::env::consts::ARCH
             );
 
+            // 起動引数のファイルは main で開く。ウィンドウを作る前に預けておく
+            // （Windows ではウィンドウを作る間にフロントエンドが動き出し、
+            // 預ける前に get_startup_file を呼んで空振りすることがある）
+            if let Some(path) = startup_file_from_args() {
+                app.state::<StartupFile>()
+                    .with(MAIN_LABEL, |file| *file = Some(path));
+                app.state::<WindowKind>()
+                    .with(MAIN_LABEL, |k| k.claimed = true);
+            }
+
             // tauri.conf.json のウィンドウは create: false にしてあるので、
             // ここで作る（WebView のデータフォルダを指定するため）。
             // 失敗したら起動を諦める（show_fatal_error で理由を出す）
             if let Err(e) = create_configured_windows(app.handle()) {
                 log::error!("{e}");
                 return Err(e.into());
-            }
-
-            // 起動引数のファイルは main で開く
-            if let Some(path) = startup_file_from_args() {
-                app.state::<StartupFile>()
-                    .with(MAIN_LABEL, |file| *file = Some(path));
-                app.state::<WindowKind>()
-                    .with(MAIN_LABEL, |k| k.claimed = true);
             }
 
             if let Some(window) = app.get_webview_window(MAIN_LABEL) {
