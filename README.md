@@ -1,14 +1,14 @@
 # sView
 
+<p align="center">
+  <img src="src-tauri/icons/128x128@2x.png" width="128" alt="sView">
+</p>
+
 Tauri 製の軽量クロスプラットフォーム画像ビュアーです。ウィンドウフレームを持たず、デスクトップに「画像だけが浮かんでいる」ような表示を目指しています。
 
 > **自動更新機能はありません。** 個人利用が主のため導入しない方針で、新しいバージョンは
 > [Releases](https://github.com/h2ayashiii/sView/releases) から手動でダウンロードしてください。
 > おかしなところがあれば [Issue](https://github.com/h2ayashiii/sView/issues) で教えてください。
-
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/61120f57-3b6c-46e6-9730-cb083d420851" width="800">
-</p>
 
 ## ダウンロード
 
