@@ -71,7 +71,7 @@
     "active": true,
     "targets": ["nsis", "dmg", "app"],
     "category": "Photography",
-    "shortDescription": "Minimal frameless image viewer",
+    "shortDescription": "Minimal frameless viewer for images, videos and audio",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

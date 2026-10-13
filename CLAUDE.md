@@ -4,7 +4,7 @@ Guidance for coding agents working in this repository.
 
 ## Overview
 
-sView is a minimal, frameless, cross-platform image viewer built with **Tauri v2**.
+sView is a minimal, frameless, cross-platform media viewer (images, videos, audio) built with **Tauri v2**.
 It opens single images, videos, audio files, folders, and zip/cbz archives (one kind per list); the overlay UI shows while the mouse
 moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` toggle
 `#app.chrome-visible` in `src/main.js`).
@@ -95,14 +95,14 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - **Add a Rust command** → define it in `lib.rs`, register it in `tauri::generate_handler![...]`
   inside `run()`, and add any needed permission to the right `src-tauri/capabilities/*.json`.
   Custom commands need no permission entry; only core/plugin APIs called from JS do.
-- **Add a frontend file** → add a `<script>` / `<link>` tag to `index.html` and/or `settings.html`.
+- **Add a frontend file** → add a `<script>` / `<link>` tag to `index.html`, `settings.html` and/or `shortcuts.html`.
   Nothing picks it up automatically.
 
 ## Gotchas
 
 - The CSP in `tauri.conf.json` is strict (`default-src 'self'`; `'unsafe-inline'` for styles only).
   Inline `<script>` and remote assets are blocked.
-- Capabilities are per-window (`main` vs `settings`). An API missing from that window's
+- Capabilities are per-window (`main` / `viewer-*`, `settings`, `shortcuts`). An API missing from that window's
   capability file fails at runtime, not at build time.
 - `MIN_WINDOW_SIZE` in `lib.rs` must stay in sync with `minWidth` / `minHeight` in `tauri.conf.json`.
 - The supported image extension list is duplicated in three places — update all of them:
@@ -290,7 +290,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   file associations). It used to be per-user (`%LOCALAPPDATA%`), so `installer-hooks.nsh` silently
   uninstalls a leftover per-user install in `NSIS_HOOK_PREINSTALL` — otherwise the HKCU file
   associations would keep winning over the new HKLM ones. NSIS files must be UTF-8 **with BOM**.
-- The two windows in `tauri.conf.json` are `"create": false`; `create_configured_windows()` builds
+- The windows in `tauri.conf.json` (`main` / `settings` / `shortcuts`) are `"create": false`; `create_configured_windows()` builds
   them from the same config in `setup()`. That detour exists only so `data_directory()` can be set:
   on Windows an unspecified WebView2 user-data folder is created next to the exe
   (`C:\Program Files\sView\sview.exe.WebView2`) and the app fails to start. It is pointed at

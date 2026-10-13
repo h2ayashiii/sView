@@ -48,6 +48,18 @@ npm run build:debug
 
 `bundle/macos/sView.app` と `bundle/dmg/` の `.dmg` の中身は同じものです。`tauri build` はまず `.app` を組み立て、dmg バンドラはその `.app` をそのままディスクイメージに入れるため、`.dmg` を開いて出てくる `sView.app` は `bundle/macos/sView.app` と同一です。
 
+## テスト
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+- テストは Rust 側（`src-tauri/src/lib.rs` の `#[cfg(test)] mod tests`）だけです。フロントエンドの自動テストはありません
+- `cargo test` も Tauri をリンクするため、OS ごとの前提条件（上記）が必要です。CI と同じく Linux で走らせる場合は `libgtk-3-dev` `libwebkit2gtk-4.1-dev` `libsoup-3.0-dev` `pkg-config` を入れてください（Linux は配布対象外で、テストのためにビルドできる状態だけを保っています）
+- 対応拡張子の一覧は `lib.rs`・`src/main.js`・`tauri.conf.json` の 3 か所にあり、ずれるとテスト（`supported_extensions_stay_in_sync`）が失敗します
+
+## CI（GitHub Actions）
+
 GitHub Actions（`.github/workflows/build.yml`）で Windows / macOS のバイナリをビルドできます。手元にビルド環境がない場合は、リリースの添付ファイルか、Actions の成果物（Artifacts）を利用してください。
 
 **配布用のバンドルビルドが走るタイミングは 2 つだけです。** PR と main への push では、別のワークフロー `ci`（`.github/workflows/ci.yml`）の `cargo test` だけが走ります。Actions タブ左の一覧には `ci` と `build` の 2 つが並びます。
@@ -81,7 +93,7 @@ git push origin v0.2.0
 ```
 
 - **バージョンはタグから決まります。** ビルド前に `scripts/set-version.mjs` が `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock`（sview 自身の行）/ `package.json` の `version` をタグの値（`v` を除いたもの）に書き換えるため、設定ウィンドウに出るバージョンも成果物のファイル名もタグと一致します。リポジトリ側のバージョンを事前に上げておく必要はありません（手動ビルドでのバージョンは次節）。
-- タグは `v1.2.3` の形式にしてください。それ以外はビルド前にエラーで止まります。`v1.2.3-beta.1` のようなプレリリースも仕組み上は通りますが、方針として使いません（[バージョンの読み方](../README.md#バージョンの読み方)）。
+- タグは `v1.2.3` の形式にしてください。それ以外はビルド前にエラーで止まります。`v1.2.3-beta.1` のようなプレリリースも仕組み上は通りますが、方針として使いません（[バージョンの読み方](../README.md#バージョンの読み方)）。過去に一度だけ `0.1.0-beta.1` を出していますが、SemVer では `0.1.0` より前のバージョンとして扱われるため、ベータから `0.1.0` 以降へは正しくアップグレードとして認識されます（Windows のインストーラは既存のインストールを上書き更新します）。
 - Release には `.dmg` と `.exe` が**そのまま**添付されます。Release の添付ファイルは zip に固められないため、ダウンロードしたらすぐ実行できます。
 - リリースノートは、`.github/release-notes/<タグ名>.md` があればその内容を使い、無ければ GitHub の自動生成（`--generate-notes`）になります。節目のリリースでは手書きのノートを置いてください。同じタグで再実行した場合は、既存の Release にファイルを上書きアップロードします。
 - **依存を足したり外したりしたら、`node scripts/gen-third-party-notices.mjs` で `THIRD-PARTY-NOTICES` を作り直してからタグを打ってください。** このファイルと `LICENSE` は配布物に同梱されます（バンドルのリソースフォルダに入ります）。
