@@ -65,8 +65,8 @@ body:
     attributes:
       label: 開いていたファイル
       description: |
-        画像ファイル・フォルダ・圧縮フォルダのどれを開いていたか、
-        形式（png / jpg / cbz など）や枚数、特殊な点があれば書いてください。
+        画像・動画・音楽ファイル・フォルダ・圧縮フォルダのどれを開いていたか、
+        形式（png / mp4 / mp3 / cbz など）や数、特殊な点があれば書いてください。
     validations:
       required: false
 

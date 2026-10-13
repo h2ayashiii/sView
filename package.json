@@ -2,7 +2,7 @@
   "name": "sview",
   "private": true,
   "version": "0.1.0",
-  "description": "Minimal frameless cross-platform image viewer built with Tauri",
+  "description": "Minimal frameless cross-platform viewer for images, videos and audio, built with Tauri",
   "license": "SEE LICENSE IN LICENSE",
   "author": "h2ayashiii",
   "homepage": "https://github.com/h2ayashiii/sView",
