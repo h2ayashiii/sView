@@ -177,7 +177,7 @@ const SETTINGS_SECTIONS = [
           ["repeat", "同じ動画を繰り返す"],
           ["stop", "止める"],
         ],
-        default: "repeat",
+        default: "next",
       },
     ],
   },
