@@ -255,7 +255,11 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `windowWillStartLiveResize:` to tao's window-delegate class at runtime (then re-setting the delegate so
   NSWindow re-checks what it responds to). The pulled edges are the edges the cursor was near when the
   live resize started (`LiveResize.edges`), counted only once that axis actually moves from the grab size
-  (`pulled`, sticky for the drag), then `sizing_area`. `keep_aspect_on_resize` returns early while the
+  (`pulled`, sticky for the drag), then `sizing_area`. AppKit also calls `windowWillResize:toSize:` while
+  entering / leaving fullscreen, so `will_resize` passes the size through when the style mask has `FullScreen`,
+  and it uses `try_lock` (like `win_sizing`): it can be called from inside a window-state query on the main
+  thread. For the same reason `keep_aspect_on_resize` queries the window state (fullscreen first) **before**
+  taking `AspectLock`. `keep_aspect_on_resize` returns early while the
   window is `inLiveResize`: tao's `set_size` is `setContentSize` dispatched **async**, so correcting from
   `Resized` mid-drag painted the OS size and our size alternately (flicker) and, at corners, left the
   ratio broken. Outside a live resize it is still a correct-it-as-it-arrives loop. Two details keep it from misbehaving: write
@@ -330,7 +334,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `PerWindow<T>` map keyed by window label and dropped in `forget_window` on close; closing the last viewer
   (`is_viewer`) exits. Window-targeted events (`folder-changed`, `pointer-*`, `open-file`) go out with
   `emit_to(label)` and `main.js` must receive them with `appWindow.listen`, since the global `listen` also
-  catches events aimed at other windows. `capabilities/default.json` covers `viewer-*`. `ArchiveCache` stays
+  catches events aimed at other windows. The same goes for Tauri's own `tauri://drag-enter` / `drag-leave` /
+  `drag-drop`: with the global `listen`, a file dropped on one window opened in every window. `capabilities/default.json` covers `viewer-*`. `ArchiveCache` stays
   app-wide (it re-opens on a path change). Windows has no in-process multi-window (each file launch is its
   own process).
   `macOSPrivateApi` is enabled and builds are ad-hoc signed only.

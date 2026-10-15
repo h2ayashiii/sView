@@ -1767,9 +1767,11 @@ window.addEventListener("contextmenu", (e) => {
 });
 
 // ---- drag & drop ----
-listen("tauri://drag-enter", () => app.classList.add("dropping"));
-listen("tauri://drag-leave", () => app.classList.remove("dropping"));
-listen("tauri://drag-drop", (event) => {
+// ドロップはそのウィンドウ宛てに届く。グローバルの listen だとほかのウィンドウ宛ても拾い、
+// macOS でウィンドウが複数あると、1 つにドロップしただけで全部のウィンドウが開いてしまう
+appWindow.listen("tauri://drag-enter", () => app.classList.add("dropping"));
+appWindow.listen("tauri://drag-leave", () => app.classList.remove("dropping"));
+appWindow.listen("tauri://drag-drop", (event) => {
   app.classList.remove("dropping");
   const paths = event.payload?.paths ?? [];
   if (paths.length) openPath(paths[0]);

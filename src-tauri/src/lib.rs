@@ -2217,24 +2217,20 @@ fn mouse_button_down() -> bool {
 /// 引っ張られた辺（変化の割合が大きい方）をそのまま活かし、もう一方をそこから決め、
 /// そのときの大きさを次の画像へ引き継ぐ広さとして覚える
 fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
-    let app = window.app_handle();
-    let lock = app.state::<AspectLock>();
-    let Ok(mut map) = lock.0.lock() else {
-        return;
-    };
-    let state = map.entry(window.label().to_string()).or_default();
-    let Some(ratio) = state.ratio else {
-        return;
-    };
     // 最小化すると 0 を知らせてくる OS があるので、大きさの無い通知は捨てる
     // （そのまま計算すると、戻したときに最小サイズのウィンドウになってしまう）
     if size.width == 0 || size.height == 0 {
         return;
     }
-    // 最小化中・最大化中・全画面中は普段の姿ではないので、覚えている大きさも触らない
-    if window.is_minimized().unwrap_or(false)
+    // ウィンドウの状態は AspectLock を取る前に調べる。macOS では全画面へ切り替える間、
+    // is_maximized が NSWindow の isZoomed まで呼ぶ（tao が一時的にタイトル付きにするため）。
+    // その中から AppKit が windowWillResize:toSize:（mac_sizing）を呼びうるので、
+    // ロックを持ったままだと同じスレッドで取り直すことになり、アプリが落ちる。
+    // 最小化中・全画面中・最大化中は普段の姿ではないので、覚えている大きさも触らない。
+    // 全画面を先に見て、切り替え中は is_maximized を呼ばずに済ませる
+    if window.is_fullscreen().unwrap_or(false)
+        || window.is_minimized().unwrap_or(false)
         || window.is_maximized().unwrap_or(false)
-        || window.is_fullscreen().unwrap_or(false)
     {
         return;
     }
@@ -2245,13 +2241,23 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
     if mac_sizing::in_live_resize(window) {
         return;
     }
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+
+    let app = window.app_handle();
+    let lock = app.state::<AspectLock>();
+    let Ok(mut map) = lock.0.lock() else {
+        return;
+    };
+    let state = map.entry(window.label().to_string()).or_default();
+    let Some(ratio) = state.ratio else {
+        return;
+    };
     // 自分で直したぶんの跳ね返り
     if size == state.last {
         return;
     }
-    let Ok(scale) = window.scale_factor() else {
-        return;
-    };
     let now = size.to_logical::<f64>(scale);
     let before = state.reported.to_logical::<f64>(scale);
     state.reported = size;
@@ -3293,7 +3299,7 @@ mod mac_sizing {
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
     use objc2::{msg_send, sel};
-    use objc2_app_kit::{NSEvent, NSWindow};
+    use objc2_app_kit::{NSEvent, NSWindow, NSWindowStyleMask};
     use objc2_foundation::NSSize;
     use tauri::{AppHandle, LogicalSize, Manager, PhysicalSize, WebviewWindow};
 
@@ -3366,8 +3372,15 @@ mod mac_sizing {
         let Some((app, label, window)) = viewer_of(sender) else {
             return size;
         };
+        // 全画面への切り替え（とその解除）の間も呼ばれる。ここで縦横比へ合わせると
+        // 画面いっぱいに広がれないので、OS の大きさのまま通す
+        if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+            return size;
+        }
         let lock = app.state::<AspectLock>();
-        let Ok(mut map) = lock.0.lock() else {
+        // 取れないときは今回だけ OS に任せる。同じスレッドでロックを持ったままの処理
+        // （ウィンドウの状態の問い合わせなど）の中から呼ばれることがあり、待つと落ちる
+        let Ok(mut map) = lock.0.try_lock() else {
             return size;
         };
         let state = map.entry(label).or_default();
