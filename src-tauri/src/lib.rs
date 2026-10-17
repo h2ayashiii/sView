@@ -94,9 +94,9 @@ struct ArchiveCache(Mutex<Option<OpenArchive>>);
 /// 「画像に合わせる」で起動したとき、最初の画像を前回と同じ場所に開くための覚え書き。
 /// restore_window_state が入れ、fit_window_to_image が一度使ったら空にする
 struct RestoredPosition {
-    /// 前回閉じたときのウィンドウの左上（論理ピクセル）
+    /// 前回閉じたときのウィンドウの左上（画面上の位置の座標。PHYSICAL_DESKTOP を参照）
     saved: (f64, f64),
-    /// 起動時に実際に置いた左上（論理ピクセル）。ここから動いていたら
+    /// 起動時に実際に置いた左上（saved と同じ座標）。ここから動いていたら
     /// ユーザーが動かしたものとみなし、saved には合わせない
     placed: (f64, f64),
 }
@@ -374,6 +374,78 @@ mod tests {
         assert_eq!(read.kinds["video"].width, Some(1280.0));
         assert_eq!(read.kinds["video"].x, None);
         assert_eq!(read.x, Some(10.0));
+    }
+
+    #[test]
+    fn saved_position_follows_each_os_coordinates() {
+        // 倍率 1.5 のディスプレイで論理 (1000, 200) に置いていたウィンドウ
+        let state = WindowState {
+            x: Some(1000.0),
+            y: Some(200.0),
+            scale: Some(1.5),
+            ..WindowState::default()
+        };
+        // Windows（物理ピクセルが通しの座標）は記録したときの倍率で物理ピクセルへ戻す。
+        // 今のウィンドウの倍率（1.0）で直すと別のディスプレイの位置になってしまう
+        assert_eq!(saved_position(&state, 1.0, true), Some((1500.0, 300.0)));
+        // macOS（ポイントが通しの座標）は論理ピクセルのまま
+        assert_eq!(saved_position(&state, 1.0, false), Some((1000.0, 200.0)));
+        // 倍率の無い古いファイルは今の倍率で読む（これまでと同じ）
+        let old = WindowState {
+            scale: None,
+            ..state.clone()
+        };
+        assert_eq!(saved_position(&old, 2.0, true), Some((2000.0, 400.0)));
+        // 位置が無ければ戻さない
+        assert_eq!(saved_position(&WindowState::default(), 1.0, true), None);
+
+        // 画面上の位置の座標から、ウィンドウの物理ピクセルへ
+        assert_eq!(
+            desktop_to_physical((1500.0, 300.0), 1.5, true),
+            PhysicalPosition::new(1500, 300)
+        );
+        assert_eq!(
+            desktop_to_physical((1000.0, 200.0), 2.0, false),
+            PhysicalPosition::new(2000, 400)
+        );
+    }
+
+    #[test]
+    fn copy_geometry_keeps_position_and_scale_together() {
+        let mut state = WindowState {
+            x: Some(10.0),
+            y: Some(20.0),
+            scale: Some(2.0),
+            ..WindowState::default()
+        };
+        // 位置の取れなかった分は、前の位置と倍率を組のまま残す
+        copy_geometry(
+            &mut state,
+            &WindowState {
+                width: Some(800.0),
+                height: Some(600.0),
+                scale: Some(1.0),
+                ..WindowState::default()
+            },
+        );
+        assert_eq!(
+            (state.x, state.y, state.scale),
+            (Some(10.0), Some(20.0), Some(2.0))
+        );
+        assert_eq!(state.width, Some(800.0));
+        copy_geometry(
+            &mut state,
+            &WindowState {
+                x: Some(30.0),
+                y: Some(40.0),
+                scale: Some(1.25),
+                ..WindowState::default()
+            },
+        );
+        assert_eq!(
+            (state.x, state.y, state.scale),
+            (Some(30.0), Some(40.0), Some(1.25))
+        );
     }
 
     #[test]
@@ -1677,6 +1749,9 @@ struct WindowState {
     height: Option<f64>,
     x: Option<f64>,
     y: Option<f64>,
+    /// x / y を記録したときのウィンドウの倍率（ディスプレイの拡大率）。
+    /// Windows で位置を物理ピクセルへ戻すのに使う（無い古いファイルは今の倍率で読む）
+    scale: Option<f64>,
     /// 種類（"image" / "video" / "audio" / "book"）ごとの大きさと位置。
     /// 設定「ファイルの種類ごとにウィンドウを保持する」がオンのときだけ使う
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -1707,9 +1782,11 @@ fn write_window_state(app: &AppHandle, state: &WindowState) {
 /// 最小化中・最大化中・全画面中は普段の姿と違うので None
 fn current_geometry(window: &tauri::Window) -> Option<WindowState> {
     let scale = window.scale_factor().ok()?;
-    if window.is_minimized().unwrap_or(false)
+    // 全画面を先に見る（macOS で全画面へ切り替える間に is_maximized を呼ぶと、
+    // AppKit がその中から大きさの変更を問い合わせてくる。keep_aspect_on_resize と同じ）
+    if window.is_fullscreen().unwrap_or(false)
+        || window.is_minimized().unwrap_or(false)
         || window.is_maximized().unwrap_or(false)
-        || window.is_fullscreen().unwrap_or(false)
     {
         return None;
     }
@@ -1718,6 +1795,7 @@ fn current_geometry(window: &tauri::Window) -> Option<WindowState> {
         let pos = pos.to_logical::<f64>(scale);
         state.x = Some(pos.x);
         state.y = Some(pos.y);
+        state.scale = Some(scale);
     }
     if let Ok(size) = window.inner_size() {
         let size = size.to_logical::<f64>(scale);
@@ -1729,10 +1807,14 @@ fn current_geometry(window: &tauri::Window) -> Option<WindowState> {
     Some(state)
 }
 
-/// geometry の大きさ・位置を state に書き写す（kinds はそのまま）
+/// geometry の大きさ・位置を state に書き写す（kinds はそのまま）。
+/// 位置は倍率と組で意味を持つので、x / y / scale はまとめて書き写す
 fn copy_geometry(state: &mut WindowState, geometry: &WindowState) {
-    state.x = geometry.x.or(state.x);
-    state.y = geometry.y.or(state.y);
+    if geometry.x.is_some() && geometry.y.is_some() {
+        state.x = geometry.x;
+        state.y = geometry.y;
+        state.scale = geometry.scale;
+    }
     state.width = geometry.width.or(state.width);
     state.height = geometry.height.or(state.height);
 }
@@ -1819,13 +1901,58 @@ fn clamp_to_area(x: f64, y: f64, width: f64, height: f64, area: &Area) -> (f64, 
     (x, y)
 }
 
-/// 保存した位置が載っているディスプレイの作業領域（そのディスプレイの倍率での論理ピクセル）。
+/// 画面上の位置（ウィンドウの左上・ディスプレイの範囲）を数える座標が物理ピクセルか。
+/// OS によって、ディスプレイをまたいで通しで数えられる単位が違う。
+/// Windows は仮想画面の物理ピクセルが通しの座標で、論理ピクセルはディスプレイの倍率
+/// ごとに目盛りが変わる（倍率の違うディスプレイを並べると、論理ピクセルの位置では
+/// どのディスプレイの上か決まらず、ウィンドウの今の倍率で戻すと別のディスプレイへ行く）。
+/// macOS はポイント（論理ピクセル）が通しの座標で、物理ピクセルの方がディスプレイごとに変わる
+const PHYSICAL_DESKTOP: bool = cfg!(target_os = "windows");
+
+/// 論理ピクセルを画面上の位置の座標へ直す倍率（scale はその場所のディスプレイの倍率）
+fn desktop_ratio(scale: f64, physical: bool) -> f64 {
+    if physical {
+        scale
+    } else {
+        1.0
+    }
+}
+
+/// 保存した左上を画面上の位置の座標で返す。
+/// window.json の x / y は論理ピクセルなので、記録したときの倍率で直す
+/// （倍率の無い古いファイルは今の倍率 current_scale で読む）
+fn saved_position(state: &WindowState, current_scale: f64, physical: bool) -> Option<(f64, f64)> {
+    let ratio = desktop_ratio(state.scale.unwrap_or(current_scale), physical);
+    Some((state.x? * ratio, state.y? * ratio))
+}
+
+/// 画面上の位置の座標を、倍率 scale のウィンドウの物理ピクセルへ直す
+fn desktop_to_physical((x, y): (f64, f64), scale: f64, physical: bool) -> PhysicalPosition<i32> {
+    LogicalPosition::new(x, y).to_physical(scale / desktop_ratio(scale, physical))
+}
+
+/// ディスプレイの範囲（物理ピクセル）を画面上の位置の座標へ直す
+fn desktop_area(area: Area, scale: f64) -> Area {
+    area.to_logical(scale / desktop_ratio(scale, PHYSICAL_DESKTOP))
+}
+
+/// ウィンドウの左上を画面上の位置の座標で置く
+fn set_desktop_position(window: &tauri::Window, (x, y): (f64, f64)) {
+    let _ = if PHYSICAL_DESKTOP {
+        window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32))
+    } else {
+        window.set_position(LogicalPosition::new(x, y))
+    };
+}
+
+/// 保存した位置（画面上の位置の座標）が載っているディスプレイの作業領域（同じ座標）と、
+/// そのディスプレイの倍率。
 /// 前回使っていた外部ディスプレイが外れている場合は None（画面外へ開くのを防ぐ）
-fn work_area_at(window: &tauri::Window, x: f64, y: f64) -> Option<Area> {
+fn work_area_at(window: &tauri::Window, x: f64, y: f64) -> Option<(Area, f64)> {
     let monitors = window.available_monitors().ok()?;
     monitors
         .iter()
-        .map(|m| (monitor_bounds(m).to_logical(m.scale_factor()), m))
+        .map(|m| (desktop_area(monitor_bounds(m), m.scale_factor()), m))
         .find(|(bounds, _)| {
             // 端にぴったり寄せた場合を落とさないよう少しだけ余裕を見る
             const SLACK: f64 = 8.0;
@@ -1837,7 +1964,12 @@ fn work_area_at(window: &tauri::Window, x: f64, y: f64) -> Option<Area> {
             };
             slack_bounds.contains(x, y)
         })
-        .map(|(_, m)| monitor_work_area(m).to_logical(m.scale_factor()))
+        .map(|(_, m)| {
+            (
+                desktop_area(monitor_work_area(m), m.scale_factor()),
+                m.scale_factor(),
+            )
+        })
 }
 
 /// 外枠と中身の大きさの差（物理ピクセル）。
@@ -1934,7 +2066,10 @@ fn remember_placement(window: &tauri::Window, placed: Option<RestoredPosition>) 
 /// 保存した大きさ・位置にウィンドウを置く。
 /// ウィンドウ全体が作業領域に収まるよう寄せる（ディスプレイの構成が
 /// 変わっていたり、前回より大きく開いたりしたときに画面外へ出さない）。
-/// 位置を戻したときは、保存した左上と実際に置いた左上を返す
+/// 位置を戻したときは、保存した左上と実際に置いた左上を返す。
+///
+/// 大きさは論理ピクセルで戻す。倍率の違うディスプレイへ移ると、Windows でも macOS でも
+/// 論理ピクセルの大きさを保ったまま描き直されるので、見た目の大きさは閉じたときと同じになる
 fn place_window(window: &tauri::Window, state: &WindowState) -> Option<RestoredPosition> {
     let scale = window.scale_factor().ok()?;
     // 中身の大きさ（論理ピクセル）。保存した大きさがあればそれにする
@@ -1942,25 +2077,41 @@ fn place_window(window: &tauri::Window, state: &WindowState) -> Option<RestoredP
         .inner_size()
         .map(|s| s.to_logical::<f64>(scale))
         .unwrap_or_else(|_| LogicalSize::new(0.0, 0.0));
+    let mut resized = false;
     if let (Some(width), Some(height)) = (state.width, state.height) {
         if width >= 1.0 && height >= 1.0 {
             let _ = window.set_size(LogicalSize::new(width, height));
             inner = LogicalSize::new(width, height);
+            resized = true;
         }
     }
 
-    let (saved_x, saved_y) = (state.x?, state.y?);
-    let work_area = work_area_at(window, saved_x, saved_y)?;
+    let (saved_x, saved_y) = saved_position(state, scale, PHYSICAL_DESKTOP)?;
+    let (work_area, target_scale) = work_area_at(window, saved_x, saved_y)?;
 
-    // 外枠の大きさ = 中身 + 枠（Windows の枠なしウィンドウの影のぶん）
+    // 外枠の大きさ = 中身 + 枠（Windows の枠なしウィンドウの影のぶん）。
+    // 置く先のディスプレイの倍率で、画面上の位置の座標へ直す
     let frame = match (window.outer_size(), window.inner_size()) {
         (Ok(outer), Ok(current)) => frame_size(outer, current),
         _ => (0, 0),
     };
-    let outer_width = inner.width + f64::from(frame.0) / scale;
-    let outer_height = inner.height + f64::from(frame.1) / scale;
+    let ratio = desktop_ratio(target_scale, PHYSICAL_DESKTOP);
+    let outer_width = (inner.width + f64::from(frame.0) / scale) * ratio;
+    let outer_height = (inner.height + f64::from(frame.1) / scale) * ratio;
     let (x, y) = clamp_to_area(saved_x, saved_y, outer_width, outer_height, &work_area);
-    let _ = window.set_position(LogicalPosition::new(x, y));
+    set_desktop_position(window, (x, y));
+    // Windows で倍率の違うディスプレイへ移したときは、移った先の倍率で大きさを付け直す
+    // （移る前に付けた大きさは前のディスプレイの倍率で物理ピクセルにしてあり、
+    // 設定によっては OS が描き直しても論理ピクセルの大きさが保たれない）。
+    // 大きさを変えても左上は動かない。macOS は大きさを変えると左下が残って
+    // 左上がずれるので、位置より後には付けない（倍率が違っても論理ピクセルのまま描かれる）
+    if PHYSICAL_DESKTOP && resized {
+        if let Ok(now) = window.scale_factor() {
+            if (now - scale).abs() > f64::EPSILON {
+                let _ = window.set_size(inner);
+            }
+        }
+    }
     Some(RestoredPosition {
         saved: (saved_x, saved_y),
         placed: (x, y),
@@ -2355,13 +2506,10 @@ fn fit_window_to_image(
         .and_then(|restored| {
             const TOLERANCE: i32 = 2;
             let (pos, _, _) = before?;
-            let placed = LogicalPosition::new(restored.placed.0, restored.placed.1)
-                .to_physical::<i32>(scale);
+            let placed = desktop_to_physical(restored.placed, scale, PHYSICAL_DESKTOP);
             let unmoved =
                 (pos.x - placed.x).abs() <= TOLERANCE && (pos.y - placed.y).abs() <= TOLERANCE;
-            unmoved.then(|| {
-                LogicalPosition::new(restored.saved.0, restored.saved.1).to_physical::<i32>(scale)
-            })
+            unmoved.then(|| desktop_to_physical(restored.saved, scale, PHYSICAL_DESKTOP))
         });
 
     // set_size の跳ね返りを手動のサイズ変更と取り違えないよう、先に大きさを覚える。
