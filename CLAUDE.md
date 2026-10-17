@@ -136,7 +136,10 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   mouse — only the `#vb-prev` / `#vb-next` buttons in `#videobar` do. The side buttons seek ±5 s and
   the wheel changes the volume (`wheelVolume`). For images ← / → and the wheel page (`wheelStep`:
   wheel down = next; the first event after `WHEEL_GESTURE_GAP_MS` steps at once, then every
-  threshold), the wheel zooms only while the right button is held (`rightPress`) or with Ctrl
+  `wheelPageThreshold()` from the separate `wheelPageSensitivity` setting, and events within
+  `WHEEL_STEP_COOLDOWN_MS` of a step are dropped so smoothing utilities such as Mos, which split one
+  notch into a burst, page once — a mouse wheel and a trackpad cannot be told apart in the WebView,
+  so both get it), the wheel zooms only while the right button is held (`rightPress`) or with Ctrl
   (both OSes; a Windows touchpad pinch also arrives as Ctrl + wheel), and ↑ / ↓ are deliberately unbound (reserved for a future feature)
   except in book mode. `contextmenu` arrives after mouseup on Windows but on mousedown on macOS, so a
   right press that used the wheel or lasted `MENU_LONG_PRESS_MS` opens no menu: on macOS the

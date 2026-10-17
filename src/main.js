@@ -2000,29 +2000,38 @@ let wheelAccum = 0;
 // 画像の前後移動。下に回すと次の画像（本モードでは見開きごと）。
 // 少し間を空けて回し始めたときは、量によらずすぐ 1 枚送る（1 段の量が小さいマウスでも
 // 1 段で 1 枚動くように）。続けて回している間は、しきい値ごとに 1 枚送る。
-// 既定の感度でしきい値は 100（Windows のホイール 1 段の量）
+// しきい値は設定「ホイールでの画像移動の感度」で決まり、既定（5）で 100（Windows のホイール 1 段の量）。
+// 1 段ごとに 2 倍 / 半分になる（1 で 400、10 で約 18）
 const WHEEL_GESTURE_GAP_MS = 250;
+// 1 枚送った直後は、この間に届いた分を数えずに捨てる。なめらかスクロールのユーティリティ
+// （macOS の Mos など）は 1 段を細かい複数回に分けて送るので、その残りで 2 枚目が動かないように。
+// トラックパッドとは WebView の中では見分けられないので、トラックパッドにも同じく掛かる
+const WHEEL_STEP_COOLDOWN_MS = 150;
 let wheelLastAt = 0;
+let wheelStepAt = 0;
 let wheelDir = 0;
+
+function wheelPageThreshold() {
+  const s = Number(settings.wheelPageSensitivity);
+  return 100 * 2 ** ((5 - (Number.isFinite(s) ? s : 5)) / 2);
+}
+
 function wheelStep(deltaY) {
   const dir = Math.sign(deltaY);
   if (!dir) return;
   const now = performance.now();
   const fresh = now - wheelLastAt > WHEEL_GESTURE_GAP_MS || dir !== wheelDir;
   wheelLastAt = now;
-  if (fresh) {
-    // 次のしきい値は、すぐ送った 1 枚の分を除いてから数える
-    wheelDir = dir;
-    wheelAccum = 0;
-    step(dir);
-    return;
+  if (!fresh && now - wheelStepAt < WHEEL_STEP_COOLDOWN_MS) return;
+  if (!fresh) {
+    wheelAccum += deltaY;
+    if (Math.abs(wheelAccum) < wheelPageThreshold()) return;
   }
-  const threshold = 150 - settings.wheelSensitivity * 10;
-  wheelAccum += deltaY;
-  while (Math.abs(wheelAccum) >= threshold) {
-    step(dir);
-    wheelAccum -= dir * threshold;
-  }
+  // 次のしきい値は、送ったあとに届いた分から数える
+  wheelDir = dir;
+  wheelAccum = 0;
+  wheelStepAt = now;
+  step(dir);
 }
 
 // 音量。上に回すと大きくなる
