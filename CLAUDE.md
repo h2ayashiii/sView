@@ -178,6 +178,14 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `fit_window_to_image` after startup only corrects the aspect ratio, and anchors the window at
   the saved top-left (`PendingPosition`) instead of recentering.
   Logs go to a `logs/` subfolder of the same directory.
+  `window.json` stores `x` / `y` / `width` / `height` in logical px plus `scale` (the window's
+  scale factor when the position was taken). Positions are compared and set in each OS's
+  desktop-wide coordinates (`PHYSICAL_DESKTOP`): **physical px on Windows** (logical px change
+  scale per monitor there, so a mixed-DPI setup restored onto the wrong monitor), **points
+  (logical px) on macOS** (physical px are per monitor there). `saved_position` / `desktop_area` /
+  `desktop_to_physical` / `set_desktop_position` do the conversion; sizes stay logical (both OSes
+  keep the logical size when a window moves to another scale). On macOS never `set_size` after
+  `set_position`: `setContentSize` keeps the bottom-left, so the top-left moves.
 - `fit_window_to_image` does its position math in **physical** pixels and on the **outer**
   size. On Windows a frameless window's outer rect is larger than its client rect by the
   invisible shadow border, so mixing outer and inner sizes drifts the window a few pixels
