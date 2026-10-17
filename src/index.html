@@ -70,14 +70,26 @@
           </button>
         </div>
       </div>
-      <button id="nav-prev" class="nav" title="前の画像 (←)" aria-label="前の画像">&#x276E;</button>
-      <button id="nav-next" class="nav" title="次の画像 (→)" aria-label="次の画像">&#x276F;</button>
+      <!-- 画像を表示しているときだけ出す操作（下部中央のカード。動画・音楽の再生操作と同じ位置）。
+           左右に前後の画像へのボタン、中央に一覧の中の位置を選ぶスライダー。
+           ウィンドウのドラッグ領域にはしない（スライダーの操作がウィンドウの移動にならないように） -->
+      <div id="imagebar" class="ctlbar">
+        <!-- スライダーにカーソルを乗せたときの番号・ファイル名の表示 -->
+        <div id="ib-tip" class="ctl-tip" hidden></div>
+        <button id="ib-prev" class="vb" type="button" title="前の画像 (←)" aria-label="前の画像">
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M6.5 1.5L3 5l3.5 3.5" /></svg>
+        </button>
+        <input id="ib-seek" type="range" min="0" max="0" step="1" value="0" aria-label="表示する画像" />
+        <button id="ib-next" class="vb" type="button" title="次の画像 (→)" aria-label="次の画像">
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 1.5L7 5 3.5 8.5" /></svg>
+        </button>
+      </div>
       <!-- 動画・音楽を表示しているときだけ出す再生操作（下部中央のカード）。
            上段にシークバー、下段は左に再生時間・中央に再生ボタン類・右に音量。
            ウィンドウのドラッグ領域にはしない（シーク操作がウィンドウの移動にならないように） -->
-      <div id="videobar">
+      <div id="videobar" class="ctlbar">
         <!-- シークバー・音量つまみにカーソルを乗せたときの時刻 / 音量の表示 -->
-        <div id="vb-tip" hidden></div>
+        <div id="vb-tip" class="ctl-tip" hidden></div>
         <div class="vb-top">
           <input id="vb-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="再生位置" />
         </div>
