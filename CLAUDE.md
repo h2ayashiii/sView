@@ -133,10 +133,19 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   logic. While a video is shown, `handleVideoKey` takes Space / K (play-pause), M (mute),
   ← / → and J / L (±5 s) and ↑ / ↓ (volume ±5 %, saved after a 500 ms pause), and swallows the
   image paging keys (PageUp / PageDown / Backspace / Home / End): media never changes file by key or
-  mouse — only the `#vb-prev` / `#vb-next` buttons in `#videobar` do, and the window-side `.nav`
-  buttons are hidden (`#app.video` / `#app.audio`). The side buttons seek ±5 s and the wheel changes
-  the volume (`wheelVolume`). For images ← / → page, the wheel zooms, and ↑ / ↓ are deliberately
-  unbound (reserved for a future feature) except in book mode. `setFitMode` leaves `#stage` without
+  mouse — only the `#vb-prev` / `#vb-next` buttons in `#videobar` do. The side buttons seek ±5 s and
+  the wheel changes the volume (`wheelVolume`). For images ← / → and the wheel page (`wheelStep`:
+  wheel down = next; the first event after `WHEEL_GESTURE_GAP_MS` steps at once, then every
+  threshold), the wheel zooms only while the right button is held (`rightPress`) or with Ctrl
+  (Windows touchpad pinch), and ↑ / ↓ are deliberately unbound (reserved for a future feature)
+  except in book mode. `contextmenu` arrives after mouseup on Windows but on mousedown on macOS, so a
+  right press that used the wheel or lasted `MENU_LONG_PRESS_MS` opens no menu: on macOS the
+  menu position is held in `rightPress.menuAt` and opened on mouseup, on Windows `suppressMenu`
+  drops the following `contextmenu`. Images get their own card, `#imagebar` (`‹` / `›` + a slider
+  over the list, `ib-*`), at the same spot as `#videobar` (both `.ctlbar`); it shows when the app
+  is neither `.video` / `.audio` nor `.no-image`. Slider moves go through `seekImageTo`, which
+  updates the chrome at once but throttles `show()` (`IMAGE_SEEK_INTERVAL_MS`) so an archive is not
+  read per pixel; in book mode `imageSeekTarget` keeps the spread's parity. `setFitMode` leaves `#stage` without
   `data-tauri-drag-region` while a video is shown — with it, the OS move loop starts on mousedown and
   the release never reaches the WebView, so a click could not be told apart. Instead a press that moves
   `VIDEO_DRAG_THRESHOLD_PX` calls `appWindow.startDragging()`, and one released within

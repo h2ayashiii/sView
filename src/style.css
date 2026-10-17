@@ -260,12 +260,10 @@ body {
 
 #app.chrome-visible #titlebar,
 #app.chrome-visible #statusbar,
-#app.chrome-visible #videobar,
-#app.chrome-visible .nav,
+#app.chrome-visible .ctlbar,
 #chrome:focus-within #titlebar,
 #chrome:focus-within #statusbar,
-#chrome:focus-within #videobar,
-#chrome:focus-within .nav {
+#chrome:focus-within .ctlbar {
   pointer-events: auto;
 }
 
@@ -438,19 +436,16 @@ body {
   white-space: nowrap;
 }
 
-/* ---- 動画・音楽の再生操作 ----
-   動画・音楽を表示しているとき（#app.video / #app.audio）だけ、下部中央にカードとして出す。
-   上段: シークバー / 下段: 左に再生時間・中央に再生ボタン類・右に音量 */
-#videobar {
+/* ---- 下部中央の操作カード ----
+   画像のときは #imagebar（前後の画像へのボタンと位置のスライダー）、
+   動画・音楽のとき（#app.video / #app.audio）は #videobar（再生操作）を同じ位置に出す */
+.ctlbar {
   position: absolute;
   left: 50%;
   bottom: 38px;
   transform: translateX(-50%);
   width: min(560px, calc(100% - 24px));
   display: none;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px 6px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10px;
   background: rgba(20, 20, 24, 0.8);
@@ -459,14 +454,62 @@ body {
   z-index: 1;
 }
 
-#app.video #videobar,
-#app.audio #videobar {
+/* ファイル名の帯を隠しているときは、その分だけ下へ寄せる */
+#app.hide-filename .ctlbar {
+  bottom: 10px;
+}
+
+/* 画像の操作: 左右に前 / 次の画像のボタン、間に一覧の中の位置のスライダー */
+#imagebar {
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+#app:not(.video):not(.audio):not(.no-image) #imagebar {
   display: flex;
 }
 
-/* ファイル名の帯を隠しているときは、その分だけ下へ寄せる */
-#app.hide-filename #videobar {
-  bottom: 10px;
+/* ファイル名が長くてもカードの幅に収める */
+#ib-tip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#ib-seek {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+/* 端に到達したら押せないことを見た目でも示す（画像が 1 枚だけならスライダーも） */
+#imagebar .vb:disabled,
+#ib-seek:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+#imagebar .vb:disabled:hover {
+  background: transparent;
+}
+
+#ib-prev svg,
+#ib-next svg {
+  stroke-width: 1.4;
+}
+
+/* ---- 動画・音楽の再生操作 ----
+   上段: シークバー / 下段: 左に再生時間・中央に再生ボタン類・右に音量 */
+#videobar {
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px 6px;
+}
+
+#app.video #videobar,
+#app.audio #videobar {
+  display: flex;
 }
 
 .vb-top {
@@ -561,11 +604,11 @@ body {
   text-overflow: ellipsis;
 }
 
-/* シークバー・音量つまみは OS 標準の見た目を使わず自前で描く。
+/* シークバー・音量つまみ・画像の位置のスライダーは OS 標準の見た目を使わず自前で描く。
    標準のままだと、WebView2 は済んだ側を accent-color で塗るが、macOS の WKWebView は
    塗り分けず両側が似た色になる。済んだ側の割合は main.js が --fill（0〜1）で入れる。
    つまみの幅（--thumb）は main.js の RANGE_THUMB_PX と揃える */
-#videobar input[type="range"] {
+.ctlbar input[type="range"] {
   --thumb: 12px;
   -webkit-appearance: none;
   appearance: none;
@@ -574,7 +617,7 @@ body {
   cursor: pointer;
 }
 
-#videobar input[type="range"]::-webkit-slider-runnable-track {
+.ctlbar input[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 2px;
   /* 塗りの境目はつまみの中心（つまみの半分だけ両端が内側に寄る） */
@@ -585,7 +628,7 @@ body {
   );
 }
 
-#videobar input[type="range"]::-webkit-slider-thumb {
+.ctlbar input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: var(--thumb);
@@ -608,9 +651,9 @@ body {
   margin: 0;
 }
 
-/* シークバー・音量つまみに乗せたときの吹き出し。対象のすぐ上に出す
+/* シークバー・音量つまみ・画像の位置のスライダーに乗せたときの吹き出し。対象のすぐ上に出す
    （位置は main.js が left / top で入れる） */
-#vb-tip {
+.ctl-tip {
   position: absolute;
   top: 0;
   left: 0;
@@ -626,7 +669,7 @@ body {
   pointer-events: none;
 }
 
-#vb-tip[hidden] {
+.ctl-tip[hidden] {
   display: none;
 }
 
@@ -644,43 +687,6 @@ body {
   }
 }
 
-.nav {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 34px;
-  height: 64px;
-  border: none;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.35);
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 18px;
-  cursor: pointer;
-}
-
-.nav:hover {
-  background: rgba(0, 0, 0, 0.6);
-}
-
-/* 端に到達したら押せないことを見た目でも示す */
-.nav:disabled {
-  opacity: 0.25;
-  cursor: default;
-}
-
-.nav:disabled:hover {
-  background: rgba(0, 0, 0, 0.35);
-}
-
-#nav-prev {
-  left: 8px;
-}
-
-#nav-next {
-  right: 8px;
-}
-
-#app.no-image .nav,
 #app.no-image #statusbar,
 #app.no-image #counter {
   display: none;
@@ -707,10 +713,7 @@ body {
 
 /* 設定で隠せる要素 */
 #app.hide-filename #statusbar,
-#app.hide-filename #counter,
-/* 動画・音楽では前後のファイルへの移動は再生操作カードの ⏮ ⏭ で行う */
-#app.video .nav,
-#app.audio .nav {
+#app.hide-filename #counter {
   display: none;
 }
 

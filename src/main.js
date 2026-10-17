@@ -24,6 +24,10 @@ const vbVolume = document.getElementById("vb-volume");
 const vbTime = document.getElementById("vb-time");
 const vbDuration = document.getElementById("vb-duration");
 const vbTip = document.getElementById("vb-tip");
+const ibPrev = document.getElementById("ib-prev");
+const ibNext = document.getElementById("ib-next");
+const ibSeek = document.getElementById("ib-seek");
+const ibTip = document.getElementById("ib-tip");
 const audioBox = document.getElementById("audio");
 const artwork = document.getElementById("artwork");
 const audioArt = document.getElementById("audio-art");
@@ -36,8 +40,6 @@ const errorBox = document.getElementById("error");
 const filenameEl = document.getElementById("filename");
 const counterEl = document.getElementById("counter");
 const chromeEl = document.getElementById("chrome");
-const navPrev = document.getElementById("nav-prev");
-const navNext = document.getElementById("nav-next");
 const ctxmenu = document.getElementById("ctxmenu");
 const btnMax = document.getElementById("btn-max");
 const confirmEl = document.getElementById("confirm");
@@ -383,11 +385,7 @@ function updateChrome() {
   // （単一フォルダの書庫なら結果的にファイル名だけになる）。
   // 本モードでは見開きの 2 枚をページ順に並べる
   const shown = shownEntries();
-  const name = shown
-    .map((entry) => (entryPrefix && entry.startsWith(entryPrefix)
-      ? entry.slice(entryPrefix.length)
-      : baseName(entry)))
-    .join(" ＋ ");
+  const name = shown.map(entryLabel).join(" ＋ ");
   filenameEl.textContent = archivePath ? `${baseName(archivePath)} / ${name}` : name;
   filenameEl.title = shown
     .map((entry) => (archivePath ? `${archivePath} :: ${entry}` : entry))
@@ -395,12 +393,21 @@ function updateChrome() {
   counterEl.textContent = shown.length > 1
     ? `${index + 1}-${index + shown.length} / ${images.length}`
     : `${index + 1} / ${images.length}`;
-  navPrev.disabled = index === 0;
-  navNext.disabled = index + shown.length >= images.length;
-  // 動画・音楽の前後移動は再生操作カードのボタンだけ（端で折り返す設定なら端でも押せる）
+  // 前後のファイルへのボタン（端で折り返す設定なら端でも押せる）。
+  // 画像は画像の操作カード、動画・音楽は再生操作カードのボタンを使う
+  ibPrev.disabled = !settings.wrapAround && index === 0;
+  ibNext.disabled = !settings.wrapAround && index + shown.length >= images.length;
   vbPrev.disabled = !settings.wrapAround && index === 0;
   vbNext.disabled = !settings.wrapAround && index === images.length - 1;
+  syncImageSeek();
   appWindow.setTitle(`${baseName(images[index])} - sView`).catch(() => {});
+}
+
+// 一覧の 1 件の表示名。書庫内やサブフォルダまで読んだフォルダでは共通フォルダを除いた相対パス
+function entryLabel(entry) {
+  return entryPrefix && entry.startsWith(entryPrefix)
+    ? entry.slice(entryPrefix.length)
+    : baseName(entry);
 }
 
 function preloadNeighbors() {
@@ -946,15 +953,20 @@ vbSeek.addEventListener("change", () => {
 const RANGE_THUMB_PX = 12;
 let volumeHover = false;
 
-// anchor（シークバー / 音量つまみ）のすぐ上、横は clientX に合わせる（カードからははみ出さない）
-function showVideoTip(text, clientX, anchor) {
-  vbTip.textContent = text;
-  vbTip.hidden = false;
-  const card = videobar.getBoundingClientRect();
-  const half = vbTip.offsetWidth / 2;
+// anchor（シークバー / 音量つまみ / 画像の位置のスライダー）のすぐ上、横は clientX に合わせる
+// （吹き出しを入れているカードからははみ出さない）
+function showBarTip(tip, text, clientX, anchor) {
+  tip.textContent = text;
+  tip.hidden = false;
+  const card = tip.parentElement.getBoundingClientRect();
+  const half = tip.offsetWidth / 2;
   const x = Math.min(card.width - half, Math.max(half, clientX - card.left));
-  vbTip.style.left = `${x}px`;
-  vbTip.style.top = `${anchor.getBoundingClientRect().top - card.top - vbTip.offsetHeight - 4}px`;
+  tip.style.left = `${x}px`;
+  tip.style.top = `${anchor.getBoundingClientRect().top - card.top - tip.offsetHeight - 4}px`;
+}
+
+function showVideoTip(text, clientX, anchor) {
+  showBarTip(vbTip, text, clientX, anchor);
 }
 
 function hideVideoTip() {
@@ -1006,6 +1018,99 @@ vbVolume.addEventListener("change", () => {
   settings[volumeKey()] = Number(vbVolume.value);
   saveSettings();
   vbVolume.blur();
+});
+
+// ---- 画像の操作カード ----
+// 左右のボタンで前 / 次の画像（本モードでは見開きごと）、中央のスライダーで一覧の中の
+// 好きな位置へ飛ぶ。スライダーの値は表示中の位置（本モードは見開きの前のページ）
+// つまみをつかんでいる間は、表示中の位置でつまみを動かさない
+let imageSeekDragging = false;
+// つまみを動かしている間の表示の間隔。動かすたびに読み込むと、書庫では取り出しが積み重なる
+const IMAGE_SEEK_INTERVAL_MS = 80;
+let imageSeekTimer = null;
+let imageSeekPending = false;
+
+function syncImageSeek() {
+  ibSeek.max = String(Math.max(images.length - 1, 0));
+  ibSeek.disabled = images.length < 2;
+  if (!imageSeekDragging) ibSeek.value = String(Math.max(index, 0));
+  syncRangeFill(ibSeek);
+}
+
+// スライダーの位置 i で表示する位置。本モードでは今の見開きの組み合わせ
+// （AB / CD … か、1 ページずらした BC / DE … か）を崩さないよう、同じ偶奇の位置にそろえる
+function imageSeekTarget(i) {
+  if (!showingBook) return i;
+  const next = i - (((i - index) % 2) + 2) % 2;
+  return Math.max(next, 0);
+}
+
+function imageSeekLabel(i) {
+  const entries = showingBook ? images.slice(i, i + 2) : [images[i]];
+  const range = entries.length > 1 ? `${i + 1}-${i + entries.length}` : `${i + 1}`;
+  return `${range} / ${images.length} · ${entries.map(entryLabel).join(" ＋ ")}`;
+}
+
+// つまみを動かしている間も、ファイル名と枚数はすぐに追従させ、画像の読み込みは間引く
+function seekImageTo(i) {
+  if (i === index || i < 0 || i >= images.length) return;
+  index = i;
+  updateChrome();
+  if (imageSeekTimer) {
+    imageSeekPending = true;
+    return;
+  }
+  show();
+  const flush = () => {
+    imageSeekTimer = null;
+    if (!imageSeekPending) return;
+    imageSeekPending = false;
+    show();
+    imageSeekTimer = setTimeout(flush, IMAGE_SEEK_INTERVAL_MS);
+  };
+  imageSeekTimer = setTimeout(flush, IMAGE_SEEK_INTERVAL_MS);
+}
+
+function hideImageTip() {
+  ibTip.hidden = true;
+}
+
+ibPrev.addEventListener("click", () => {
+  step(-1);
+  ibPrev.blur();
+});
+ibNext.addEventListener("click", () => {
+  step(1);
+  ibNext.blur();
+});
+ibSeek.addEventListener("pointerdown", () => (imageSeekDragging = true));
+ibSeek.addEventListener("input", () => {
+  syncRangeFill(ibSeek);
+  const target = imageSeekTarget(Number(ibSeek.value));
+  // 吹き出しはつまみの位置に出す
+  const r = ibSeek.getBoundingClientRect();
+  const ratio = images.length > 1 ? Number(ibSeek.value) / (images.length - 1) : 0;
+  const x = r.left + RANGE_THUMB_PX / 2 + ratio * (r.width - RANGE_THUMB_PX);
+  showBarTip(ibTip, imageSeekLabel(target), x, ibSeek);
+  seekImageTo(target);
+});
+// 離したところで終わる。値が変わらなかったときは change が届かないので pointerup で拾う
+// （フォーカスを残すと ← → でスライダーも動き、2 枚ずつ進んでしまうので外す）
+window.addEventListener("pointerup", () => {
+  if (!imageSeekDragging) return;
+  imageSeekDragging = false;
+  ibSeek.blur();
+  // 本モードで偶奇をそろえた分、つまみを表示中の位置に戻す
+  syncImageSeek();
+  if (!ibSeek.matches(":hover")) hideImageTip();
+});
+ibSeek.addEventListener("pointermove", (e) => {
+  if (imageSeekDragging || images.length < 2) return;
+  const i = Math.round(rangeRatioAt(ibSeek, e.clientX) * (images.length - 1));
+  showBarTip(ibTip, imageSeekLabel(imageSeekTarget(i)), e.clientX, ibSeek);
+});
+ibSeek.addEventListener("pointerleave", () => {
+  if (!imageSeekDragging) hideImageTip();
 });
 
 // ---- open / navigate ----
@@ -1368,6 +1473,7 @@ function hideChrome() {
   if (chromeEl.contains(document.activeElement)) document.activeElement.blur();
   app.classList.remove("chrome-visible");
   hideVideoTip();
+  hideImageTip();
 }
 
 function showChrome() {
@@ -1570,18 +1676,58 @@ window.addEventListener("auxclick", (e) => {
   if (e.button === 3 || e.button === 4) e.preventDefault();
 });
 
-// ---- input: wheel（画像は拡大縮小、動画・音楽は音量） ----
+// ---- input: 右ボタンを押したまま（ホイールで画像の拡大縮小） ----
+// 右ボタンを押している間のホイールは拡大縮小にする。その押下ではメニューを開かない。
+// ホイールを回さなくても MENU_LONG_PRESS_MS 以上押していたら（長押し）開かない。
+// メニューを開くきっかけの contextmenu は OS によって届く時機が違う
+// （Windows: 離したあと / macOS: 押した瞬間）。押している間に届いたら離すまで預かり、
+// 短く押して離したときだけそこで開く
+const MENU_LONG_PRESS_MS = 500;
+// 押している右ボタンの状態 { t: 押した時刻, used: ホイールを回したか, menuAt: 預かったメニューの位置 }
+let rightPress = null;
+// 長押しのあとに届く contextmenu（Windows）を 1 回だけ無視する
+let suppressMenu = false;
+
+window.addEventListener("mousedown", (e) => {
+  if (e.button !== 2) return;
+  rightPress = { t: performance.now(), used: false, menuAt: null };
+  suppressMenu = false;
+});
+window.addEventListener("mouseup", (e) => {
+  if (e.button !== 2 || !rightPress) return;
+  const press = rightPress;
+  rightPress = null;
+  const long = press.used || performance.now() - press.t >= MENU_LONG_PRESS_MS;
+  if (press.menuAt) {
+    if (!long && confirmEl.hidden) openContextMenu(press.menuAt.x, press.menuAt.y);
+  } else {
+    suppressMenu = long;
+  }
+});
+// ウィンドウの外で離したなど、離したことが届かなかったとき
+window.addEventListener("mousemove", (e) => {
+  if (rightPress && !(e.buttons & 2)) rightPress = null;
+});
+window.addEventListener("blur", () => (rightPress = null));
+
+// ---- input: wheel（画像は前後の画像へ移動・右ボタンを押したままなら拡大縮小、動画・音楽は音量） ----
 window.addEventListener(
   "wheel",
   (e) => {
     if (!images.length || !confirmEl.hidden) return;
     e.preventDefault();
+    if (rightPress) rightPress.used = true;
     if (showingMedia) {
       wheelVolume(e.deltaY);
       return;
     }
-    const factor = Math.exp(-e.deltaY * 0.0004 * settings.wheelSensitivity);
-    zoomAt(e.clientX, e.clientY, factor);
+    // Ctrl + ホイールは Windows のタッチパッドのピンチ操作で届く。移動ではなく拡大縮小にする
+    if (rightPress || e.ctrlKey) {
+      const factor = Math.exp(-e.deltaY * 0.0004 * settings.wheelSensitivity);
+      zoomAt(e.clientX, e.clientY, factor);
+      return;
+    }
+    wheelStep(e.deltaY);
   },
   { passive: false }
 );
@@ -1636,8 +1782,6 @@ window.addEventListener("mouseup", (e) => {
 
 // ---- misc UI ----
 placeholder.addEventListener("click", openDialog);
-navPrev.addEventListener("click", () => step(-1));
-navNext.addEventListener("click", () => step(1));
 // ---- ウィンドウ操作（最小化 / 最大化 / 閉じる） ----
 // 挙動は OS 任せ。最小化はタスクバー・Dock へ、最大化は作業領域いっぱいに広げ、
 // もう一度押すと元の大きさに戻る
@@ -1763,7 +1907,18 @@ window.addEventListener(
 );
 window.addEventListener("contextmenu", (e) => {
   e.preventDefault();
-  if (confirmEl.hidden) openContextMenu(e.clientX, e.clientY);
+  if (!confirmEl.hidden) return;
+  // 右ボタンを押している途中（macOS）なら、離したときに長押しでなければ開く
+  if (rightPress) {
+    rightPress.menuAt = { x: e.clientX, y: e.clientY };
+    return;
+  }
+  // 長押し・右ボタン＋ホイールのあと（Windows）は開かない
+  if (suppressMenu) {
+    suppressMenu = false;
+    return;
+  }
+  openContextMenu(e.clientX, e.clientY);
 });
 
 // ---- drag & drop ----
@@ -1836,10 +1991,40 @@ async function openSettings() {
   }
 }
 
-// ---- wheel volume ----
+// ---- wheel navigation / volume ----
 // ホイール 1 段の量はデバイス差が大きい（トラックパッドは細かく何度も届く）ので、
-// しきい値までためてから音量を 1 段（VOLUME_STEP）変える。上に回すと大きくなる
+// しきい値までためてから 1 段変える
 let wheelAccum = 0;
+
+// 画像の前後移動。下に回すと次の画像（本モードでは見開きごと）。
+// 少し間を空けて回し始めたときは、量によらずすぐ 1 枚送る（1 段の量が小さいマウスでも
+// 1 段で 1 枚動くように）。続けて回している間は、しきい値ごとに 1 枚送る。
+// 既定の感度でしきい値は 100（Windows のホイール 1 段の量）
+const WHEEL_GESTURE_GAP_MS = 250;
+let wheelLastAt = 0;
+let wheelDir = 0;
+function wheelStep(deltaY) {
+  const dir = Math.sign(deltaY);
+  if (!dir) return;
+  const now = performance.now();
+  const fresh = now - wheelLastAt > WHEEL_GESTURE_GAP_MS || dir !== wheelDir;
+  wheelLastAt = now;
+  if (fresh) {
+    // 次のしきい値は、すぐ送った 1 枚の分を除いてから数える
+    wheelDir = dir;
+    wheelAccum = 0;
+    step(dir);
+    return;
+  }
+  const threshold = 150 - settings.wheelSensitivity * 10;
+  wheelAccum += deltaY;
+  while (Math.abs(wheelAccum) >= threshold) {
+    step(dir);
+    wheelAccum -= dir * threshold;
+  }
+}
+
+// 音量。上に回すと大きくなる
 function wheelVolume(deltaY) {
   const threshold = 220 - settings.wheelSensitivity * 18;
   if (Math.sign(deltaY) !== Math.sign(wheelAccum)) wheelAccum = 0;
