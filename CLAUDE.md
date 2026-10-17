@@ -137,7 +137,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   the wheel changes the volume (`wheelVolume`). For images ← / → and the wheel page (`wheelStep`:
   wheel down = next; the first event after `WHEEL_GESTURE_GAP_MS` steps at once, then every
   threshold), the wheel zooms only while the right button is held (`rightPress`) or with Ctrl
-  (Windows touchpad pinch), and ↑ / ↓ are deliberately unbound (reserved for a future feature)
+  (both OSes; a Windows touchpad pinch also arrives as Ctrl + wheel), and ↑ / ↓ are deliberately unbound (reserved for a future feature)
   except in book mode. `contextmenu` arrives after mouseup on Windows but on mousedown on macOS, so a
   right press that used the wheel or lasted `MENU_LONG_PRESS_MS` opens no menu: on macOS the
   menu position is held in `rightPress.menuAt` and opened on mouseup, on Windows `suppressMenu`

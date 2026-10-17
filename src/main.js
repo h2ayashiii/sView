@@ -1710,7 +1710,7 @@ window.addEventListener("mousemove", (e) => {
 });
 window.addEventListener("blur", () => (rightPress = null));
 
-// ---- input: wheel（画像は前後の画像へ移動・右ボタンを押したままなら拡大縮小、動画・音楽は音量） ----
+// ---- input: wheel（画像は前後の画像へ移動・右ボタンを押したままか Ctrl + ホイールなら拡大縮小、動画・音楽は音量） ----
 window.addEventListener(
   "wheel",
   (e) => {
@@ -1721,7 +1721,8 @@ window.addEventListener(
       wheelVolume(e.deltaY);
       return;
     }
-    // Ctrl + ホイールは Windows のタッチパッドのピンチ操作で届く。移動ではなく拡大縮小にする
+    // 右ボタンを押したまま、または Ctrl を押しながらのホイールは拡大縮小（Windows / macOS 共通）。
+    // Windows のタッチパッドのピンチ操作も Ctrl + ホイールとして届くので、同じく拡大縮小になる
     if (rightPress || e.ctrlKey) {
       const factor = Math.exp(-e.deltaY * 0.0004 * settings.wheelSensitivity);
       zoomAt(e.clientX, e.clientY, factor);
