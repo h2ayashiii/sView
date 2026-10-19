@@ -133,8 +133,14 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   logic. While a video is shown, `handleVideoKey` takes Space / K (play-pause), M (mute),
   ← / → and J / L (±5 s) and ↑ / ↓ (volume ±5 %, saved after a 500 ms pause), and swallows the
   image paging keys (PageUp / PageDown / Backspace / Home / End): media never changes file by key or
-  mouse — only the `#vb-prev` / `#vb-next` buttons in `#videobar` do. The side buttons seek ±5 s and
-  the wheel changes the volume (`wheelVolume`). For images ← / → and the wheel page (`wheelStep`:
+  mouse — only the `#vb-prev` / `#vb-next` buttons in `#videobar` do. The side buttons seek ±5 s, the
+  wheel seeks ±3 s (`WHEEL_SEEK_S`) and right button + wheel changes the volume (`wheelVolume`; Ctrl +
+  wheel, i.e. a Windows pinch, does nothing for media). Horizontal wheel input (two-finger trackpad
+  swipe on both OSes, tilt wheel, Shift + wheel on macOS) goes to `wheelSwipe`: images page, media
+  seeks ±3 s, once per swipe (momentum events are swallowed until a `SWIPE_GAP_MS` pause, a direction
+  change, or a decay-then-rise that marks a new swipe). `wheelAxis` locks x / y per gesture
+  (`WHEEL_AXIS_GAP_MS`) so a swipe's vertical jitter never pages. Vertical trackpad scrolling is not
+  told apart from a mouse wheel (JS cannot do it reliably). For images ← / →, the wheel and a horizontal swipe page (`wheelStep`:
   wheel down = next; the first event after `WHEEL_GESTURE_GAP_MS` steps at once, then every
   threshold), the wheel zooms only while the right button is held (`rightPress`) or with Ctrl
   (both OSes; a Windows touchpad pinch also arrives as Ctrl + wheel), and ↑ / ↓ are deliberately unbound (reserved for a future feature)

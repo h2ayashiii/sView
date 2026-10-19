@@ -1710,25 +1710,36 @@ window.addEventListener("mousemove", (e) => {
 });
 window.addEventListener("blur", () => (rightPress = null));
 
-// ---- input: wheel（画像は前後の画像へ移動・右ボタンを押したままか Ctrl + ホイールなら拡大縮小、動画・音楽は音量） ----
+// ---- input: wheel ----
+// 画像: 縦は前後の画像へ移動、右ボタンを押したままか Ctrl + ホイールなら拡大縮小
+// 動画・音楽: 縦は早送り / 巻き戻し、右ボタンを押したままなら音量
+// 横（トラックパッドの二本指の左右・チルトホイール・macOS の Shift + ホイール）は、
+// 画像なら前後の画像、動画・音楽なら早送り / 巻き戻し。1 回のスワイプで 1 回だけ動かす
 window.addEventListener(
   "wheel",
   (e) => {
     if (!images.length || !confirmEl.hidden) return;
     e.preventDefault();
     if (rightPress) rightPress.used = true;
-    if (showingMedia) {
-      wheelVolume(e.deltaY);
-      return;
-    }
     // 右ボタンを押したまま、または Ctrl を押しながらのホイールは拡大縮小（Windows / macOS 共通）。
-    // Windows のタッチパッドのピンチ操作も Ctrl + ホイールとして届くので、同じく拡大縮小になる
+    // Windows のタッチパッドのピンチ操作も Ctrl + ホイールとして届くので、同じく拡大縮小になる。
+    // 動画・音楽では右ボタン + ホイールが音量で、Ctrl + ホイール（ピンチ）は何もしない
     if (rightPress || e.ctrlKey) {
+      if (showingMedia) {
+        if (rightPress) wheelVolume(e.deltaY);
+        return;
+      }
       const factor = Math.exp(-e.deltaY * 0.0004 * settings.wheelSensitivity);
       zoomAt(e.clientX, e.clientY, factor);
       return;
     }
-    wheelStep(e.deltaY);
+    const forward = showingMedia ? () => seekBy(WHEEL_SEEK_S) : () => step(1);
+    const backward = showingMedia ? () => seekBy(-WHEEL_SEEK_S) : () => step(-1);
+    if (wheelAxis(e) === "x") {
+      wheelSwipe(e.deltaX, forward, backward);
+    } else {
+      wheelStep(e.deltaY, forward, backward);
+    }
   },
   { passive: false }
 );
@@ -1992,40 +2003,88 @@ async function openSettings() {
   }
 }
 
-// ---- wheel navigation / volume ----
+// ---- wheel navigation / seek / volume ----
 // ホイール 1 段の量はデバイス差が大きい（トラックパッドは細かく何度も届く）ので、
 // しきい値までためてから 1 段変える
 let wheelAccum = 0;
 
-// 画像の前後移動。下に回すと次の画像（本モードでは見開きごと）。
-// 少し間を空けて回し始めたときは、量によらずすぐ 1 枚送る（1 段の量が小さいマウスでも
-// 1 段で 1 枚動くように）。続けて回している間は、しきい値ごとに 1 枚送る。
+// ホイールで動かす秒数（ボタン・キーの SEEK_STEP_S より細かく）
+const WHEEL_SEEK_S = 3;
+
+// 縦 / 横のどちらの操作かは、一続きの操作の最初のイベントで決めて、途中では変えない。
+// トラックパッドの左右のスワイプにも少しは縦の量が混ざり、イベント単位で比べると
+// 縦の操作（前後移動）が紛れ込むため。慣性で届き続けるイベントも同じ向きとして扱う
+const WHEEL_AXIS_GAP_MS = 150;
+let wheelAxisAt = 0;
+let wheelAxisDir = "y";
+function wheelAxis(e) {
+  const now = performance.now();
+  if (now - wheelAxisAt > WHEEL_AXIS_GAP_MS && (e.deltaX || e.deltaY)) {
+    wheelAxisDir = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? "x" : "y";
+  }
+  wheelAxisAt = now;
+  return wheelAxisDir;
+}
+
+// 縦のホイール。下に回すと次の画像（本モードでは見開きごと）/ 早送り。
+// 少し間を空けて回し始めたときは、量によらずすぐ 1 段動かす（1 段の量が小さいマウスでも
+// 1 段で 1 回動くように）。続けて回している間は、しきい値ごとに 1 段動かす。
 // 既定の感度でしきい値は 100（Windows のホイール 1 段の量）
 const WHEEL_GESTURE_GAP_MS = 250;
 let wheelLastAt = 0;
 let wheelDir = 0;
-function wheelStep(deltaY) {
+function wheelStep(deltaY, forward, backward) {
   const dir = Math.sign(deltaY);
   if (!dir) return;
+  const act = dir > 0 ? forward : backward;
   const now = performance.now();
   const fresh = now - wheelLastAt > WHEEL_GESTURE_GAP_MS || dir !== wheelDir;
   wheelLastAt = now;
   if (fresh) {
-    // 次のしきい値は、すぐ送った 1 枚の分を除いてから数える
+    // 次のしきい値は、すぐ動かした 1 段の分を除いてから数える
     wheelDir = dir;
     wheelAccum = 0;
-    step(dir);
+    act();
     return;
   }
   const threshold = 150 - settings.wheelSensitivity * 10;
   wheelAccum += deltaY;
   while (Math.abs(wheelAccum) >= threshold) {
-    step(dir);
+    act();
     wheelAccum -= dir * threshold;
   }
 }
 
-// 音量。上に回すと大きくなる
+// 横の操作（トラックパッドの二本指の左右など）。右へスクロールする向き（deltaX > 0）が次の画像 / 早送り。
+// スクロールの向きは OS の設定（macOS の「ナチュラルなスクロール」、Windows のタッチパッドの
+// 「スクロールの方向」）を反映した値で届くので、縦のホイールと同じく符号だけで決める。
+// トラックパッドは指を離したあとも慣性のイベントがしばらく届く（macOS は特に長い）ため、
+// 1 回のスワイプで動かすのは 1 回だけにし、イベントが途切れるか向きが変わるまで次は動かさない。
+// ただし慣性で小さくなっていた量が急に大きくなったら、次のスワイプが始まったとみなす
+const SWIPE_GAP_MS = 150;
+const SWIPE_THRESHOLD = 30;
+let swipe = null;
+function wheelSwipe(deltaX, forward, backward) {
+  const dir = Math.sign(deltaX);
+  if (!dir) return;
+  const now = performance.now();
+  const abs = Math.abs(deltaX);
+  const restarted =
+    swipe?.fired && abs >= 8 && abs > swipe.last * 2 && swipe.last < swipe.peak / 3;
+  if (!swipe || now - swipe.at > SWIPE_GAP_MS || dir !== swipe.dir || restarted) {
+    swipe = { dir, accum: 0, fired: false, peak: 0, last: 0, at: now };
+  }
+  swipe.at = now;
+  swipe.peak = Math.max(swipe.peak, abs);
+  swipe.last = abs;
+  if (swipe.fired) return;
+  swipe.accum += abs;
+  if (swipe.accum < SWIPE_THRESHOLD) return;
+  swipe.fired = true;
+  (dir > 0 ? forward : backward)();
+}
+
+// 音量（右ボタンを押したままのホイール）。上に回すと大きくなる
 function wheelVolume(deltaY) {
   const threshold = 220 - settings.wheelSensitivity * 18;
   if (Math.sign(deltaY) !== Math.sign(wheelAccum)) wheelAccum = 0;
@@ -2077,28 +2136,30 @@ function buildContextMenu() {
       disabled: !canDelete(),
       action: deleteCurrent,
     },
-    { separator: true },
-    {
-      label: "本モード（2 ページ表示）",
-      accel: "B",
-      checked: showingBook,
-      disabled: !showingBook && !canUseBookMode(),
-      action: toggleBookMode,
-    },
-    {
-      label: "左開き（左から右へ読む）",
-      radio: true,
-      checked: settings.bookBinding !== "right",
-      disabled: !canUseBookMode(),
-      action: () => setBookBinding("left"),
-    },
-    {
-      label: "右開き（右から左へ読む）",
-      radio: true,
-      checked: settings.bookBinding === "right",
-      disabled: !canUseBookMode(),
-      action: () => setBookBinding("right"),
-    },
+    // 本モードの項目は画像の一覧のときだけ出す（動画・音楽では出さない）
+    ...(canUseBookMode()
+      ? [
+          { separator: true },
+          {
+            label: "本モード（2 ページ表示）",
+            accel: "B",
+            checked: showingBook,
+            action: toggleBookMode,
+          },
+          {
+            label: "左開き（左から右へ読む）",
+            radio: true,
+            checked: settings.bookBinding !== "right",
+            action: () => setBookBinding("left"),
+          },
+          {
+            label: "右開き（右から左へ読む）",
+            radio: true,
+            checked: settings.bookBinding === "right",
+            action: () => setBookBinding("right"),
+          },
+        ]
+      : []),
     { separator: true },
     { label: "ファイルを開く…", accel: "O", action: openDialog },
     { label: "フォルダを開く…", accel: "D", action: openFolderDialog },
