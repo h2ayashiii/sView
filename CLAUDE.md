@@ -135,8 +135,10 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   image paging keys (PageUp / PageDown / Backspace / Home / End): media never changes file by key —
   only the `#vb-prev` / `#vb-next` buttons in `#videobar` and the mouse side buttons (`step(±1)` for every
   kind) do. The wheel seeks ±3 s (`WHEEL_SEEK_S`) and right button + wheel or Ctrl + wheel changes the
-  volume (`wheelVolume`). Trackpads get no dedicated handling (no horizontal / gesture logic): their
-  scrolling arrives as ordinary wheel events. For images ← / → and the wheel page (`wheelStep`:
+  volume (`wheelVolume`). Horizontal wheel input (Shift + wheel, tilt wheel, a trackpad's
+  left / right) is treated like vertical (right = down = next): `wheelDelta` picks the larger axis on the
+  first event of a gesture (`WHEEL_AXIS_GAP_MS`) and keeps it until the gesture ends, so a diagonal swipe
+  cannot fire next and previous in one go. No other trackpad-specific handling. For images ← / → and the wheel page (`wheelStep`:
   wheel down = next; the first event after `WHEEL_GESTURE_GAP_MS` steps at once, then every
   threshold), the wheel zooms only while the right button is held (`rightPress`) or with Ctrl
   (both OSes; a Windows touchpad pinch also arrives as Ctrl + wheel), and ↑ / ↓ are deliberately unbound (reserved for a future feature)

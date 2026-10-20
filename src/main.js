@@ -1711,26 +1711,28 @@ window.addEventListener("blur", () => (rightPress = null));
 // ---- input: wheel ----
 // 画像: 前後の画像へ移動、右ボタンを押したままか Ctrl + ホイールなら拡大縮小
 // 動画・音楽: 早送り / 巻き戻し、右ボタンを押したままか Ctrl + ホイールなら音量
+// 横のホイール（Shift + ホイール・チルトホイール・トラックパッドの左右）も縦と同じ扱い（wheelDelta）
 window.addEventListener(
   "wheel",
   (e) => {
     if (!images.length || !confirmEl.hidden) return;
     e.preventDefault();
     if (rightPress) rightPress.used = true;
+    const delta = wheelDelta(e);
     // 右ボタンを押したまま、または Ctrl を押しながら（Windows / macOS 共通）
     if (rightPress || e.ctrlKey) {
       if (showingMedia) {
-        wheelVolume(e.deltaY);
+        wheelVolume(delta);
         return;
       }
-      const factor = Math.exp(-e.deltaY * 0.0004 * settings.wheelSensitivity);
+      const factor = Math.exp(-delta * 0.0004 * settings.wheelSensitivity);
       zoomAt(e.clientX, e.clientY, factor);
       return;
     }
     if (showingMedia) {
-      wheelStep(e.deltaY, () => seekBy(WHEEL_SEEK_S), () => seekBy(-WHEEL_SEEK_S));
+      wheelStep(delta, () => seekBy(WHEEL_SEEK_S), () => seekBy(-WHEEL_SEEK_S));
     } else {
-      wheelStep(e.deltaY, () => step(1), () => step(-1));
+      wheelStep(delta, () => step(1), () => step(-1));
     }
   },
   { passive: false }
@@ -2002,6 +2004,23 @@ let wheelAccum = 0;
 
 // ホイールで動かす秒数（ボタン・キーの SEEK_STEP_S より細かく）
 const WHEEL_SEEK_S = 3;
+
+// 縦横どちらの量を使うか。横（右）は縦の下と同じ向き（次 / 早送り）として扱う。
+// 一続きの操作（イベントが WHEEL_AXIS_GAP_MS 以上途切れるまで。トラックパッドの慣性も含む）の
+// 最初のイベントで量の大きい方に決めて、途中では変えない。トラックパッドの斜めの操作で
+// イベントごとに縦横が入れ替わると、右上・左下のように次と前が 1 回の操作で両方起きるため
+const WHEEL_AXIS_GAP_MS = 150;
+let wheelAxisAt = 0;
+let wheelAxisX = false;
+function wheelDelta(e) {
+  if (!e.deltaX && !e.deltaY) return 0;
+  const now = performance.now();
+  if (now - wheelAxisAt > WHEEL_AXIS_GAP_MS) {
+    wheelAxisX = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+  }
+  wheelAxisAt = now;
+  return wheelAxisX ? e.deltaX : e.deltaY;
+}
 
 // ホイール。下に回すと次の画像（本モードでは見開きごと）/ 早送り。
 // 少し間を空けて回し始めたときは、量によらずすぐ 1 段動かす（1 段の量が小さいマウスでも
