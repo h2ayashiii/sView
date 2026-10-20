@@ -307,7 +307,7 @@ const SETTINGS_SECTIONS = [
 
 // 設定ウィンドウには出さず、本体だけが読み書きする値。
 // videoVolume / audioVolume: 再生中の音量（0〜100%）。動画と音楽で別々に持ち、
-// 再生操作のつまみ・↑ ↓ キー・ホイールで変える。
+// 再生操作のつまみ・↑ ↓ キー・右ボタンを押したまま / Ctrl + ホイールで変える。
 // bookBinding: 本モードの綴じ方（"left": 左開き / "right": 右開き）。右クリックメニューで変える
 const HIDDEN_DEFAULTS = {
   videoVolume: 100,
