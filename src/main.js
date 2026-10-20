@@ -1660,7 +1660,7 @@ window.addEventListener("keydown", (e) => {
 // macOS: マウスにより挙動が異なるが、side button は同じく button 3/4 の
 // mouseup として届く（届かないユーティリティ常駐マウスはキー操作で代替）。
 window.addEventListener("mouseup", (e) => {
-  if (!settings.sideButtons || !confirmEl.hidden) return;
+  if (!confirmEl.hidden) return;
   // 画像・動画・音楽とも前後のファイルへ（再生操作カードの ⏮ ⏭ と同じ）
   if (e.button === 3) {
     e.preventDefault();
