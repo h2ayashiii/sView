@@ -232,20 +232,6 @@ const SETTINGS_SECTIONS = [
         default: 5,
       },
       {
-        key: "sideButtons",
-        label: "マウスのサイドボタンを使う",
-        hint: "「進む / 戻る」ボタンで、画像・動画・音楽とも次 / 前のファイルへ移動します",
-        type: "toggle",
-        default: true,
-      },
-    ],
-  },
-  {
-    id: "file",
-    tab: "general",
-    label: "ファイル",
-    items: [
-      {
         key: "confirmDelete",
         label: "削除の前に確認する",
         hint:
@@ -267,9 +253,9 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
-    id: "shortcuts",
+    id: "other",
     tab: "general",
-    label: "ショートカット",
+    label: "その他",
     items: [
       {
         key: "openShortcuts",
@@ -279,13 +265,6 @@ const SETTINGS_SECTIONS = [
         action: "openShortcuts",
         buttonLabel: "表示",
       },
-    ],
-  },
-  {
-    id: "logs",
-    tab: "general",
-    label: "ログ",
-    items: [
       {
         key: "openLogFolder",
         label: "ログフォルダを開く",
@@ -320,7 +299,7 @@ const SETTINGS_DEFAULTS = {
 };
 
 // 廃止した項目。古い settings.json に残っていても読み捨てる
-const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted", "videoLoop", "wrapAround"];
+const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted", "videoLoop", "wrapAround", "sideButtons"];
 
 // 選択肢の名前を変えたときの読み替え表（古い settings.json をそのまま読めるようにする）。
 // windowSizeMode: 0.1 系までは "fixed" / "flexible" だった
