@@ -1735,10 +1735,12 @@ window.addEventListener(
     }
     const forward = showingMedia ? () => seekBy(WHEEL_SEEK_S) : () => step(1);
     const backward = showingMedia ? () => seekBy(-WHEEL_SEEK_S) : () => step(-1);
-    if (wheelAxis(e) === "x") {
-      wheelSwipe(e.deltaX, forward, backward);
-    } else {
-      wheelStep(e.deltaY, forward, backward);
+    // 縦と決まらないまま途切れた操作（1 段の量が小さいマウスなど）は、途切れたところで縦として動かす
+    const move = wheelAxis(e, (dy) => wheelStep(dy, forward, backward));
+    if (move?.axis === "x") {
+      wheelSwipe(move.dx, forward, backward);
+    } else if (move?.axis === "y") {
+      wheelStep(move.dy, forward, backward);
     }
   },
   { passive: false }
@@ -2011,19 +2013,61 @@ let wheelAccum = 0;
 // ホイールで動かす秒数（ボタン・キーの SEEK_STEP_S より細かく）
 const WHEEL_SEEK_S = 3;
 
-// 縦 / 横のどちらの操作かは、一続きの操作の最初のイベントで決めて、途中では変えない。
-// トラックパッドの左右のスワイプにも少しは縦の量が混ざり、イベント単位で比べると
-// 縦の操作（前後移動）が紛れ込むため。慣性で届き続けるイベントも同じ向きとして扱う
+// 縦 / 横のどちらの操作かは、一続きの操作（イベントが WHEEL_AXIS_GAP_MS 以上途切れるまで）ごとに
+// 1 回だけ決めて、途中では変えない。指での操作は左右のつもりでも縦の量が混ざるため、
+// イベント単位で比べると左右のスワイプに縦の操作（前後移動）が紛れ込む。
+// 指を置いた直後の量は小さくぶれやすいので、最初の 1 件では決めず、縦横の量の合計が
+// WHEEL_AXIS_DECIDE_PX までたまってから、片方がもう片方の WHEEL_AXIS_RATIO 倍以上あるときに決める。
+// それまでは何もしない。斜めで WHEEL_AXIS_GIVE_UP_PX までたまっても決まらない操作は、
+// 違う向きに動かすよりはと、操作が終わるまで何もしない。
+// 横の量がちょうど 0 で縦の量が WHEEL_AXIS_INSTANT_PX 以上の 1 件目（マウスホイールの 1 段）は、
+// 待たずに縦と決める（マウスホイールは横の量を出さないので、待つと反応が遅れるだけ）。
+// 1 段の量がそれより小さいマウスもあるので、横の量が 0 のまま決まらずに操作が途切れたときは、
+// 途切れたところ（WHEEL_AXIS_GAP_MS 後）で縦として onPendingY に渡す。
+// 慣性で届き続けるイベントも同じ操作として扱う。
+// 決まったときは、それまでにたまった量をまとめて返す（決まるまでの量も 1 段に数える）
 const WHEEL_AXIS_GAP_MS = 150;
-let wheelAxisAt = 0;
-let wheelAxisDir = "y";
-function wheelAxis(e) {
+const WHEEL_AXIS_DECIDE_PX = 15;
+const WHEEL_AXIS_GIVE_UP_PX = 60;
+const WHEEL_AXIS_RATIO = 1.5;
+const WHEEL_AXIS_INSTANT_PX = 30;
+let wheelGesture = null;
+let wheelAxisTimer = null;
+function wheelAxis(e, onPendingY) {
   const now = performance.now();
-  if (now - wheelAxisAt > WHEEL_AXIS_GAP_MS && (e.deltaX || e.deltaY)) {
-    wheelAxisDir = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? "x" : "y";
+  clearTimeout(wheelAxisTimer);
+  if (!wheelGesture || now - wheelGesture.at > WHEEL_AXIS_GAP_MS) {
+    wheelGesture = { axis: null, sx: 0, sy: 0, at: now };
   }
-  wheelAxisAt = now;
-  return wheelAxisDir;
+  const g = wheelGesture;
+  g.at = now;
+  if (g.axis === "none") return null;
+  if (g.axis) return { axis: g.axis, dx: e.deltaX, dy: e.deltaY };
+  const first = g.sx === 0 && g.sy === 0;
+  g.sx += e.deltaX;
+  g.sy += e.deltaY;
+  const ax = Math.abs(g.sx);
+  const ay = Math.abs(g.sy);
+  if (first && e.deltaX === 0 && ay >= WHEEL_AXIS_INSTANT_PX) {
+    g.axis = "y";
+  } else if (ax + ay < WHEEL_AXIS_DECIDE_PX) {
+    if (ax === 0) {
+      wheelAxisTimer = setTimeout(() => {
+        if (wheelGesture !== g || g.axis || g.sx !== 0) return;
+        g.axis = "y";
+        onPendingY(g.sy);
+      }, WHEEL_AXIS_GAP_MS);
+    }
+    return null;
+  } else if (ax >= ay * WHEEL_AXIS_RATIO) {
+    g.axis = "x";
+  } else if (ay >= ax * WHEEL_AXIS_RATIO) {
+    g.axis = "y";
+  } else {
+    if (ax + ay >= WHEEL_AXIS_GIVE_UP_PX) g.axis = "none";
+    return null;
+  }
+  return { axis: g.axis, dx: g.sx, dy: g.sy };
 }
 
 // 縦のホイール。下に回すと次の画像（本モードでは見開きごと）/ 早送り。

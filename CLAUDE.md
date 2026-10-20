@@ -138,8 +138,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   wheel, i.e. a Windows pinch, does nothing for media). Horizontal wheel input (two-finger trackpad
   swipe on both OSes, tilt wheel, Shift + wheel on macOS) goes to `wheelSwipe`: images page, media
   seeks ±3 s, once per swipe (momentum events are swallowed until a `SWIPE_GAP_MS` pause, a direction
-  change, or a decay-then-rise that marks a new swipe). `wheelAxis` locks x / y per gesture
-  (`WHEEL_AXIS_GAP_MS`) so a swipe's vertical jitter never pages. Vertical trackpad scrolling is not
+  change, or a decay-then-rise that marks a new swipe). `wheelAxis` decides x / y once per gesture
+  (`WHEEL_AXIS_GAP_MS`) and locks it, so a swipe's vertical jitter never pages: it waits until
+  `WHEEL_AXIS_DECIDE_PX` has accumulated and one axis is `WHEEL_AXIS_RATIO` × the other (a diagonal
+  that reaches `WHEEL_AXIS_GIVE_UP_PX` undecided does nothing), except a first event with `deltaX === 0`
+  and ≥ `WHEEL_AXIS_INSTANT_PX` (a mouse notch) → y at once; a pure-vertical input that ends undecided is
+  stepped as y when the gesture times out (small-notch mice). Vertical trackpad scrolling is not
   told apart from a mouse wheel (JS cannot do it reliably). For images ← / →, the wheel and a horizontal swipe page (`wheelStep`:
   wheel down = next; the first event after `WHEEL_GESTURE_GAP_MS` steps at once, then every
   threshold), the wheel zooms only while the right button is held (`rightPress`) or with Ctrl
