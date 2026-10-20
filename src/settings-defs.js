@@ -170,7 +170,7 @@ const SETTINGS_SECTIONS = [
         label: "動画が終わったら",
         hint:
           "「次の動画へ進む」は同じフォルダの次の動画ファイルを続けて再生します。" +
-          "最後の動画のあとは「端で最初 / 最後へ折り返す」がオンのときだけ先頭に戻ります",
+          "最後の動画のあとは止まります",
         type: "select",
         options: [
           ["next", "次の動画へ進む"],
@@ -201,7 +201,7 @@ const SETTINGS_SECTIONS = [
         label: "曲が終わったら",
         hint:
           "「次の曲へ進む」は同じフォルダの次の音楽ファイルを続けて再生します。" +
-          "最後の曲のあとは「端で最初 / 最後へ折り返す」がオンのときだけ先頭に戻ります",
+          "最後の曲のあとは止まります",
         type: "select",
         options: [
           ["next", "次の曲へ進む"],
@@ -232,27 +232,6 @@ const SETTINGS_SECTIONS = [
         default: 5,
       },
       {
-        key: "wrapAround",
-        label: "端で最初 / 最後へ折り返す",
-        hint: "オフのときは端で止まり、そこが端であることを短く表示します",
-        type: "toggle",
-        default: false,
-      },
-      {
-        key: "sideButtons",
-        label: "マウスのサイドボタンを使う",
-        hint: "「進む / 戻る」ボタンで、画像・動画・音楽とも次 / 前のファイルへ移動します",
-        type: "toggle",
-        default: true,
-      },
-    ],
-  },
-  {
-    id: "file",
-    tab: "general",
-    label: "ファイル",
-    items: [
-      {
         key: "confirmDelete",
         label: "削除の前に確認する",
         hint:
@@ -274,9 +253,9 @@ const SETTINGS_SECTIONS = [
     ],
   },
   {
-    id: "shortcuts",
+    id: "other",
     tab: "general",
-    label: "ショートカット",
+    label: "その他",
     items: [
       {
         key: "openShortcuts",
@@ -286,13 +265,6 @@ const SETTINGS_SECTIONS = [
         action: "openShortcuts",
         buttonLabel: "表示",
       },
-    ],
-  },
-  {
-    id: "logs",
-    tab: "general",
-    label: "ログ",
-    items: [
       {
         key: "openLogFolder",
         label: "ログフォルダを開く",
@@ -327,7 +299,7 @@ const SETTINGS_DEFAULTS = {
 };
 
 // 廃止した項目。古い settings.json に残っていても読み捨てる
-const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted", "videoLoop"];
+const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted", "videoLoop", "wrapAround", "sideButtons"];
 
 // 選択肢の名前を変えたときの読み替え表（古い settings.json をそのまま読めるようにする）。
 // windowSizeMode: 0.1 系までは "fixed" / "flexible" だった

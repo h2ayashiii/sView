@@ -219,9 +219,11 @@ body {
   font-size: 0.85em;
 }
 
+/* 端の案内やエラーの表示。下部中央は操作カードと重なるので上部中央に出す。
+   上端はウィンドウ操作ボタンの帯（#titlebar、高さ 32px）と重ならないようその下にする */
 #error {
   position: absolute;
-  bottom: 40px;
+  top: 40px;
   left: 50%;
   transform: translateX(-50%);
   background: rgba(160, 40, 40, 0.9);
