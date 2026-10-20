@@ -1661,15 +1661,13 @@ window.addEventListener("keydown", (e) => {
 // mouseup として届く（届かないユーティリティ常駐マウスはキー操作で代替）。
 window.addEventListener("mouseup", (e) => {
   if (!settings.sideButtons || !confirmEl.hidden) return;
-  // 動画・音楽では前後のファイルではなく 5 秒戻る / 進む
+  // 画像・動画・音楽とも前後のファイルへ（再生操作カードの ⏮ ⏭ と同じ）
   if (e.button === 3) {
     e.preventDefault();
-    if (showingMedia) seekBy(-SEEK_STEP_S);
-    else step(-1);
+    step(-1);
   } else if (e.button === 4) {
     e.preventDefault();
-    if (showingMedia) seekBy(SEEK_STEP_S);
-    else step(1);
+    step(1);
   }
 });
 window.addEventListener("auxclick", (e) => {
@@ -1711,36 +1709,28 @@ window.addEventListener("mousemove", (e) => {
 window.addEventListener("blur", () => (rightPress = null));
 
 // ---- input: wheel ----
-// 画像: 縦は前後の画像へ移動、右ボタンを押したままか Ctrl + ホイールなら拡大縮小
-// 動画・音楽: 縦は早送り / 巻き戻し、右ボタンを押したままなら音量
-// 横（トラックパッドの二本指の左右・チルトホイール・macOS の Shift + ホイール）は、
-// 画像なら前後の画像、動画・音楽なら早送り / 巻き戻し。1 回のスワイプで 1 回だけ動かす
+// 画像: 前後の画像へ移動、右ボタンを押したままか Ctrl + ホイールなら拡大縮小
+// 動画・音楽: 早送り / 巻き戻し、右ボタンを押したままか Ctrl + ホイールなら音量
 window.addEventListener(
   "wheel",
   (e) => {
     if (!images.length || !confirmEl.hidden) return;
     e.preventDefault();
     if (rightPress) rightPress.used = true;
-    // 右ボタンを押したまま、または Ctrl を押しながらのホイールは拡大縮小（Windows / macOS 共通）。
-    // Windows のタッチパッドのピンチ操作も Ctrl + ホイールとして届くので、同じく拡大縮小になる。
-    // 動画・音楽では右ボタン + ホイールが音量で、Ctrl + ホイール（ピンチ）は何もしない
+    // 右ボタンを押したまま、または Ctrl を押しながら（Windows / macOS 共通）
     if (rightPress || e.ctrlKey) {
       if (showingMedia) {
-        if (rightPress) wheelVolume(e.deltaY);
+        wheelVolume(e.deltaY);
         return;
       }
       const factor = Math.exp(-e.deltaY * 0.0004 * settings.wheelSensitivity);
       zoomAt(e.clientX, e.clientY, factor);
       return;
     }
-    const forward = showingMedia ? () => seekBy(WHEEL_SEEK_S) : () => step(1);
-    const backward = showingMedia ? () => seekBy(-WHEEL_SEEK_S) : () => step(-1);
-    // 縦と決まらないまま途切れた操作（1 段の量が小さいマウスなど）は、途切れたところで縦として動かす
-    const move = wheelAxis(e, (dy) => wheelStep(dy, forward, backward));
-    if (move?.axis === "x") {
-      wheelSwipe(move.dx, forward, backward);
-    } else if (move?.axis === "y") {
-      wheelStep(move.dy, forward, backward);
+    if (showingMedia) {
+      wheelStep(e.deltaY, () => seekBy(WHEEL_SEEK_S), () => seekBy(-WHEEL_SEEK_S));
+    } else {
+      wheelStep(e.deltaY, () => step(1), () => step(-1));
     }
   },
   { passive: false }
@@ -2006,71 +1996,14 @@ async function openSettings() {
 }
 
 // ---- wheel navigation / seek / volume ----
-// ホイール 1 段の量はデバイス差が大きい（トラックパッドは細かく何度も届く）ので、
+// ホイール 1 段の量はデバイス差が大きい（細かい量で何度も届くものもある）ので、
 // しきい値までためてから 1 段変える
 let wheelAccum = 0;
 
 // ホイールで動かす秒数（ボタン・キーの SEEK_STEP_S より細かく）
 const WHEEL_SEEK_S = 3;
 
-// 縦 / 横のどちらの操作かは、一続きの操作（イベントが WHEEL_AXIS_GAP_MS 以上途切れるまで）ごとに
-// 1 回だけ決めて、途中では変えない。指での操作は左右のつもりでも縦の量が混ざるため、
-// イベント単位で比べると左右のスワイプに縦の操作（前後移動）が紛れ込む。
-// 指を置いた直後の量は小さくぶれやすいので、最初の 1 件では決めず、縦横の量の合計が
-// WHEEL_AXIS_DECIDE_PX までたまってから、片方がもう片方の WHEEL_AXIS_RATIO 倍以上あるときに決める。
-// それまでは何もしない。斜めで WHEEL_AXIS_GIVE_UP_PX までたまっても決まらない操作は、
-// 違う向きに動かすよりはと、操作が終わるまで何もしない。
-// 横の量がちょうど 0 で縦の量が WHEEL_AXIS_INSTANT_PX 以上の 1 件目（マウスホイールの 1 段）は、
-// 待たずに縦と決める（マウスホイールは横の量を出さないので、待つと反応が遅れるだけ）。
-// 1 段の量がそれより小さいマウスもあるので、横の量が 0 のまま決まらずに操作が途切れたときは、
-// 途切れたところ（WHEEL_AXIS_GAP_MS 後）で縦として onPendingY に渡す。
-// 慣性で届き続けるイベントも同じ操作として扱う。
-// 決まったときは、それまでにたまった量をまとめて返す（決まるまでの量も 1 段に数える）
-const WHEEL_AXIS_GAP_MS = 150;
-const WHEEL_AXIS_DECIDE_PX = 15;
-const WHEEL_AXIS_GIVE_UP_PX = 60;
-const WHEEL_AXIS_RATIO = 1.5;
-const WHEEL_AXIS_INSTANT_PX = 30;
-let wheelGesture = null;
-let wheelAxisTimer = null;
-function wheelAxis(e, onPendingY) {
-  const now = performance.now();
-  clearTimeout(wheelAxisTimer);
-  if (!wheelGesture || now - wheelGesture.at > WHEEL_AXIS_GAP_MS) {
-    wheelGesture = { axis: null, sx: 0, sy: 0, at: now };
-  }
-  const g = wheelGesture;
-  g.at = now;
-  if (g.axis === "none") return null;
-  if (g.axis) return { axis: g.axis, dx: e.deltaX, dy: e.deltaY };
-  const first = g.sx === 0 && g.sy === 0;
-  g.sx += e.deltaX;
-  g.sy += e.deltaY;
-  const ax = Math.abs(g.sx);
-  const ay = Math.abs(g.sy);
-  if (first && e.deltaX === 0 && ay >= WHEEL_AXIS_INSTANT_PX) {
-    g.axis = "y";
-  } else if (ax + ay < WHEEL_AXIS_DECIDE_PX) {
-    if (ax === 0) {
-      wheelAxisTimer = setTimeout(() => {
-        if (wheelGesture !== g || g.axis || g.sx !== 0) return;
-        g.axis = "y";
-        onPendingY(g.sy);
-      }, WHEEL_AXIS_GAP_MS);
-    }
-    return null;
-  } else if (ax >= ay * WHEEL_AXIS_RATIO) {
-    g.axis = "x";
-  } else if (ay >= ax * WHEEL_AXIS_RATIO) {
-    g.axis = "y";
-  } else {
-    if (ax + ay >= WHEEL_AXIS_GIVE_UP_PX) g.axis = "none";
-    return null;
-  }
-  return { axis: g.axis, dx: g.sx, dy: g.sy };
-}
-
-// 縦のホイール。下に回すと次の画像（本モードでは見開きごと）/ 早送り。
+// ホイール。下に回すと次の画像（本モードでは見開きごと）/ 早送り。
 // 少し間を空けて回し始めたときは、量によらずすぐ 1 段動かす（1 段の量が小さいマウスでも
 // 1 段で 1 回動くように）。続けて回している間は、しきい値ごとに 1 段動かす。
 // 既定の感度でしきい値は 100（Windows のホイール 1 段の量）
@@ -2099,36 +2032,7 @@ function wheelStep(deltaY, forward, backward) {
   }
 }
 
-// 横の操作（トラックパッドの二本指の左右など）。右へスクロールする向き（deltaX > 0）が次の画像 / 早送り。
-// スクロールの向きは OS の設定（macOS の「ナチュラルなスクロール」、Windows のタッチパッドの
-// 「スクロールの方向」）を反映した値で届くので、縦のホイールと同じく符号だけで決める。
-// トラックパッドは指を離したあとも慣性のイベントがしばらく届く（macOS は特に長い）ため、
-// 1 回のスワイプで動かすのは 1 回だけにし、イベントが途切れるか向きが変わるまで次は動かさない。
-// ただし慣性で小さくなっていた量が急に大きくなったら、次のスワイプが始まったとみなす
-const SWIPE_GAP_MS = 150;
-const SWIPE_THRESHOLD = 30;
-let swipe = null;
-function wheelSwipe(deltaX, forward, backward) {
-  const dir = Math.sign(deltaX);
-  if (!dir) return;
-  const now = performance.now();
-  const abs = Math.abs(deltaX);
-  const restarted =
-    swipe?.fired && abs >= 8 && abs > swipe.last * 2 && swipe.last < swipe.peak / 3;
-  if (!swipe || now - swipe.at > SWIPE_GAP_MS || dir !== swipe.dir || restarted) {
-    swipe = { dir, accum: 0, fired: false, peak: 0, last: 0, at: now };
-  }
-  swipe.at = now;
-  swipe.peak = Math.max(swipe.peak, abs);
-  swipe.last = abs;
-  if (swipe.fired) return;
-  swipe.accum += abs;
-  if (swipe.accum < SWIPE_THRESHOLD) return;
-  swipe.fired = true;
-  (dir > 0 ? forward : backward)();
-}
-
-// 音量（右ボタンを押したままのホイール）。上に回すと大きくなる
+// 音量（右ボタンを押したまま / Ctrl + ホイール）。上に回すと大きくなる
 function wheelVolume(deltaY) {
   const threshold = 220 - settings.wheelSensitivity * 18;
   if (Math.sign(deltaY) !== Math.sign(wheelAccum)) wheelAccum = 0;
