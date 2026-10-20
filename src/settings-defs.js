@@ -170,7 +170,7 @@ const SETTINGS_SECTIONS = [
         label: "動画が終わったら",
         hint:
           "「次の動画へ進む」は同じフォルダの次の動画ファイルを続けて再生します。" +
-          "最後の動画のあとは「端で最初 / 最後へ折り返す」がオンのときだけ先頭に戻ります",
+          "最後の動画のあとは止まります",
         type: "select",
         options: [
           ["next", "次の動画へ進む"],
@@ -201,7 +201,7 @@ const SETTINGS_SECTIONS = [
         label: "曲が終わったら",
         hint:
           "「次の曲へ進む」は同じフォルダの次の音楽ファイルを続けて再生します。" +
-          "最後の曲のあとは「端で最初 / 最後へ折り返す」がオンのときだけ先頭に戻ります",
+          "最後の曲のあとは止まります",
         type: "select",
         options: [
           ["next", "次の曲へ進む"],
@@ -229,13 +229,6 @@ const SETTINGS_SECTIONS = [
         max: 10,
         step: 1,
         default: 5,
-      },
-      {
-        key: "wrapAround",
-        label: "端で最初 / 最後へ折り返す",
-        hint: "オフのときは端で止まり、そこが端であることを短く表示します",
-        type: "toggle",
-        default: false,
       },
       {
         key: "sideButtons",
@@ -326,7 +319,7 @@ const SETTINGS_DEFAULTS = {
 };
 
 // 廃止した項目。古い settings.json に残っていても読み捨てる
-const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted", "videoLoop"];
+const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted", "videoLoop", "wrapAround"];
 
 // 選択肢の名前を変えたときの読み替え表（古い settings.json をそのまま読めるようにする）。
 // windowSizeMode: 0.1 系までは "fixed" / "flexible" だった

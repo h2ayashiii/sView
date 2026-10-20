@@ -393,12 +393,12 @@ function updateChrome() {
   counterEl.textContent = shown.length > 1
     ? `${index + 1}-${index + shown.length} / ${images.length}`
     : `${index + 1} / ${images.length}`;
-  // 前後のファイルへのボタン（端で折り返す設定なら端でも押せる）。
+  // 前後のファイルへのボタン（端では押せない）。
   // 画像は画像の操作カード、動画・音楽は再生操作カードのボタンを使う
-  ibPrev.disabled = !settings.wrapAround && index === 0;
-  ibNext.disabled = !settings.wrapAround && index + shown.length >= images.length;
-  vbPrev.disabled = !settings.wrapAround && index === 0;
-  vbNext.disabled = !settings.wrapAround && index === images.length - 1;
+  ibPrev.disabled = index === 0;
+  ibNext.disabled = index + shown.length >= images.length;
+  vbPrev.disabled = index === 0;
+  vbNext.disabled = index === images.length - 1;
   syncImageSeek();
   appWindow.setTitle(`${baseName(images[index])} - sView`).catch(() => {});
 }
@@ -883,16 +883,10 @@ async function loadAudioInfo(path, token) {
 }
 
 // 次に再生するファイルの位置。一覧は同じ種類だけなので通常は隣のファイルだが、
-// 念のため表示中と別の種類は飛ばす。無ければ -1
-// （最後まで来たら、設定「端で最初 / 最後へ折り返す」のときだけ先頭から探す）
+// 念のため表示中と別の種類は飛ばす。無ければ -1（最後まで来ても先頭には戻らない）
 function nextMediaIndex() {
   const sameKind = showingAudio ? isAudioPath : isVideoPath;
-  for (let off = 1; off < images.length; off++) {
-    let i = index + off;
-    if (i >= images.length) {
-      if (!settings.wrapAround) return -1;
-      i -= images.length;
-    }
+  for (let i = index + 1; i < images.length; i++) {
     if (sameKind(images[i])) return i;
   }
   return -1;
@@ -1178,14 +1172,11 @@ function step(delta) {
     stepBook(delta * 2);
     return;
   }
-  let next = index + delta;
+  const next = index + delta;
+  // 端では折り返さず、そこが端であることだけ知らせる
   if (next < 0 || next >= images.length) {
-    if (!settings.wrapAround) {
-      // 折り返さない設定のときは、そこが端であることだけ知らせる
-      showToast(next < 0 ? "最初の画像です" : "最後の画像です", "notice");
-      return;
-    }
-    next = (next + images.length) % images.length;
+    showToast(next < 0 ? "最初の画像です" : "最後の画像です", "notice");
+    return;
   }
   index = next;
   show();
@@ -1212,11 +1203,8 @@ function stepBook(delta) {
   // 1 ページずらした見開き（BC など）から戻るときは、先頭の見開きで止める
   if (next < 0 && index > 0) next = 0;
   if (next < 0 || next > end) {
-    if (!settings.wrapAround) {
-      showToast(next < 0 ? "最初のページです" : "最後のページです", "notice");
-      return;
-    }
-    next = next < 0 ? lastStart : 0;
+    showToast(next < 0 ? "最初のページです" : "最後のページです", "notice");
+    return;
   }
   if (next === index) return;
   index = next;
@@ -1234,6 +1222,8 @@ function toggleBookMode() {
     return;
   }
   bookMode = !bookMode;
+  // 最後の画像で本モードに入ったときも 2 ページ並ぶよう、最後の見開き（最後の 2 ページ）にする
+  if (bookMode) index = Math.min(index, lastSpreadIndex());
   show();
 }
 

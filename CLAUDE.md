@@ -166,7 +166,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   window width: the ratio then depends on the previous window shape and the size drifts. `audioEnd` / `videoEnd` (`mediaEnd()`:
   `"next"` / `"repeat"` / `"stop"`; `videoEnd` replaced the old `videoLoop` toggle, migrated in
   `normalizeSettings`) — `"next"` advances on `ended` to the next entry of the same kind
-  (`nextMediaIndex`; wraps only with `wrapAround`) and forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
+  (`nextMediaIndex`; never wraps — paging stops at both ends, there is no wrap-around setting) and forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
   slider value (`getVolume` / `setVolume` wrap `video.volume`; never read or write it directly for
   the user-facing volume). The volume is stored per kind (`videoVolume` / `audioVolume`, picked by
   `volumeKey()`); both are `HIDDEN_DEFAULTS` in `settings-defs.js` — stored in `settings.json` but not
