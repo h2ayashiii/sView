@@ -102,29 +102,48 @@ struct RestoredPosition {
 }
 type PendingPosition = PerWindow<Option<RestoredPosition>>;
 
-/// ウィンドウの大きさ・位置を種類ごとに分けて覚えるための、表示中の種類の覚え書き。
-/// フロントエンドが set_window_kind で表示する種類を知らせる
+/// ウィンドウの大きさ・位置を覚える枠。
+/// 「自由に変更」では種類によらず 1 つ（Free）、「メディアに合わせる」では種類ごとに 1 つずつ
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowSlot {
+    /// 「自由に変更」の枠（window.json の最上位）
+    Free,
+    /// 「メディアに合わせる」の種類ごとの枠（window.json の kinds）
+    Kind(WindowKindKey),
+}
+
+/// 表示中の種類と、ウィンドウの姿がどの枠のものかの覚え書き。
+/// フロントエンドが set_window_kind で表示する種類とサイズの設定を知らせる
 #[derive(Default)]
 struct KindState {
     /// 最後に表示した種類（何も開いていない間も前の種類を覚えたまま）。
     /// まだ何も表示していなければ None
     shown: Option<WindowKindKey>,
-    /// ウィンドウの今の大きさ・位置（普段の姿）がどの種類のものか。
-    /// 最大化中・全画面中・最小化中に表示する種類が変わったときは、普段の姿に戻って
-    /// その種類の大きさ・位置へ置き直すまで、前の種類のまま（shown と食い違う）
-    applied: Option<WindowKindKey>,
-    /// applied の種類をこのウィンドウで実際に表示したか。
-    /// 起動直後に前回の姿で開いただけのウィンドウは、その姿を種類の分として書き戻さない
-    used: bool,
+    /// ウィンドウのサイズの設定が「メディアに合わせる」か
+    fit: bool,
+    /// ウィンドウの今の大きさ・位置（普段の姿）がどの枠のものか。
+    /// 最大化中・全画面中・最小化中に枠が変わったときは、普段の姿に戻って
+    /// その枠の大きさ・位置へ置き直すまで、前の枠のまま（target と食い違う）
+    applied: Option<WindowSlot>,
     /// 開くファイルを割り当て済みか。まだ何も表示していないウィンドウでも、
     /// 割り当て済みなら次のファイルは別のウィンドウで開く
     claimed: bool,
 }
 
 impl KindState {
-    /// 表示する種類の大きさ・位置へまだ置き直していないか
+    /// 今の設定と表示中の種類で、ウィンドウが使うべき枠。
+    /// 「メディアに合わせる」で何も表示していなければ None
+    fn target(&self) -> Option<WindowSlot> {
+        if self.fit {
+            self.shown.map(WindowSlot::Kind)
+        } else {
+            Some(WindowSlot::Free)
+        }
+    }
+
+    /// 使うべき枠の大きさ・位置へまだ置き直していないか
     fn pending(&self) -> bool {
-        self.shown.is_some() && self.shown != self.applied
+        matches!(self.target(), Some(target) if self.applied != Some(target))
     }
 }
 type WindowKind = PerWindow<KindState>;
@@ -594,17 +613,72 @@ mod tests {
     }
 
     #[test]
-    fn kind_state_is_pending_until_the_window_follows() {
-        let mut state = KindState::default();
-        // 何も表示していないウィンドウは待つものが無い
+    fn kind_state_targets_one_slot_when_free() {
+        let mut state = KindState {
+            applied: Some(WindowSlot::Free),
+            ..KindState::default()
+        };
+        // 「自由に変更」は種類によらず 1 つの枠。種類が変わっても置き直さない
+        for kind in [
+            WindowKindKey::Image,
+            WindowKindKey::Video,
+            WindowKindKey::Audio,
+            WindowKindKey::Book,
+        ] {
+            state.shown = Some(kind);
+            assert_eq!(state.target(), Some(WindowSlot::Free));
+            assert!(!state.pending());
+        }
+    }
+
+    #[test]
+    fn kind_state_targets_the_shown_kind_when_fitting() {
+        let mut state = KindState {
+            fit: true,
+            ..KindState::default()
+        };
+        // 何も表示していなければ使う枠は決まらない
+        assert_eq!(state.target(), None);
         assert!(!state.pending());
-        state.applied = Some(WindowKindKey::Video);
+        state.applied = Some(WindowSlot::Kind(WindowKindKey::Video));
+        state.shown = Some(WindowKindKey::Video);
         assert!(!state.pending());
-        // 最大化中に画像を表示した → 普段の姿はまだ動画のもの
+        // 最大化中に画像を表示した → 普段の姿はまだ動画の枠のもの
         state.shown = Some(WindowKindKey::Image);
+        assert_eq!(state.target(), Some(WindowSlot::Kind(WindowKindKey::Image)));
         assert!(state.pending());
-        state.applied = Some(WindowKindKey::Image);
+        state.applied = Some(WindowSlot::Kind(WindowKindKey::Image));
         assert!(!state.pending());
+        // 「自由に変更」へ切り替えたら、1 つの枠へ置き直すまで待ち
+        state.fit = false;
+        assert!(state.pending());
+    }
+
+    #[test]
+    fn window_state_store_keeps_free_and_kinds_apart() {
+        let mut state = sized(800.0, 600.0, 10.0, 20.0);
+        // 「メディアに合わせる」の種類の枠に書いても、「自由に変更」の枠（最上位）は変わらない
+        state.store(
+            WindowSlot::Kind(WindowKindKey::Video),
+            &sized(1280.0, 720.0, 50.0, 60.0),
+        );
+        assert_eq!((state.width, state.height), (Some(800.0), Some(600.0)));
+        assert_eq!((state.x, state.y), (Some(10.0), Some(20.0)));
+        assert_eq!(state.kinds["video"], sized(1280.0, 720.0, 50.0, 60.0));
+        assert_eq!(state.kind.as_deref(), Some("video"));
+        // 「自由に変更」の枠に書いても、種類ごとの枠と最後の種類は変わらない
+        state.store(WindowSlot::Free, &sized(640.0, 480.0, 0.0, 0.0));
+        assert_eq!((state.width, state.height), (Some(640.0), Some(480.0)));
+        assert_eq!(state.kinds["video"], sized(1280.0, 720.0, 50.0, 60.0));
+        assert_eq!(state.kind.as_deref(), Some("video"));
+        // 種類ごとの枠には入れ子を持たせない
+        let mut nested = sized(300.0, 300.0, 0.0, 0.0);
+        nested.kind = Some("image".into());
+        nested
+            .kinds
+            .insert("audio".into(), sized(1.0, 1.0, 0.0, 0.0));
+        state.store(WindowSlot::Kind(WindowKindKey::Image), &nested);
+        assert_eq!(state.kinds["image"], sized(300.0, 300.0, 0.0, 0.0));
     }
 
     #[test]
@@ -1941,7 +2015,9 @@ fn window_state_file(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// 各項目は Option。古い window.json（大きさだけ）もそのまま読めるようにし、
-/// 保存できなかった項目は既定の挙動（中央・既定サイズ）に任せる
+/// 保存できなかった項目は既定の挙動（中央・既定サイズ）に任せる。
+/// 最上位の大きさ・位置は「自由に変更」の枠（種類によらず 1 つ）、
+/// kinds は「メディアに合わせる」の種類ごとの枠
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct WindowState {
@@ -1952,21 +2028,41 @@ struct WindowState {
     /// x / y を記録したときのウィンドウの倍率（ディスプレイの拡大率）。
     /// Windows で位置を物理ピクセルへ戻すのに使う（無い古いファイルは今の倍率で読む）
     scale: Option<f64>,
-    /// 上の大きさと位置が、どの種類（"image" / "video" / "audio" / "book"）を
-    /// 表示していたときのものか。最上位（最後に閉じたときの姿）だけが持つ。
-    /// 何も表示していなかったときや、古いファイルでは無い
+    /// 「メディアに合わせる」で最後に使った種類（"image" / "video" / "audio" / "book"）。
+    /// 最上位だけが持つ。ファイルを指定せずに起動したとき、この種類の枠で開く
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
-    /// 種類（"image" / "video" / "audio" / "book"）ごとの大きさと位置。
+    /// 「メディアに合わせる」の、種類（"image" / "video" / "audio" / "book"）ごとの大きさと位置。
     /// 表示する種類が変わるたびに、その種類で最後に使っていた大きさと位置へ戻す
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     kinds: BTreeMap<String, WindowState>,
 }
 
 impl WindowState {
-    /// 大きさを持っているか（種類ごとの分として使えるか）
+    /// 大きさを持っているか（枠として使えるか）
     fn has_size(&self) -> bool {
         matches!((self.width, self.height), (Some(w), Some(h)) if w >= 1.0 && h >= 1.0)
+    }
+
+    /// 大きさ・位置だけを取り出す（種類ごとの分や種類の名前は含めない）
+    fn geometry_only(&self) -> WindowState {
+        WindowState {
+            kind: None,
+            kinds: BTreeMap::new(),
+            ..self.clone()
+        }
+    }
+
+    /// 枠 slot に geometry を書き込む
+    fn store(&mut self, slot: WindowSlot, geometry: &WindowState) {
+        match slot {
+            WindowSlot::Free => copy_geometry(self, geometry),
+            WindowSlot::Kind(kind) => {
+                let key = kind_key(kind).to_string();
+                self.kinds.insert(key.clone(), geometry.geometry_only());
+                self.kind = Some(key);
+            }
+        }
     }
 }
 
@@ -2006,27 +2102,30 @@ enum KindTarget {
     Default,
 }
 
-/// 種類 kind を表示するときに置く姿を決める。
-/// first はウィンドウの今の姿がどの種類のものでもないとき（起動直後など）
+/// 「メディアに合わせる」で種類 kind を表示するときに置く姿を決める。
+/// first はウィンドウの今の姿がどの種類の枠のものでもないとき
+/// （起動直後・「自由に変更」から切り替えたとき）
 fn kind_target(saved: &WindowState, kind: WindowKindKey, first: bool) -> KindTarget {
     match saved.kinds.get(kind_key(kind)).filter(|r| r.has_size()) {
-        Some(record) => KindTarget::Record(WindowState {
-            kind: None,
-            kinds: BTreeMap::new(),
-            ..record.clone()
-        }),
+        Some(record) => KindTarget::Record(record.geometry_only()),
         None if first && saved.kinds.is_empty() => KindTarget::Adopt,
         None => KindTarget::Default,
     }
 }
 
+/// window.json を書く。大きさや位置が決まるたびに書くので、書きかけのファイルを
+/// 読まれない（ほかのウィンドウ・別に起動した sView から）よう、一時ファイル経由で置き換える
 fn write_window_state(app: &AppHandle, state: &WindowState) {
     let Ok(path) = window_state_file(app) else {
         return;
     };
-    if let (Some(dir), Ok(text)) = (path.parent(), serde_json::to_string_pretty(state)) {
-        let _ = fs::create_dir_all(dir);
-        let _ = fs::write(&path, text);
+    let (Some(dir), Ok(text)) = (path.parent(), serde_json::to_string_pretty(state)) else {
+        return;
+    };
+    let _ = fs::create_dir_all(dir);
+    let tmp = path.with_extension("json.tmp");
+    if fs::write(&tmp, text).is_ok() && fs::rename(&tmp, &path).is_err() {
+        let _ = fs::remove_file(&tmp);
     }
 }
 
@@ -2077,9 +2176,10 @@ fn read_window_state(app: &AppHandle) -> Option<WindowState> {
     serde_json::from_str(&text).ok()
 }
 
-/// 前回の続きから開けるよう、閉じるときのウィンドウの位置と大きさを保存する。
-/// どちらのサイズ設定でも両方を覚える（次回は必ずこの大きさ・この場所で開く）。
-/// ウィンドウの姿が属している種類の分としても覚える
+/// ウィンドウの今の位置と大きさを、その姿が属している枠（applied）に保存する。
+/// 大きさ・位置が決まるたびに（フロントエンドの save_window_geometry）と、閉じるときに呼ぶ。
+/// 枠を置き直す前（最大化中などに種類・設定が変わったとき）も、姿はまだ前の枠のものなので、
+/// そちらに書く
 fn save_window_state(window: &tauri::Window) {
     let app = window.app_handle();
     // 最小化中・最大化中・全画面中は位置も大きさも普段の姿と違うので触らない
@@ -2087,19 +2187,23 @@ fn save_window_state(window: &tauri::Window) {
     let Some(geometry) = current_geometry(window) else {
         return;
     };
-    let mut state = read_window_state(app).unwrap_or_default();
-    copy_geometry(&mut state, &geometry);
-    // 今の姿は applied の種類のもの（表示中の種類へまだ置き直していないときも、
-    // 姿は前の種類のままなので、そちらとして覚える）
-    let applied = app
+    let Some(slot) = app
         .state::<WindowKind>()
         .with(window.label(), |k| k.applied)
-        .flatten();
-    state.kind = applied.map(|k| kind_key(k).to_string());
-    if let Some(k) = applied {
-        state.kinds.insert(kind_key(k).to_string(), geometry);
-    }
+        .flatten()
+    else {
+        return;
+    };
+    let mut state = read_window_state(app).unwrap_or_default();
+    state.store(slot, &geometry);
     write_window_state(app, &state);
+}
+
+/// 大きさ・位置が決まったところで、すぐに window.json へ書く（閉じるまで待たない）。
+/// フロントエンドが移動・サイズ変更の通知が落ち着き、マウスのボタンが離されたところで呼ぶ
+#[tauri::command]
+fn save_window_geometry(window: WebviewWindow) {
+    save_window_state(&window.as_ref().window());
 }
 
 /// 画面上の長方形。ディスプレイの範囲や作業領域を表す。
@@ -2295,30 +2399,33 @@ fn fits_window_to_image(app: &AppHandle) -> bool {
     )
 }
 
-/// 起動時に、前回閉じたときのウィンドウを復元する。
-/// 大きさも位置も、どちらのサイズ設定でも戻す。
-/// 開くファイルの種類 kind が分かっていれば（関連付け・コマンドラインから開いたとき）、
-/// 前回閉じたときの姿ではなく、その種類で最後に使っていた大きさと位置で開く
-/// （別の種類の姿で一度開いてから置き直すと、その間だけ違う形のウィンドウが見える）。
+/// 起動時に、前回のウィンドウを復元する（ウィンドウを見せる前に呼ぶ）。
+/// 「自由に変更」では種類によらず 1 つの枠（最上位）の大きさ・位置で開く。
+/// 「メディアに合わせる」では、開くファイルの種類 kind（関連付け・コマンドラインから
+/// 開いたとき）の枠で開く。kind が分からなければ、最後に使った種類の枠で開く。
 /// 「画像に合わせる」では最初の画像で縦横比を合わせ直すので、そのときも
-/// 前回と同じ左上に置けるよう、保存した位置を PendingPosition に残しておく
+/// 同じ左上に置けるよう、保存した位置を PendingPosition に残しておく
 fn restore_window_state(window: &tauri::Window, kind: Option<WindowKindKey>) {
     let app = window.app_handle();
     let saved = read_window_state(app).unwrap_or_default();
     let label = window.label();
-    let Some(kind) = kind else {
-        // 何を開くかまだ分からない。前回閉じたときの姿で開き、その姿の種類を覚えておく
-        app.state::<WindowKind>().with(label, |k| {
-            k.applied = saved.kind.as_deref().and_then(parse_kind_key);
-        });
-        place_and_remember(window, &saved);
+    let fit = fits_window_to_image(app);
+    let kinds = app.state::<WindowKind>();
+    kinds.with(label, |k| k.fit = fit);
+    if !fit {
+        kinds.with(label, |k| k.applied = Some(WindowSlot::Free));
+        place_and_remember(window, &saved.geometry_only());
+        return;
+    }
+    let Some(kind) = kind.or_else(|| saved.kind.as_deref().and_then(parse_kind_key)) else {
+        // どの種類の枠でもない姿（「自由に変更」の枠）で開き、最初に表示した種類で置き直す
+        place_and_remember(window, &saved.geometry_only());
         return;
     };
-    app.state::<WindowKind>()
-        .with(label, |k| k.applied = Some(kind));
+    kinds.with(label, |k| k.applied = Some(WindowSlot::Kind(kind)));
     match kind_target(&saved, kind, true) {
         KindTarget::Record(record) => place_and_remember(window, &record),
-        KindTarget::Adopt => place_and_remember(window, &saved),
+        KindTarget::Adopt => place_and_remember(window, &saved.geometry_only()),
         // 初めて表示する種類は tauri.conf.json の既定の大きさのまま、画面の中央に開く
         KindTarget::Default => {}
     }
@@ -2395,35 +2502,46 @@ fn place_window(window: &tauri::Window, state: &WindowState) -> Option<RestoredP
     })
 }
 
-/// 表示するファイルの種類を受け取る（画像の本モードも 1 つの種類として扱う）。
-/// 種類が変わったら、それまでの種類の大きさと位置を window.json に覚え、
-/// 新しい種類で最後に使っていた大きさと位置へ置き直す（apply_window_kind）。
+/// 表示するファイルの種類（画像の本モードも 1 つの種類として扱う）と、ウィンドウのサイズの
+/// 設定が「メディアに合わせる」か（fit）を受け取り、ウィンドウを使うべき枠の姿にそろえる
+/// （apply_window_kind）。kind が null のとき（何も表示していない）は設定だけを受け取る。
 /// 置き直したら true（フロントエンドは「メディアに合わせる」なら縦横比を合わせ直す）
 #[tauri::command]
-fn set_window_kind(window: WebviewWindow, state: State<WindowKind>, kind: WindowKindKey) -> bool {
-    state.with(window.label(), |k| k.shown = Some(kind));
+fn set_window_kind(
+    window: WebviewWindow,
+    state: State<WindowKind>,
+    kind: Option<WindowKindKey>,
+    fit: bool,
+) -> bool {
+    state.with(window.label(), |k| {
+        k.fit = fit;
+        if kind.is_some() {
+            k.shown = kind;
+        }
+    });
     apply_window_kind(&window.as_ref().window())
 }
 
-/// ウィンドウの姿を表示中の種類のものにそろえる。置き直したら true。
+/// ウィンドウの姿を、使うべき枠（KindState::target）のものにそろえる。置き直したら true。
+/// 枠が変わるとき（「メディアに合わせる」で種類が変わったとき・設定を切り替えたとき）は、
+/// 今の姿をそれまでの枠に書いてから、新しい枠で最後に使っていた大きさと位置へ置き直す。
 ///
 /// 最大化中・全画面中・最小化中は待つ（大きさを変えるとその状態が解けてしまううえ、
-/// 普段の姿が取れないので前の種類の分も覚えられない）。その間は縦横比の固定も外しておき、
-/// 元に戻ったとき OS が戻す前の種類の大きさを、表示中のものの縦横比へ引き戻さないようにする。
+/// 普段の姿が取れないので前の枠の分も書けない）。その間は縦横比の固定も外しておき、
+/// 元に戻ったとき OS が戻す前の枠の大きさを、表示中のものの縦横比へ引き戻さないようにする。
 /// 戻ったあとフロントエンドがもう一度呼ぶ（サイズ変更が落ち着いたとき・フォーカスを得たとき）か、
 /// fit_window_to_image が呼ばれたところで置き直す
 fn apply_window_kind(window: &tauri::Window) -> bool {
     let app = window.app_handle();
     let label = window.label();
     let kinds = app.state::<WindowKind>();
-    let Some((shown, applied, used)) = kinds.with(label, |k| (k.shown, k.applied, k.used)) else {
+    let Some((target, applied)) = kinds.with(label, |k| (k.target(), k.applied)) else {
         return false;
     };
-    let Some(kind) = shown else {
+    let Some(target) = target else {
         return false;
     };
-    if applied == Some(kind) {
-        kinds.with(label, |k| k.used = true);
+    if applied == Some(target) {
         return false;
     }
     // ウィンドウの状態は、ロックを取っていないここで調べる（current_geometry の中で
@@ -2434,29 +2552,32 @@ fn apply_window_kind(window: &tauri::Window) -> bool {
         return false;
     };
     let mut saved = read_window_state(app).unwrap_or_default();
-    let target = kind_target(&saved, kind, applied.is_none());
-    // それまでの種類の分として今の姿を覚える。起動直後に前回の姿で開いただけで、
-    // その種類をまだ表示していないなら覚えない（その姿は window.json にあるまま）
-    if let (Some(previous), true) = (applied, used) {
-        saved
-            .kinds
-            .insert(kind_key(previous).to_string(), geometry.clone());
+    // 置く姿は、今の姿を書き込む前の window.json から決める
+    let placement = match target {
+        // 「自由に変更」の枠が無ければ（初めて使う）、今の姿をそのまま使う
+        WindowSlot::Free => saved.has_size().then(|| saved.geometry_only()),
+        WindowSlot::Kind(kind) => {
+            let first = !matches!(applied, Some(WindowSlot::Kind(_)));
+            match kind_target(&saved, kind, first) {
+                KindTarget::Record(record) => Some(record),
+                KindTarget::Adopt => None,
+                KindTarget::Default => default_geometry(window),
+            }
+        }
+    };
+    // 今の姿はそれまでの枠のもの。そちらに書いておく
+    if let Some(previous) = applied {
+        saved.store(previous, &geometry);
         write_window_state(app, &saved);
     }
-    kinds.with(label, |k| {
-        k.applied = Some(kind);
-        k.used = true;
-    });
-    let target = match target {
-        KindTarget::Record(record) => record,
-        KindTarget::Adopt => return false,
-        KindTarget::Default => match default_geometry(window) {
-            Some(geometry) => geometry,
-            None => return false,
-        },
-    };
-    place_kind_geometry(window, &target);
-    true
+    kinds.with(label, |k| k.applied = Some(target));
+    match placement {
+        Some(placement) => {
+            place_kind_geometry(window, &placement);
+            true
+        }
+        None => false,
+    }
 }
 
 /// tauri.conf.json の main の大きさ（論理ピクセル）。まだ表示したことのない種類はこの大きさで開く
@@ -4206,54 +4327,63 @@ fn create_viewer_window(app: &AppHandle, path: &str) -> Result<WebviewWindow, St
         .build()
         .map_err(|e| format!("ウィンドウを作れません: {e}"))?;
 
-    // 開くファイルの種類が分かれば、その種類で最後に使っていた大きさと位置に置く
-    // （ほかのビューアと重なるなら少しずらす）。前面のビューアの姿を写すと、
-    // 動画のウィンドウの形のまま画像を開くことになる
+    // 「自由に変更」なら種類によらない 1 つの枠、「メディアに合わせる」なら開くファイルの種類の
+    // 枠の大きさと位置に置く（ほかのビューアと重なるなら少しずらす）。
+    // 前面のビューアの姿を写すと、動画のウィンドウの形のまま画像を開くことになる
     let target = window.as_ref().window();
     let saved = read_window_state(app).unwrap_or_default();
-    let kind = media_kind_of(Path::new(path));
-    let source = match kind.map(|k| (k, kind_target(&saved, k, true))) {
-        Some((k, KindTarget::Record(record))) => {
-            app.state::<WindowKind>()
-                .with(&label, |state| state.applied = Some(k));
-            Some(record)
+    let fit = fits_window_to_image(app);
+    let kinds = app.state::<WindowKind>();
+    kinds.with(&label, |state| state.fit = fit);
+    let set_applied = |slot: Option<WindowSlot>| {
+        kinds.with(&label, |state| state.applied = slot);
+    };
+    // 前面のビューア（無ければどれか）の姿と、それがどの枠のものか
+    let front = || {
+        let viewers: Vec<_> = app
+            .webview_windows()
+            .into_values()
+            .filter(|w| is_viewer(w.label()) && w.label() != label)
+            .collect();
+        let front = viewers
+            .iter()
+            .find(|w| w.is_focused().unwrap_or(false))
+            .or_else(|| viewers.first())?;
+        let slot = kinds.with(front.label(), |k| k.applied).flatten();
+        Some((current_geometry(&front.as_ref().window())?, slot))
+    };
+    let source = if !fit {
+        set_applied(Some(WindowSlot::Free));
+        if saved.has_size() {
+            Some(saved.geometry_only())
+        } else {
+            front().map(|(geometry, _)| geometry)
         }
-        Some((k, KindTarget::Default)) => {
-            app.state::<WindowKind>()
-                .with(&label, |state| state.applied = Some(k));
-            default_geometry(&target)
-        }
-        // 種類が分からない・種類ごとの分をまだ覚えていないときは、
-        // 前面のビューア（無ければ前回閉じたときの姿）から作る。
-        // ただし前面のビューアが別の種類を表示しているなら、その形は写さず既定の大きさにする
-        Some((_, KindTarget::Adopt)) | None => {
-            let viewers: Vec<_> = app
-                .webview_windows()
-                .into_values()
-                .filter(|w| is_viewer(w.label()) && w.label() != label)
-                .collect();
-            let front = viewers
-                .iter()
-                .find(|w| w.is_focused().unwrap_or(false))
-                .or_else(|| viewers.first());
-            let front_kind = front
-                .and_then(|w| app.state::<WindowKind>().with(w.label(), |k| k.applied))
-                .flatten();
-            let front = front.and_then(|w| current_geometry(&w.as_ref().window()));
-            match (kind, front) {
-                (Some(k), Some(_)) if front_kind.is_some_and(|f| f != k) => {
-                    app.state::<WindowKind>()
-                        .with(&label, |state| state.applied = Some(k));
+    } else {
+        let kind = media_kind_of(Path::new(path));
+        match kind.map(|k| (k, kind_target(&saved, k, true))) {
+            Some((k, KindTarget::Record(record))) => {
+                set_applied(Some(WindowSlot::Kind(k)));
+                Some(record)
+            }
+            Some((k, KindTarget::Default)) => {
+                set_applied(Some(WindowSlot::Kind(k)));
+                default_geometry(&target)
+            }
+            // 種類が分からない・種類ごとの分をまだ覚えていないときは、前面のビューアの姿
+            // （無ければ「自由に変更」の枠）から作る。ただし前面のビューアが別の種類の枠なら、
+            // その形は写さず既定の大きさにする
+            Some((_, KindTarget::Adopt)) | None => match (kind, front()) {
+                (Some(k), Some((_, Some(WindowSlot::Kind(f))))) if f != k => {
+                    set_applied(Some(WindowSlot::Kind(k)));
                     default_geometry(&target)
                 }
-                (_, Some(front)) => Some(front),
+                (_, Some((geometry, _))) => Some(geometry),
                 (k, None) => {
-                    // 前回閉じたときの姿を、その種類のものとして使う
-                    app.state::<WindowKind>()
-                        .with(&label, |state| state.applied = k);
-                    Some(saved)
+                    set_applied(k.map(WindowSlot::Kind));
+                    Some(saved.geometry_only())
                 }
-            }
+            },
         }
     };
     if let Some(state) = source {
@@ -4415,6 +4545,7 @@ pub fn run() {
         .manage(FolderWatcher::new())
         .invoke_handler(tauri::generate_handler![
             set_window_kind,
+            save_window_geometry,
             list_images,
             read_archive_image,
             get_startup_file,

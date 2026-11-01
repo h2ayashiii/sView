@@ -228,27 +228,32 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   are still read — `LEGACY_VALUES` in `settings-defs.js` maps them for the frontend, and
   `fits_window_to_image()` accepts `"flexible"` on the Rust side (Rust reads `settings.json`
   raw, so it never sees the frontend's mapping).
-- Window geometry is **always** kept per kind (there is no setting; `windowPerKind` was removed and
-  is in `OBSOLETE_KEYS`): one size + position per kind in `window.json` (`WindowState.kinds`, keyed
-  `"image"` / `"video"` / `"audio"` / `"book"`); the top level is the last-closed geometry and its
-  `kind`. `KindState` (`WindowKind`) has `shown` (what the frontend shows, `set_window_kind`) and
-  `applied` (whose geometry the window's *normal* state is). `apply_window_kind` switches only while
-  the window is normal: it stores the outgoing `applied` kind's geometry (only if `used`, i.e. it was
-  shown here, not merely restored at launch), then places the incoming kind via `kind_target`:
-  its record, else the default size (`default_geometry`, centred on the current window) — never the
-  previous kind's shape. `KindTarget::Adopt` (keep the current window) is only for the first kind of a
-  window when `kinds` is still empty (pre-per-kind `window.json`). `place_kind_geometry` resets
-  `AspectLock` to the placed area (so the `set_size` echo is not taken for a drag), re-arms
-  `FirstFitDone` (the next fit clamps to the screen like at launch) and `PendingPosition`, and
-  cascades off other viewers. While maximized / fullscreen / minimized the switch is deferred
-  (`KindState::pending()`): `AspectLock` is cleared and `set_aspect_lock` refuses a ratio, so the OS
-  restoring the old kind's rect is not "corrected"; the frontend retries in `onResizeSettled` and on
-  focus (`catchUpWindowKind*`), and `fit_window_to_image` calls `apply_window_kind` first.
-  `set_window_kind` returns whether it placed, and `fitWindowToImage` awaits `windowKindSync`.
-  At launch `setup()` works out the startup file's kind (`media_kind_of`, same rule as `list_images`)
-  and `restore_window_state` places that kind's geometry **before** the window is shown;
-  `create_viewer_window` (macOS) does the same for the file it opens. `save_window_state` writes the
-  `applied` kind's entry and the top-level `kind`.
+- Window geometry is recorded per **slot** (`WindowSlot`): in `"free"` mode one slot for every kind
+  (`Free` = the top level of `window.json`); in `"image"` mode one slot per kind (`Kind(..)` =
+  `WindowState.kinds`, keyed `"image"` / `"video"` / `"audio"` / `"book"`, plus top-level `kind` = the
+  last fit-mode kind, used when launched without a file). The two modes never share a record. There is no
+  per-kind toggle (`windowPerKind` was removed and is in `OBSOLETE_KEYS`). `KindState` (`WindowKind`) has
+  `shown`, `fit` (both from `set_window_kind(kind, fit)`) and `applied` (whose slot the window's *normal*
+  geometry is); `target()` is the slot it should be in. `apply_window_kind` switches only while the window
+  is normal: it stores the current geometry into `applied`, then places the target slot — `Free`: the
+  top level (or keep the window if there is none); `Kind`: `kind_target` = its record, else the default size
+  (`default_geometry`, centred on the current window) — never the previous kind's shape.
+  `KindTarget::Adopt` (keep the window) is only when the window is not in a kind slot yet and `kinds` is
+  still empty (pre-per-kind `window.json`). `place_kind_geometry` resets `AspectLock` to the placed area
+  (so the `set_size` echo is not taken for a drag), re-arms `FirstFitDone` (the next fit clamps to the
+  screen like at launch) and `PendingPosition`, and cascades off other viewers. While maximized /
+  fullscreen / minimized the switch is deferred (`KindState::pending()`): `AspectLock` is cleared and
+  `set_aspect_lock` refuses a ratio, so the OS restoring the old slot's rect is not "corrected"; the
+  frontend retries in `onResizeSettled` and on focus (`catchUpWindowKind*`), and `fit_window_to_image`
+  calls `apply_window_kind` first. Saving is **immediate**: `onResized` / `onMoved` arm
+  `scheduleWindowSave` (`WINDOW_SAVE_DELAY_MS`, waits while `mouse_button_down`) →
+  `save_window_geometry` → `save_window_state`, which writes the current geometry into `applied`
+  (`WindowState::store`; skipped while maximized / fullscreen / minimized) via a temp file + rename; close
+  still saves too. The frontend sends nothing before `settingsReady` (the defaults say "free", which
+  would move a fit-mode window to the free slot). At launch `setup()` reads the mode and works out the
+  startup file's kind (`media_kind_of`, same rule as `list_images`), and `restore_window_state` places
+  that slot **before** the window is shown; `create_viewer_window` (macOS) does the same for the file it
+  opens.
 - Book mode (`bookMode`, `B` / context menu; `docs/specs/book.md`) shows images two at a time in
   `#book` (`#book-left` / `#book-right`) instead of `#image`. `showingBook` = `bookMode && !showingMedia`;
   the spread is `images[index]` + `images[index + 1]` (`shownEntries()`), and `settings.bookBinding`
