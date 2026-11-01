@@ -49,6 +49,10 @@ const confirmOkEl = document.getElementById("confirm-ok");
 
 // 現在の設定（settings-defs.js の既定値で開始し、読み込み後に上書きされる）
 let settings = { ...SETTINGS_DEFAULTS };
+// settings.json を読み終えたか。読み終える前は settings が既定値（「自由に変更」）のままなので、
+// ウィンドウの枠を Rust 側へ知らせない（「メディアに合わせる」の人のウィンドウを
+// 「自由に変更」の枠へ置き直してしまう）
+let settingsReady = false;
 
 // macOS だけ閉じるボタンを左上に置く（OS の慣習に合わせる）
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -491,22 +495,48 @@ function shownKind() {
   return showingBook ? "book" : "image";
 }
 
-// 表示する種類を Rust 側へ知らせる。設定「ファイルの種類ごとにウィンドウを保持する」が
-// オンなら、種類が変わったところでその種類の大きさ・位置へ戻る。
+// 表示する種類とウィンドウのサイズの設定を Rust 側へ知らせる。ウィンドウの大きさ・位置は
+// 「自由に変更」では種類によらず 1 つ、「メディアに合わせる」では種類ごとに覚えていて、
+// 使う枠が変わったところでその枠の大きさ・位置へ戻る（戻したら true で解決する）。
+// 最大化中・全画面中・最小化中は戻せないので、元に戻ったところでもう一度呼ぶ
+// （onResizeSettled / フォーカスを得たとき）。
 // 縦横比合わせ（fitWindowToImage）はその後に行うので、終わるのを待てるよう覚えておく
-let windowKindSync = Promise.resolve();
+let windowKindSync = Promise.resolve(false);
+
+function invokeWindowKind() {
+  if (!settingsReady) return Promise.resolve(false);
+  return invoke("set_window_kind", { kind: shownKind(), fit: fitsToImage() })
+    .catch(() => false)
+    .then((placed) => !!placed);
+}
 
 function syncWindowKind() {
-  const kind = shownKind();
-  if (!kind) return;
-  // 種類ごとの大きさへ戻すのは自分で変えたもの（据え置かずに一緒に合わせる）
+  if (!settingsReady) return Promise.resolve(false);
+  // 枠の大きさへ戻すのは自分で変えたもの（据え置かずに一緒に合わせる）
   selfResizedAt = Date.now();
-  windowKindSync = invoke("set_window_kind", {
-    kind,
-    perKind: !!settings.windowPerKind,
-  })
-    .catch(() => {})
-    .then(() => (selfResizedAt = Date.now()));
+  windowKindSync = invokeWindowKind().then((placed) => {
+    selfResizedAt = Date.now();
+    return placed;
+  });
+  return windowKindSync;
+}
+
+// 使う枠の姿へ戻せていなかった分を戻し、戻したら縦横比を合わせ直す
+// （最大化・全画面・最小化から元に戻ったとき）。戻さなかったら縦横比の固定だけかけ直す
+async function catchUpWindowKind() {
+  if (await syncWindowKind()) await fitWindowToImage();
+  else await syncAspectLock();
+}
+
+// フォーカスを得たときの確かめ。たいていは何もしないので、自分で変えた印（selfResizedAt）は
+// 付けない（付けると、非アクティブのウィンドウの端を掴んでそのまま引っ張ったときに、
+// 最初のうち画像を据え置かなくなる）
+async function catchUpWindowKindOnFocus() {
+  windowKindSync = invokeWindowKind();
+  if (await windowKindSync) {
+    selfResizedAt = Date.now();
+    await fitWindowToImage();
+  }
 }
 
 // 「メディアに合わせる」のとき、ウィンドウの縦横比を表示中の画像に固定する。
@@ -1831,7 +1861,7 @@ async function onResizeSettled() {
   if (seq !== resizeSeq) return;
   unfreezeImageSize();
   syncMaximized();
-  syncAspectLock();
+  catchUpWindowKind();
 }
 
 appWindow
@@ -1842,9 +1872,41 @@ appWindow
     resizeSeq++;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(onResizeSettled, RESIZE_SETTLE_MS);
+    scheduleWindowSave();
   })
   .catch(() => {});
 syncMaximized();
+
+// ---- ウィンドウの大きさ・位置の記録 ----
+// 大きさや位置が決まったら、その場で window.json に書く（閉じるときまで待たない）。
+// 移動・サイズ変更の通知が WINDOW_SAVE_DELAY_MS 届かなくなり、マウスのボタンも離れたところで書く
+// （ドラッグの途中では書かない。縦横比合わせなどで続けて変わる分もまとめて 1 回にする）。
+// どの枠に書くか（「自由に変更」の 1 つ / 「メディアに合わせる」の種類ごと）は Rust 側が決める
+const WINDOW_SAVE_DELAY_MS = 500;
+let windowSaveTimer = null;
+
+function scheduleWindowSave() {
+  clearTimeout(windowSaveTimer);
+  windowSaveTimer = setTimeout(saveWindowGeometry, WINDOW_SAVE_DELAY_MS);
+}
+
+async function saveWindowGeometry() {
+  if (await invoke("mouse_button_down").catch(() => false)) {
+    scheduleWindowSave();
+    return;
+  }
+  invoke("save_window_geometry").catch(() => {});
+}
+
+appWindow.onMoved(scheduleWindowSave).catch(() => {});
+
+// 最小化から戻したときは大きさが変わらず onResized が届かないことがあるので、
+// フォーカスを得たところでも表示中の種類の姿へ戻せているか確かめる
+appWindow
+  .onFocusChanged(({ payload: focused }) => {
+    if (focused && settingsReady) catchUpWindowKindOnFocus();
+  })
+  .catch(() => {});
 
 // ウィンドウの移動を始める。macOS では Tauri の startDragging() だと、非アクティブの
 // ウィンドウを掴んだときにウィンドウの左上がカーソルへ飛ぶので、Rust 側の自前の処理を使う
@@ -1937,7 +1999,7 @@ appWindow.listen("open-file", (event) => {
 });
 
 // CLI 引数 / 関連付け起動（Windows）、または起動前に届いた macOS の Opened。
-// 設定を読み終えてから開く（種類ごとのウィンドウや自動再生を設定どおりにするため）
+// 設定を読み終えてから開く（縦横比合わせや自動再生を設定どおりにするため）
 function openStartupFile() {
   invoke("get_startup_file")
     .then((path) => {
@@ -1963,7 +2025,6 @@ function applySettings() {
   video.loop = mediaLoop();
   setVolume(mediaVolume());
   appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
-  syncWindowKind();
   syncWatcher();
 }
 
@@ -2185,10 +2246,15 @@ listen("settings-changed", (event) => {
   const previousMode = settings.windowSizeMode;
   const previousBinding = settings.bookBinding;
   settings = normalizeSettings(event.payload);
+  settingsReady = true;
   applySettings();
   if (showingBook && settings.bookBinding !== previousBinding) show();
-  // 「メディアに合わせる」に切り替えた直後は、今の大きさを基準に縦横比だけ合わせる
-  if (settings.windowSizeMode !== previousMode) fitWindowToImage();
+  // ウィンドウのサイズの設定を切り替えたら、その設定の枠（「自由に変更」の 1 つ /
+  // 「メディアに合わせる」の表示中の種類）の大きさ・位置へ戻し、縦横比を合わせ直す
+  if (settings.windowSizeMode !== previousMode) {
+    syncWindowKind();
+    fitWindowToImage();
+  }
 });
 
 invoke("load_settings")
@@ -2197,4 +2263,7 @@ invoke("load_settings")
     applySettings();
   })
   .catch(() => applySettings())
-  .finally(openStartupFile);
+  .finally(() => {
+    settingsReady = true;
+    openStartupFile();
+  });

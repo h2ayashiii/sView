@@ -85,23 +85,14 @@ const SETTINGS_SECTIONS = [
           "「自由に変更」は縦横どちらにも自由に広げられ、ファイルを切り替えても大きさは変わりません。" +
           "「メディアに合わせる」は余白が出ないよう、表示中の画像・動画の縦横比" +
           "（音楽はアートワークと曲名の帯の形）にウィンドウの形を合わせます" +
-          "（端や角をドラッグしても縦横比のまま変わります。立ち上げて最初に開くときだけ、" +
-          "画面に収まるよう 95% までに抑えます）。" +
-          "どちらでも、開いたときの大きさと位置は前回閉じたときのものです。",
+          "（端や角をドラッグしても縦横比のまま変わります。立ち上げて最初に開くときと、" +
+          "ファイルの種類が変わったときだけ、画面に収まるよう 95% までに抑えます）。" +
+          "ウィンドウの大きさと位置は、「自由に変更」では種類によらず 1 つ、" +
+          "「メディアに合わせる」では画像・動画・音楽・本モード（2 ページ表示）で別々に覚え、" +
+          "最後に使ったときの大きさと位置で開きます。",
         type: "select",
         options: WINDOW_SIZE_OPTIONS,
         default: "free",
-      },
-      {
-        key: "windowPerKind",
-        label: "ファイルの種類ごとにウィンドウを保持する",
-        hint:
-          "画像・動画・音楽、画像の本モード（2 ページ表示）それぞれで、" +
-          "最後に使ったウィンドウの大きさと位置を覚えておき、" +
-          "表示する種類が変わったらその種類のものへ戻します。" +
-          "オフのときは種類にかかわらず同じウィンドウのまま表示します",
-        type: "toggle",
-        default: false,
       },
       {
         key: "alwaysOnTop",
@@ -299,7 +290,16 @@ const SETTINGS_DEFAULTS = {
 };
 
 // 廃止した項目。古い settings.json に残っていても読み捨てる
-const OBSOLETE_KEYS = ["showNavButtons", "roundedCorners", "videoMuted", "videoLoop", "wrapAround", "sideButtons"];
+// windowPerKind: ウィンドウの大きさと位置を種類ごとに覚えるかの切り替えだった（今は常に種類ごと）
+const OBSOLETE_KEYS = [
+  "showNavButtons",
+  "roundedCorners",
+  "videoMuted",
+  "videoLoop",
+  "wrapAround",
+  "sideButtons",
+  "windowPerKind",
+];
 
 // 選択肢の名前を変えたときの読み替え表（古い settings.json をそのまま読めるようにする）。
 // windowSizeMode: 0.1 系までは "fixed" / "flexible" だった

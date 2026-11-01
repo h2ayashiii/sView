@@ -228,16 +228,35 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   are still read — `LEGACY_VALUES` in `settings-defs.js` maps them for the frontend, and
   `fits_window_to_image()` accepts `"flexible"` on the Rust side (Rust reads `settings.json`
   raw, so it never sees the frontend's mapping).
-- `windowPerKind` ("ファイルの種類ごとにウィンドウを保持する") keeps one size + position per media
-  kind in `window.json` (`WindowState.kinds`, keyed `"image"` / `"video"` / `"audio"` / `"book"`).
-  `show()` calls `syncWindowKind()` → `set_window_kind(kind, perKind)`; Rust tracks the last kind
-  in `WindowKind` and, on a change, stores the outgoing kind's geometry and `place_window`s the
-  incoming one's (also on the first kind after launch, since the restored window may belong to
-  another kind). It resets `AspectLock` to the restored area first (so the `set_size` echo is not
-  taken for a drag) and re-arms `PendingPosition` in "image" mode; `fitWindowToImage` awaits
-  `windowKindSync` so the aspect fit runs after the restore. `save_window_state` also writes the
-  current kind's entry. The startup file is opened only after `load_settings` resolves
-  (`openStartupFile`), otherwise the first `set_window_kind` would carry the default `perKind`.
+- Window geometry is recorded per **slot** (`WindowSlot`): in `"free"` mode one slot for every kind
+  (`Free` = the top level of `window.json`); in `"image"` mode one slot per kind (`Kind(..)` =
+  `WindowState.kinds`, keyed `"image"` / `"video"` / `"audio"` / `"book"`, plus top-level `kind` = the
+  last fit-mode kind, used when launched without a file). The two modes never share a record. There is no
+  per-kind toggle (`windowPerKind` was removed and is in `OBSOLETE_KEYS`). `KindState` (`WindowKind`) has
+  `shown`, `fit` (both from `set_window_kind(kind, fit)`) and `applied` (whose slot the window's *normal*
+  geometry is); `target()` is the slot it should be in. `apply_window_kind` switches only while the window
+  is normal: it stores the current geometry into `applied`, then places the target slot — `Free`: the
+  top level (or keep the window if there is none); `Kind`: `kind_target` = its record, else the default size
+  (`default_geometry`, centred on the current window) — never the previous kind's shape.
+  `KindTarget::Adopt` (keep the window) is only when the window is not in a kind slot yet and `kinds` is
+  still empty (pre-per-kind `window.json`). `place_kind_geometry` resets `AspectLock` to the placed area
+  (so the `set_size` echo is not taken for a drag), re-arms `FirstFitDone` (the next fit clamps to the
+  screen like at launch) and `PendingPosition`, and cascades off other viewers. While maximized /
+  fullscreen / minimized the switch is deferred (`KindState::pending()`): `AspectLock` is cleared and
+  `set_aspect_lock` refuses a ratio, so the OS restoring the old slot's rect is not "corrected"; the
+  frontend retries in `onResizeSettled` and on focus (`catchUpWindowKind*`), and `fit_window_to_image`
+  calls `apply_window_kind` first. Saving is **immediate**: `onResized` / `onMoved` arm
+  `scheduleWindowSave` (`WINDOW_SAVE_DELAY_MS`, waits while `mouse_button_down`) →
+  `save_window_geometry` → `save_window_state`, which writes the current geometry into `applied`
+  (`WindowState::store`; skipped while maximized / fullscreen / minimized) via a temp file + rename; close
+  still saves too. The frontend sends nothing before `settingsReady` (the defaults say "free", which
+  would move a fit-mode window to the free slot). At launch `setup()` reads the mode and builds the
+  startup path's listing once (`prepare_startup_listing` → `list_path`, the body of `list_images`) to get
+  its kind, and `restore_window_state` places that slot **before** the window is shown;
+  `create_viewer_window` (macOS) does the same for the file it opens. The listing (or its error) is
+  parked in `StartupListing` and handed over by the frontend's first `list_images` for that path
+  (`take_startup_listing`; any call empties it), so the folder / archive is read only once — don't add a
+  second read to learn the kind.
 - Book mode (`bookMode`, `B` / context menu; `docs/specs/book.md`) shows images two at a time in
   `#book` (`#book-left` / `#book-right`) instead of `#image`. `showingBook` = `bookMode && !showingMedia`;
   the spread is `images[index]` + `images[index + 1]` (`shownEntries()`), and `settings.bookBinding`
@@ -258,9 +277,9 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   Rust side and is rewritten **only** by a real resize, never recomputed from the live window —
   otherwise the one clamp that does exist would shrink the window for good.
 - The "fit on screen" clamp (`screen_limit`, `SCREEN_RATIO` = 95% of the work area) runs **once
-  per launch**: `StartupFit` is consumed by the first `fit_window_to_image`, so a restored window
-  still lands on screen when the monitor setup changed, and nothing fights the user's own size
-  afterwards. That first fit also writes its (possibly clamped) area into `AspectLock` —
+  per launch and once per kind switch**: `FirstFitDone` is consumed by the first `fit_window_to_image`
+  (and re-armed by `place_kind_geometry`), so a restored window still lands on screen when the
+  monitor setup changed, and nothing fights the user's own size afterwards. That first fit also writes its (possibly clamped) area into `AspectLock` —
   otherwise the second image would jump back to the unclamped area and the window would grow
   once (easy to hit on small logical screens such as MacBooks, with a portrait image). A drag (`keep_aspect_on_resize`) is never clamped, so a tall image can end up
   sized past the bottom of the screen — that is deliberate.
@@ -348,9 +367,10 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   of Tauri's `drag.js` check) and leaves double clicks to Tauri; the video press-and-move path calls
   `startWindowDrag()` too.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv. `open_in_viewer` opens it
-  in a viewer window that has shown nothing yet (`KindState.kind` is `None` and not `claimed` — e.g. `main`
+  in a viewer window that has shown nothing yet (`KindState.shown` is `None` and not `claimed` — e.g. `main`
   right after launch), otherwise in a **new** viewer window (`create_viewer_window`: label `viewer-N`, built
-  from `main`'s config, cascaded `CASCADE_OFFSET` from the focused viewer). Every per-window Rust state
+  from `main`'s config, placed at the opened file's kind geometry and moved `CASCADE_OFFSET` off any viewer
+  sitting at the same spot). Every per-window Rust state
   (`AspectLock`, `WindowKind`, `PendingPosition`, `FirstFitDone`, `FolderWatcher`, `StartupFile`) is a
   `PerWindow<T>` map keyed by window label and dropped in `forget_window` on close; closing the last viewer
   (`is_viewer`) exits. Window-targeted events (`folder-changed`, `pointer-*`, `open-file`) go out with
