@@ -491,22 +491,47 @@ function shownKind() {
   return showingBook ? "book" : "image";
 }
 
-// 表示する種類を Rust 側へ知らせる。設定「ファイルの種類ごとにウィンドウを保持する」が
-// オンなら、種類が変わったところでその種類の大きさ・位置へ戻る。
+// 表示する種類を Rust 側へ知らせる。ウィンドウの大きさ・位置は種類ごとに別々に覚えていて、
+// 種類が変わったところでその種類の大きさ・位置へ戻る（戻したら true で解決する）。
+// 最大化中・全画面中・最小化中は戻せないので、元に戻ったところでもう一度呼ぶ
+// （onResizeSettled / フォーカスを得たとき）。
 // 縦横比合わせ（fitWindowToImage）はその後に行うので、終わるのを待てるよう覚えておく
-let windowKindSync = Promise.resolve();
+let windowKindSync = Promise.resolve(false);
 
 function syncWindowKind() {
   const kind = shownKind();
-  if (!kind) return;
+  if (!kind) return Promise.resolve(false);
   // 種類ごとの大きさへ戻すのは自分で変えたもの（据え置かずに一緒に合わせる）
   selfResizedAt = Date.now();
-  windowKindSync = invoke("set_window_kind", {
-    kind,
-    perKind: !!settings.windowPerKind,
-  })
-    .catch(() => {})
-    .then(() => (selfResizedAt = Date.now()));
+  windowKindSync = invoke("set_window_kind", { kind })
+    .catch(() => false)
+    .then((placed) => {
+      selfResizedAt = Date.now();
+      return !!placed;
+    });
+  return windowKindSync;
+}
+
+// 表示中の種類の姿へ戻せていなかった分を戻し、戻したら縦横比を合わせ直す
+// （最大化・全画面・最小化から元に戻ったとき）。戻さなかったら縦横比の固定だけかけ直す
+async function catchUpWindowKind() {
+  if (await syncWindowKind()) await fitWindowToImage();
+  else await syncAspectLock();
+}
+
+// フォーカスを得たときの確かめ。たいていは何もしないので、自分で変えた印（selfResizedAt）は
+// 付けない（付けると、非アクティブのウィンドウの端を掴んでそのまま引っ張ったときに、
+// 最初のうち画像を据え置かなくなる）
+async function catchUpWindowKindOnFocus() {
+  const kind = shownKind();
+  if (!kind) return;
+  windowKindSync = invoke("set_window_kind", { kind })
+    .catch(() => false)
+    .then((placed) => !!placed);
+  if (await windowKindSync) {
+    selfResizedAt = Date.now();
+    await fitWindowToImage();
+  }
 }
 
 // 「メディアに合わせる」のとき、ウィンドウの縦横比を表示中の画像に固定する。
@@ -1831,7 +1856,7 @@ async function onResizeSettled() {
   if (seq !== resizeSeq) return;
   unfreezeImageSize();
   syncMaximized();
-  syncAspectLock();
+  catchUpWindowKind();
 }
 
 appWindow
@@ -1845,6 +1870,14 @@ appWindow
   })
   .catch(() => {});
 syncMaximized();
+
+// 最小化から戻したときは大きさが変わらず onResized が届かないことがあるので、
+// フォーカスを得たところでも表示中の種類の姿へ戻せているか確かめる
+appWindow
+  .onFocusChanged(({ payload: focused }) => {
+    if (focused) catchUpWindowKindOnFocus();
+  })
+  .catch(() => {});
 
 // ウィンドウの移動を始める。macOS では Tauri の startDragging() だと、非アクティブの
 // ウィンドウを掴んだときにウィンドウの左上がカーソルへ飛ぶので、Rust 側の自前の処理を使う
@@ -1937,7 +1970,7 @@ appWindow.listen("open-file", (event) => {
 });
 
 // CLI 引数 / 関連付け起動（Windows）、または起動前に届いた macOS の Opened。
-// 設定を読み終えてから開く（種類ごとのウィンドウや自動再生を設定どおりにするため）
+// 設定を読み終えてから開く（縦横比合わせや自動再生を設定どおりにするため）
 function openStartupFile() {
   invoke("get_startup_file")
     .then((path) => {
@@ -1963,7 +1996,6 @@ function applySettings() {
   video.loop = mediaLoop();
   setVolume(mediaVolume());
   appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
-  syncWindowKind();
   syncWatcher();
 }
 
