@@ -250,10 +250,13 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `save_window_geometry` → `save_window_state`, which writes the current geometry into `applied`
   (`WindowState::store`; skipped while maximized / fullscreen / minimized) via a temp file + rename; close
   still saves too. The frontend sends nothing before `settingsReady` (the defaults say "free", which
-  would move a fit-mode window to the free slot). At launch `setup()` reads the mode and works out the
-  startup file's kind (`media_kind_of`, same rule as `list_images`), and `restore_window_state` places
-  that slot **before** the window is shown; `create_viewer_window` (macOS) does the same for the file it
-  opens.
+  would move a fit-mode window to the free slot). At launch `setup()` reads the mode and builds the
+  startup path's listing once (`prepare_startup_listing` → `list_path`, the body of `list_images`) to get
+  its kind, and `restore_window_state` places that slot **before** the window is shown;
+  `create_viewer_window` (macOS) does the same for the file it opens. The listing (or its error) is
+  parked in `StartupListing` and handed over by the frontend's first `list_images` for that path
+  (`take_startup_listing`; any call empties it), so the folder / archive is read only once — don't add a
+  second read to learn the kind.
 - Book mode (`bookMode`, `B` / context menu; `docs/specs/book.md`) shows images two at a time in
   `#book` (`#book-left` / `#book-right`) instead of `#image`. `showingBook` = `bookMode && !showingMedia`;
   the spread is `images[index]` + `images[index + 1]` (`shownEntries()`), and `settings.bookBinding`

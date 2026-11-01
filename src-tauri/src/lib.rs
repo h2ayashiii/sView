@@ -80,6 +80,11 @@ impl<T: Default> PerWindow<T> {
 /// フロントエンドが取りに来るまで、ウィンドウごとに保持する
 type StartupFile = PerWindow<Option<String>>;
 
+/// ウィンドウで最初に開くものの一覧（開いたパスと、list_images と同じ結果）。
+/// ウィンドウを出す前に種類を知るために作り、フロントエンドが最初に list_images を呼んだとき
+/// そのまま渡す（同じフォルダ・書庫を 2 回読まない）
+type StartupListing = PerWindow<Option<(String, Result<ImageList, String>)>>;
+
 /// 直近に開いた書庫のハンドルを 1 つだけ保持する。
 /// ZipArchive は生成時に末尾のセントラルディレクトリだけを読むため、
 /// 書庫全体をメモリに展開することはない（実データは要求された1件のみ展開）。
@@ -682,41 +687,38 @@ mod tests {
     }
 
     #[test]
-    fn media_kind_of_matches_the_listing() {
-        let dir = std::env::temp_dir().join(format!("sview-kind-test-{}", std::process::id()));
+    fn startup_listing_is_used_once_for_the_same_open() {
+        let dir = std::env::temp_dir().join(format!("sview-startup-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("sub")).unwrap();
         fs::write(dir.join("b.png"), b"").unwrap();
         fs::write(dir.join("a.mp4"), b"").unwrap();
         fs::write(dir.join("sub").join("c.mp3"), b"").unwrap();
-        fs::write(dir.join("book.cbz"), b"").unwrap();
-        fs::write(dir.join("note.txt"), b"").unwrap();
-        assert_eq!(
-            media_kind_of(&dir.join("b.png")),
-            Some(WindowKindKey::Image)
-        );
-        assert_eq!(
-            media_kind_of(&dir.join("a.mp4")),
-            Some(WindowKindKey::Video)
-        );
-        assert_eq!(
-            media_kind_of(&dir.join("sub").join("c.mp3")),
-            Some(WindowKindKey::Audio)
-        );
-        // 書庫の中は画像だけ
-        assert_eq!(
-            media_kind_of(&dir.join("book.cbz")),
-            Some(WindowKindKey::Image)
-        );
-        assert_eq!(media_kind_of(&dir.join("note.txt")), None);
-        // フォルダは並べたとき先頭に来るファイルの種類（list_images と同じ）
-        let listed = list_dir_images(&dir, MAX_DEPTH, None, None).unwrap().kind;
-        assert_eq!(listed, Some(MediaKind::Video));
-        assert_eq!(media_kind_of(&dir), Some(WindowKindKey::Video));
-        // 中身の無いフォルダは決まらない
-        let empty = dir.join("empty");
-        fs::create_dir_all(&empty).unwrap();
-        assert_eq!(media_kind_of(&empty), None);
+        let path = dir.to_string_lossy().into_owned();
+        let cache = ArchiveCache(Mutex::new(None));
+        // フォルダは並べたとき先頭に来るファイルの種類
+        let listing = list_path(&path, None, None, &cache).unwrap();
+        assert_eq!(listing.kind, Some(MediaKind::Video));
+        let images = listing.images.clone();
+
+        // 同じパスを最初の条件で開くときだけ、預けた一覧をそのまま渡す
+        let mut slot = Some((path.clone(), Ok(listing)));
+        let taken = take_startup_listing(&mut slot, &path, None, None).unwrap();
+        assert_eq!(taken.unwrap().images, images);
+        // 一度渡したら空（読み直しなどは毎回読む）
+        assert!(slot.is_none());
+        assert!(take_startup_listing(&mut slot, &path, None, None).is_none());
+
+        // 別のパス・読み直し（種類や深さの指定あり）には使わず、捨てる
+        for (other, kind, depth) in [
+            ("other", None, None),
+            (path.as_str(), Some(MediaKind::Video), None),
+            (path.as_str(), None, Some(MAX_DEPTH)),
+        ] {
+            let mut slot = Some((path.clone(), list_path(&path, None, None, &cache)));
+            assert!(take_startup_listing(&mut slot, other, kind, depth).is_none());
+            assert!(slot.is_none());
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1649,12 +1651,48 @@ fn list_dir_images(
 /// `kind` / `depth` は読み直しのときに、最初に開いたときと同じ条件で並べるために渡す
 #[tauri::command]
 fn list_images(
+    window: WebviewWindow,
     path: String,
     kind: Option<MediaKind>,
     depth: Option<usize>,
     cache: State<ArchiveCache>,
+    startup: State<StartupListing>,
 ) -> Result<ImageList, String> {
-    let target = PathBuf::from(&path);
+    // 最初に開くものは、ウィンドウを出す前に一覧を作ってある（prepare_startup_listing）。
+    // 同じものを開くならそれを使い、読み直さない
+    let prepared = startup
+        .with(window.label(), |slot| {
+            take_startup_listing(slot, &path, kind, depth)
+        })
+        .flatten();
+    match prepared {
+        Some(listing) => listing,
+        None => list_path(&path, kind, depth, &cache),
+    }
+}
+
+/// 預けてある一覧を、同じ path を最初の条件（kind / depth の指定なし）で開くときだけ返す。
+/// 呼ばれたら一致しなくても空にする（一度きり。古い一覧を後から使わない）
+fn take_startup_listing(
+    slot: &mut Option<(String, Result<ImageList, String>)>,
+    path: &str,
+    kind: Option<MediaKind>,
+    depth: Option<usize>,
+) -> Option<Result<ImageList, String>> {
+    let (prepared_path, listing) = slot.take()?;
+    (prepared_path == path && kind.is_none() && depth.is_none()).then_some(listing)
+}
+
+/// path の一覧と開始位置を作る（list_images の中身）。
+/// - 単体のファイル: 同じフォルダの直下にある、同じ種類のファイルだけ
+/// - フォルダ・書庫: MAX_DEPTH 層目までのうち、並べたとき先頭に来るファイルと同じ種類だけ
+fn list_path(
+    path: &str,
+    kind: Option<MediaKind>,
+    depth: Option<usize>,
+    cache: &ArchiveCache,
+) -> Result<ImageList, String> {
+    let target = PathBuf::from(path);
     if target.is_dir() {
         let depth = depth.unwrap_or(MAX_DEPTH).clamp(1, MAX_DEPTH);
         return list_dir_images(&target, depth, kind, None);
@@ -1663,7 +1701,7 @@ fn list_images(
         return Err(format!("ファイルが見つかりません: {path}"));
     }
     if is_archive(&target) {
-        return list_archive_images(&target, &cache);
+        return list_archive_images(&target, cache);
     }
     let Some(kind) = media_kind(&target) else {
         return Err(format!("対応していないファイル形式です: {path}"));
@@ -1675,21 +1713,21 @@ fn list_images(
     list_dir_images(dir, 1, Some(kind), target.file_name())
 }
 
-/// path を開いたときに並ぶ種類（list_images と同じ決め方）。
-/// 起動時やウィンドウを作るときに、表示する前からその種類の大きさと位置で開くのに使う。
-/// 開けない・対応していないものは None
-fn media_kind_of(path: &Path) -> Option<WindowKindKey> {
-    if path.is_dir() {
-        return list_dir_images(path, MAX_DEPTH, None, None)
-            .ok()?
-            .kind
-            .map(WindowKindKey::from);
-    }
-    if is_archive(path) {
-        // 書庫の中は画像しか並べない（中身を読む前に決まる）
-        return Some(WindowKindKey::Image);
-    }
-    media_kind(path).map(WindowKindKey::from)
+/// ウィンドウで最初に開くもの（起動時のファイル / macOS で新しく作るウィンドウのファイル）の
+/// 一覧を、ウィンドウを出す前に作ってそのウィンドウに預け、並ぶ種類を返す。
+/// 種類はウィンドウをその種類の大きさ・位置で出すのに使う。
+/// フロントエンドの最初の list_images は預けた一覧（失敗ならそのエラー）をそのまま受け取るので、
+/// ファイル・フォルダ・書庫を読むのはこの 1 回だけ（以前はフロントエンドが読んでいた分を前に移しただけ）
+fn prepare_startup_listing(app: &AppHandle, label: &str, path: &str) -> Option<WindowKindKey> {
+    let listing = list_path(path, None, None, &app.state::<ArchiveCache>());
+    let kind = listing
+        .as_ref()
+        .ok()
+        .and_then(|l| l.kind)
+        .map(WindowKindKey::from);
+    app.state::<StartupListing>()
+        .with(label, |slot| *slot = Some((path.to_string(), listing)));
+    kind
 }
 
 /// 書庫内の画像 1 枚をバイト列のまま返す（IPC の raw payload で転送）
@@ -4360,7 +4398,7 @@ fn create_viewer_window(app: &AppHandle, path: &str) -> Result<WebviewWindow, St
             front().map(|(geometry, _)| geometry)
         }
     } else {
-        let kind = media_kind_of(Path::new(path));
+        let kind = prepare_startup_listing(app, &label, path);
         match kind.map(|k| (k, kind_target(&saved, k, true))) {
             Some((k, KindTarget::Record(record))) => {
                 set_applied(Some(WindowSlot::Kind(k)));
@@ -4444,6 +4482,7 @@ fn forget_window(window: &tauri::Window) {
     let app = window.app_handle();
     let label = window.label();
     app.state::<StartupFile>().remove(label);
+    app.state::<StartupListing>().remove(label);
     app.state::<PendingPosition>().remove(label);
     app.state::<WindowKind>().remove(label);
     app.state::<FirstFitDone>().remove(label);
@@ -4530,13 +4569,14 @@ pub fn run() {
                     .state::<StartupFile>()
                     .with(MAIN_LABEL, |file| file.clone())
                     .flatten()
-                    .and_then(|path| media_kind_of(Path::new(&path)));
+                    .and_then(|path| prepare_startup_listing(app.handle(), MAIN_LABEL, &path));
                 restore_window_state(&window.as_ref().window(), kind);
                 setup_viewer_window(&window);
             }
             Ok(())
         })
         .manage(StartupFile::new())
+        .manage(StartupListing::new())
         .manage(ArchiveCache(Mutex::new(None)))
         .manage(PendingPosition::new())
         .manage(WindowKind::new())
