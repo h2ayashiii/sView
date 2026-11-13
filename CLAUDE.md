@@ -209,6 +209,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   and a failed `Builder::build()` shows an OS message box instead of panicking.
 - Archives: `MAX_ENTRY_BYTES` (512 MB) guards against zip bombs, and the open archive handle is
   cached with an `(mtime, size)` stamp — don't re-open it naively.
+- `list_images`, `read_archive_image`, `audio_info` and `audio_artwork` are `#[tauri::command(async)]`:
+  a plain sync command runs on the main thread and blocks window moves / painting while it reads disk.
+  Keep window-touching commands sync. `collect_media` takes file / dir from `DirEntry::file_type()`
+  (`entry_file_type`, follows symlinks only) — don't go back to `path.is_file()` per entry.
+  In `main.js`, `archiveBlobUrl` shares an in-flight read per entry (`blobLoading`) and drops results
+  from before the last `clearBlobCache()` (`blobGeneration`).
 - Folder watching (`watch_folder` / `FolderWatcher`) uses `notify`'s OS-native backends, so it
   costs nothing while idle — do **not** replace it with polling. Exactly one folder is watched at a
   time, to the list's `depth` (non-recursive for 1, recursive for more, with events deeper than

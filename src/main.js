@@ -115,6 +115,12 @@ let showingBook = false;
 // （本モードでは見開きの 2 枚と、前後の見開き 2 枚ずつ）
 const BLOB_CACHE_MAX = 6;
 const blobCache = new Map(); // entry -> blob URL（挿入順 = LRU 順）
+// 取り出し中のエントリ（entry -> blob URL の Promise）。先読み中のページへ移ったときなどに、
+// 同じエントリを 2 回取り出さない（2 回目の blob URL が解放されずに残る）
+const blobLoading = new Map();
+// 書庫を開き直すたびに増やす。取り出している間に書庫が変わったら、その結果は使わない
+// （同じエントリ名の別の書庫の画像を出さない）
+let blobGeneration = 0;
 
 function extOf(name) {
   const m = /\.([^.\\/]+)$/.exec(name);
@@ -132,6 +138,8 @@ function isAudioPath(name) {
 function clearBlobCache() {
   for (const url of blobCache.values()) URL.revokeObjectURL(url);
   blobCache.clear();
+  blobLoading.clear();
+  blobGeneration++;
 }
 
 function trimBlobCache() {
@@ -162,19 +170,34 @@ function toBytes(data) {
   throw new Error("画像データを取得できませんでした");
 }
 
-async function archiveBlobUrl(entry) {
+function archiveBlobUrl(entry) {
   const cached = blobCache.get(entry);
   if (cached) {
     // LRU 更新
     blobCache.delete(entry);
     blobCache.set(entry, cached);
-    return cached;
+    return Promise.resolve(cached);
   }
-  const bytes = toBytes(await invoke("read_archive_image", { archive: archivePath, entry }));
-  const url = URL.createObjectURL(new Blob([bytes], { type: MIME[extOf(entry)] ?? "" }));
-  blobCache.set(entry, url);
-  trimBlobCache();
-  return url;
+  // 取り出し中なら、その結果を待つ
+  const loading = blobLoading.get(entry);
+  if (loading) return loading;
+  const generation = blobGeneration;
+  const promise = invoke("read_archive_image", { archive: archivePath, entry })
+    .then((data) => {
+      if (generation !== blobGeneration) {
+        throw new Error("書庫が切り替わったため読み込みを取りやめました");
+      }
+      const bytes = toBytes(data);
+      const url = URL.createObjectURL(new Blob([bytes], { type: MIME[extOf(entry)] ?? "" }));
+      blobCache.set(entry, url);
+      trimBlobCache();
+      return url;
+    })
+    .finally(() => {
+      if (blobLoading.get(entry) === promise) blobLoading.delete(entry);
+    });
+  blobLoading.set(entry, promise);
+  return promise;
 }
 
 // ---- zoom / pan state ----
@@ -1268,7 +1291,9 @@ function setBookBinding(binding) {
 async function rescan() {
   if (index < 0 || !images.length) return;
   if (archivePath) {
-    // 書庫の中身が差し替わっている可能性があるのでキャッシュを捨てて開き直す
+    // 書庫の中身が差し替わっている可能性があるのでキャッシュを捨てて開き直す。
+    // 読み込み途中の表示は取りやめる（取りやめた読み込みのエラーを出さない）
+    showToken++;
     clearBlobCache();
     await openPath(archivePath, { preferredIndex: index });
   } else if (folderPath) {
