@@ -284,13 +284,15 @@ function bookPages() {
 }
 
 // 見開きの実寸。2 ページを高い方のページの高さにそろえて横に並べた大きさ。
+// 最後の 1 ページだけのときも、もう 1 ページ分（同じ幅）の空きを含めた見開きの大きさにする
+// （1 ページだけをウィンドウいっぱいに大きく出さず、見開きのまま片側を空ける）。
 // まだ読み込めていなければ null
 function bookSize() {
   const pages = bookPages();
   if (!pages.length || pages.some((el) => !el.complete || !el.naturalWidth)) return null;
   const height = Math.max(...pages.map((el) => el.naturalHeight));
   const width = pages.reduce((sum, el) => sum + (el.naturalWidth * height) / el.naturalHeight, 0);
-  return { width, height };
+  return { width: pages.length === 1 ? width * 2 : width, height };
 }
 
 // 見開きの箱の大きさを決める（中のページは高さ 100% で、縦横比のまま幅が決まる）。
@@ -703,6 +705,9 @@ async function showBook(token) {
     if (srcs[i]) el.src = srcs[i];
     else el.removeAttribute("src");
   });
+  // 最後の 1 ページだけのときは、前のページの側に寄せて後のページの側を空ける
+  // （左開きなら左に置いて右を空け、右開きなら右に置いて左を空ける）
+  bookEl.classList.toggle("single-end", srcs.length === 1 && settings.bookBinding === "right");
   // 読み込むまでは大きさが分からないので、箱をいったん空にする（実寸ではみ出さないように）
   layoutBook();
   await Promise.all(bookPages().map(imageSettled));
