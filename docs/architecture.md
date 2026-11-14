@@ -39,6 +39,7 @@ sView/
 │   └── ISSUE_TEMPLATE/      # 不具合報告のテンプレート
 ├── CHANGELOG.md             # 変更履歴
 ├── CLAUDE.md                # AI エージェント向けの指示
+├── .claude/rules/           # AI エージェント向けの実装メモ（話題別。該当ファイルを触るときだけ読み込まれる）
 ├── LICENSE                  # Commons Clause + MIT
 └── THIRD-PARTY-NOTICES      # 配布バイナリに含まれる第三者ソフトウェアのライセンス表示
 ```
