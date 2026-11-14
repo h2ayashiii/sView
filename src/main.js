@@ -730,6 +730,7 @@ const VOLUME_STEP = 0.05;
 // ↑ ↓ を押し続けている間は保存をまとめる（押すたびに settings.json を書かない）
 const VOLUME_SAVE_DELAY_MS = 500;
 let volumeSaveTimer = null;
+const volumeSaveKeys = new Set();
 // シークバーをつかんでいる間は、再生位置でつまみを動かさない
 let seekDragging = false;
 // 自動再生の制限で音を消したことは 1 回だけ知らせる（動画ごとに出すとうるさい）
@@ -830,8 +831,13 @@ function changeVolumeBy(delta) {
   settings[volumeKey()] = Math.round(volume * 100);
   // 音量を上げたら消音も解く（再生バーの音量つまみと同じ扱い）
   if (delta > 0 && video.muted) video.muted = false;
+  // 待っている間に動画と音楽を行き来しても、変えた方の音量をどちらも保存する
+  volumeSaveKeys.add(volumeKey());
   clearTimeout(volumeSaveTimer);
-  volumeSaveTimer = setTimeout(saveSettings, VOLUME_SAVE_DELAY_MS);
+  volumeSaveTimer = setTimeout(() => {
+    saveSettings(...volumeSaveKeys);
+    volumeSaveKeys.clear();
+  }, VOLUME_SAVE_DELAY_MS);
   // 音量つまみで結果が見えるよう、再生操作を出す
   showChrome();
 }
@@ -1063,7 +1069,7 @@ vbVolume.addEventListener("input", () => {
 // 保存はつまみを離したときだけ（ドラッグ中に何度も書き込まない）
 vbVolume.addEventListener("change", () => {
   settings[volumeKey()] = Number(vbVolume.value);
-  saveSettings();
+  saveSettings(volumeKey());
   vbVolume.blur();
 });
 
@@ -1284,7 +1290,7 @@ function toggleBookMode() {
 function setBookBinding(binding) {
   if (settings.bookBinding === binding) return;
   settings.bookBinding = binding;
-  saveSettings();
+  saveSettings("bookBinding");
   if (showingBook) show();
 }
 
@@ -1438,7 +1444,7 @@ async function deleteCurrent() {
     if (!answer.ok) return;
     if (answer.skip) {
       settings.confirmDelete = false;
-      saveSettings();
+      saveSettings("confirmDelete");
     }
     // 確認している間に別の画像へ移っていたら、そのときの 1 枚を消さない
     if (images[index] !== path) return;
@@ -1455,13 +1461,24 @@ async function deleteCurrent() {
     return;
   }
   // 監視の合図を待たずにその場で一覧から外す
-  // （ネットワークドライブなど監視が効かない場所でも確実に反映する）
-  images.splice(index, 1);
-  if (!images.length) {
-    clearView();
-  } else {
-    if (index >= images.length) index = images.length - 1;
-    await show();
+  // （ネットワークドライブなど監視が効かない場所でも確実に反映する）。
+  // 送っている間に監視の読み直しで一覧が作り直されていることがあるので、位置は取り直す
+  // （元の位置のまま外すと、別のファイルを一覧から外してしまう）。
+  // 見つからなければ、読み直しで既に外れていて表示も移っている
+  const at = images.indexOf(path);
+  if (at >= 0) {
+    const wasShown = at === index;
+    images.splice(at, 1);
+    if (!images.length) {
+      clearView();
+    } else if (wasShown) {
+      if (index >= images.length) index = images.length - 1;
+      await show();
+    } else {
+      // 表示中のものは変えない（前にあったものが消えたら位置を 1 つ詰める）
+      if (at < index) index--;
+      updateChrome();
+    }
   }
   showToast("ゴミ箱へ移動しました", "notice");
 }
@@ -2053,11 +2070,15 @@ function applySettings() {
   syncWatcher();
 }
 
-// 本体ウィンドウ側から設定を書き換える（削除確認の「今後確認しない」）。
+// 本体ウィンドウ側から設定を書き換える（削除確認の「今後確認しない」・音量・本の綴じ方）。
+// settings.json には keys の項目だけを書く（Windows ではファイルごとに別のプロセスで、
+// 全体を書き戻すとほかのプロセスで変えた項目を古い値へ戻してしまう）。
 // 設定ウィンドウが開いていればそちらの表示も合わせる
-async function saveSettings() {
+async function saveSettings(...keys) {
+  if (!keys.length) return;
+  const changes = Object.fromEntries(keys.map((key) => [key, settings[key]]));
   try {
-    await invoke("save_settings", { settings });
+    await invoke("save_settings", { settings: changes });
     await emit("settings-changed", settings);
   } catch (e) {
     showError(e);

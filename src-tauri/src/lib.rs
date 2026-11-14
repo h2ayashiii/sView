@@ -936,6 +936,24 @@ mod tests {
     }
 
     #[test]
+    fn merge_settings_overwrites_only_the_given_keys() {
+        use serde_json::json;
+        // ほかのプロセスで変えた項目（backgroundOpacity）は残し、渡した項目だけを書き換える
+        let current = json!({ "audioVolume": 40, "backgroundOpacity": 70, "old": true });
+        let merged = merge_settings(Some(current), json!({ "audioVolume": 55 }));
+        assert_eq!(
+            merged,
+            json!({ "audioVolume": 55, "backgroundOpacity": 70, "old": true })
+        );
+        // 保存済みが無い・壊れているときは渡した項目だけ
+        assert_eq!(merge_settings(None, json!({ "a": 1 })), json!({ "a": 1 }));
+        assert_eq!(
+            merge_settings(Some(json!([1, 2])), json!({ "a": 1 })),
+            json!({ "a": 1 })
+        );
+    }
+
+    #[test]
     fn natural_sort_orders_numbers_numerically() {
         let mut v = vec!["img10.png", "img2.png", "img1.png", "IMG3.png"];
         v.sort_by(|a, b| natural_cmp(a, b));
@@ -2187,7 +2205,7 @@ fn write_window_state(app: &AppHandle, state: &WindowState) {
         return;
     };
     let _ = fs::create_dir_all(dir);
-    let tmp = path.with_extension("json.tmp");
+    let tmp = temp_path(&path);
     if fs::write(&tmp, text).is_ok() && fs::rename(&tmp, &path).is_err() {
         let _ = fs::remove_file(&tmp);
     }
@@ -3137,18 +3155,50 @@ fn load_settings(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
     }
 }
 
-/// 設定を保存する（書き込み途中で壊れないよう一時ファイル経由で置き換える）
+/// 設定を保存する。settings に入っている項目だけを、いまの settings.json に上書きする
+/// （書き込み途中で壊れないよう一時ファイル経由で置き換える）。
+/// Windows ではファイルを開くたびに別のプロセスになり、それぞれが起動時に読んだ設定を持っている。
+/// 全体を書き戻すと、ほかのプロセスで変えた項目を古い値へ戻してしまうので、変えた項目だけを渡す
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: serde_json::Value) -> Result<(), String> {
     let path = settings_file(&app)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("設定フォルダを作れません: {e}"))?;
     }
+    let current = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok());
+    let merged = merge_settings(current, settings);
     let text =
-        serde_json::to_string_pretty(&settings).map_err(|e| format!("設定を書けません: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
+        serde_json::to_string_pretty(&merged).map_err(|e| format!("設定を書けません: {e}"))?;
+    let tmp = temp_path(&path);
     fs::write(&tmp, text).map_err(|e| format!("設定を書けません: {e}"))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("設定を保存できません: {e}"))
+    fs::rename(&tmp, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("設定を保存できません: {e}")
+    })
+}
+
+/// 保存済みの設定 current に、変えた項目 changes を上書きする（最上位の項目ごと）。
+/// current が無い・壊れている（オブジェクトでない）ときは changes だけにする
+fn merge_settings(
+    current: Option<serde_json::Value>,
+    changes: serde_json::Value,
+) -> serde_json::Value {
+    let serde_json::Value::Object(changes) = changes else {
+        return changes;
+    };
+    let mut merged = match current {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    merged.extend(changes);
+    serde_json::Value::Object(merged)
+}
+
+/// 置き換え用の一時ファイル。別のプロセスが同時に書いても取り合わないよう、プロセス番号を付ける
+fn temp_path(path: &Path) -> PathBuf {
+    path.with_extension(format!("json.{}.tmp", std::process::id()))
 }
 
 /// 設定ウィンドウを作り直す（tauri.conf.json の定義が失われた場合の保険）。

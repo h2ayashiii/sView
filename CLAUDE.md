@@ -226,7 +226,15 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   half-copied file from being listed, so don't shorten it without a reason.
 - Deleting goes through `trash`, never `fs::remove_file` — "削除" in this app always means the
   OS trash. `main.js` splices the entry out itself instead of waiting for the watcher, because
-  watching fails on some network drives.
+  watching fails on some network drives. It looks the path up again after `delete_image` returns
+  (`images.indexOf(path)`): a watcher re-list may have rebuilt `images` meanwhile.
+- `save_settings` **merges**: it writes only the top-level keys it is given over the file on disk
+  (`merge_settings`), because on Windows every file launch is its own process holding the settings it
+  read at startup, and writing the whole object back reverted keys another process had changed. So
+  callers pass only what changed — `saveSettings(...keys)` in `main.js`, `persist({ key: value })` in
+  `settings.js` ("Reset to defaults" sends every non-`HIDDEN_DEFAULTS` key). Other running processes still
+  see a change only after a restart. `settings.json` / `window.json` are replaced via a per-process temp
+  file (`temp_path`).
 - `main.js` can write `settings.json` too (the "今後確認しない" checkbox → `saveSettings()`), so
   `settings.js` listens for `settings-changed` and re-renders — but only when the settings window
   is unfocused, otherwise its own emit echoes back and fights a slider being dragged.
