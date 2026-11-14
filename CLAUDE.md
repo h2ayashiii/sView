@@ -1,48 +1,16 @@
 # CLAUDE.md
 
-Guidance for coding agents working in this repository.
+sView is a minimal, frameless media viewer (images, videos, audio, zip/cbz archives) built with
+**Tauri v2**. Targets: Windows 10/11 and macOS 10.15+.
 
-## Overview
-
-sView is a minimal, frameless, cross-platform media viewer (images, videos, audio) built with **Tauri v2**.
-It opens single images, videos, audio files, folders, and zip/cbz archives (one kind per list); the overlay UI shows while the mouse
-moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` toggle
-`#app.chrome-visible` in `src/main.js`).
-
-- **Backend**: Rust 2021, crate `sview` / lib `sview_lib` (`tauri`, `tauri-plugin-dialog`,
-  `tauri-plugin-log`, `log`, `serde`, `zip`, `notify`, `trash`, `lofty`).
-- **Frontend**: plain HTML/CSS/JS. **No framework, no bundler, no TypeScript.**
-  `withGlobalTauri: true`, so APIs come from `window.__TAURI__` and scripts load via `<script src>`.
-- Targets: Windows 10/11, macOS 10.15+. **Linux is not a target.** It is kept only buildable,
-  because the CI `test` job and cloud containers run `cargo test` on Linux: the
-  `#[cfg(not(any(target_os = "windows", target_os = "macos")))]` branches in `lib.rs` are
-  minimal stubs for that (errors / no-ops), not a supported platform. Don't add Linux-only
-  features or docs.
-
-## Layout
-
-| Path | Contents |
-| --- | --- |
-| `src/` | Frontend, served as-is (`frontendDist: "../src"`) |
-| `src/main.js` | Main window: navigation, zoom, input, context menu |
-| `src/settings-defs.js` | `SETTINGS_SECTIONS` (single source of truth) + `SETTINGS_DEFAULTS` |
-| `src/settings.js` / `settings.html` | Settings window, UI generated from `SETTINGS_SECTIONS` |
-| `src/shortcuts.js` / `shortcuts.html` | Shortcut list window (opened from the settings window). `SHORTCUT_SECTIONS` is a hand-written copy of the key handling in `main.js` — update it when a key changes |
-| `src/theme.js` | `applyTheme(settings)`, shared by the settings and shortcut windows (`settings.css` too) |
-| `src-tauri/src/lib.rs` | **All** backend logic + inline `#[cfg(test)] mod tests` |
-| `README.md` | Entry point only: overview, download, first launch, short usage, links. Detailed behaviour goes in `docs/` |
-| `docs/` | `architecture.md`, `development.md` (build / CI / release), `specs/*.md` (one file per feature, Japanese). Update the matching spec when behaviour changes |
-| `src/audio-artwork.svg` | Default artwork for audio files without one (`DEFAULT_ARTWORK` in `main.js`) |
-| `CHANGELOG.md` | Per-version change summary; add to `未リリース` with user-visible changes |
-| `src-tauri/src/main.rs` | Only calls `sview_lib::run()` |
-| `src-tauri/tauri.conf.json` | Windows, CSP, bundle, file associations |
-| `src-tauri/installer-hooks.nsh` | Windows インストーラ (NSIS) のフック。旧ユーザー単位インストールの後始末 |
-| `src-tauri/capabilities/` | `default.json` (main), `settings.json` and `shortcuts.json` — per-window permissions |
-| `scripts/` | `build.sh` / `build.ps1` — thin `npm install && npm run build` wrappers; `set-version.mjs` — writes a release tag's version into `tauri.conf.json` / `Cargo.toml` / `Cargo.lock` (sview's own entry, or `cargo --locked` fails) / `package.json`; `gen-third-party-notices.mjs` — regenerates `THIRD-PARTY-NOTICES` from `cargo metadata` |
-| `.github/workflows/ci.yml` | `test` job: `cargo test` on `ubuntu-latest`, runs on PRs and pushes to `main` (needs the GTK/WebKit apt packages) |
-| `.github/workflows/build.yml` | `build` / `release` jobs: `cargo test` + `npm run build` for Windows/macOS, **only** on `v*` tags and manual dispatch; tag runs attach the `.dmg` / `.exe` to a GitHub Release. Manual runs set the version to `<last tag>-dev.<commits>.g<sha>` via `git describe` |
-| `.github/ISSUE_TEMPLATE/` | Bug-report form (`bug_report.yml`); blank issues are disabled |
-| `.github/release-notes/` | `<tag>.md` here becomes that release's notes; otherwise `--generate-notes` is used |
+- **Backend**: Rust 2021. **All** backend logic and its tests live in `src-tauri/src/lib.rs`.
+- **Frontend**: plain HTML/CSS/JS in `src/`, served as-is. **No framework, no bundler, no
+  TypeScript, no ES `import` / `export`** — scripts load via `<script src>` into the global scope
+  and Tauri APIs come from `window.__TAURI__`.
+- **Linux is not a target.** It only has to build, because CI and cloud containers run
+  `cargo test` there. The `#[cfg(not(any(target_os = "windows", target_os = "macos")))]` branches
+  are stubs; don't add Linux-only features or docs.
+- File layout: `docs/architecture.md`. Build / CI / release: `docs/development.md`.
 
 ## Commands
 
@@ -50,358 +18,82 @@ moves and hides again after 3 s of no movement (`showChrome` / `hideChrome` togg
 npm install
 npm run dev          # tauri dev
 npm run build        # tauri build
-npm run build:debug  # tauri build --debug
 
 cargo test --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_numerically  # single test
 ```
 
-- `cargo test` is the verification step for backend changes, but it still links the Tauri
-  crate, so it needs the platform GUI dev packages (on Linux: `libgtk-3-dev`,
-  `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, pkg-config). Without them the build fails at
-  `gdk-3.0.pc` not found — that is a missing dependency, not a code error.
-- `dev` / `build` additionally need a running display and a WebView runtime, so they do not
-  work in a headless container. There are no frontend tests; verify JS changes by reading.
-- Releasing is `git tag vX.Y.Z && git push origin vX.Y.Z`. CI derives the version from the tag
-  (`scripts/set-version.mjs`), so there is no need to bump the version in the repo beforehand
-  (a repo that already carries the tag's version is fine too: the script treats "no change" as success).
-  Tags are plain `vX.Y.Z`: no prerelease suffix by policy since 0.1.0 (only `v0.1.0-beta.1` ever
-  had one), although the tooling still accepts it. The leading `v` is stripped before it reaches
-  any manifest. **After changing dependencies, run `node scripts/gen-third-party-notices.mjs`**
-  — `THIRD-PARTY-NOTICES` and `LICENSE` ship inside the bundle via `bundle.resources`.
+- `cargo test` is the verification step for backend changes. It links Tauri, so on Linux it needs
+  `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev` and pkg-config; a `gdk-3.0.pc` not
+  found error is a missing dependency, not a code error.
+- `dev` / `build` need a display and a WebView runtime, so they do not work in a headless
+  container. There are no frontend tests; verify JS changes by reading.
+- After changing dependencies, run `node scripts/gen-third-party-notices.mjs`
+  (`THIRD-PARTY-NOTICES` ships inside the bundle).
+- Releasing is `git tag vX.Y.Z && git push origin vX.Y.Z`; CI takes the version from the tag, so
+  don't bump versions in the repo. Tags are plain `vX.Y.Z`, no prerelease suffix.
 - Linux → Windows cross-build requires `--runner cargo-xwin`; Linux → macOS is not possible.
 
 ## Conventions
 
-- No linter or formatter config exists. Rust: default `cargo fmt`. JS/HTML/CSS: 2-space indent, semicolons.
-- **Comments, doc comments (`///`) and user-facing strings are Japanese.** Identifiers and
-  file names are English. Match this in new code.
-- Rust: `snake_case` functions, `SCREAMING_SNAKE` constants, commands return `Result<T, String>`
-  with Japanese error messages, state via newtype-wrapped `Mutex` (`StartupFile`, `ArchiveCache`).
-- JS: `const`/`let`, `camelCase`, module-level `SCREAMING_SNAKE` constants, global script scope.
-  **No ES `import` / `export`** — it breaks the global-script setup.
+- **Comments, doc comments (`///`) and user-facing strings are Japanese.** Identifiers and file
+  names are English.
+- Rust: default `cargo fmt`. Commands return `Result<T, String>` with Japanese error messages;
+  state is a newtype-wrapped `Mutex` (`StartupFile`, `ArchiveCache`).
+- JS/HTML/CSS: 2-space indent, semicolons, `const` / `let`. No linter or formatter config exists.
 - Commits: Japanese, often `Area: 説明` (e.g. `CI: 手動実行でビルドする OS を選べるようにする`).
   Not Conventional Commits. Work lands on `main` via PRs from `feat-…` / `bugfix-…` branches.
+- "削除" always means the OS trash (`trash` crate), never `fs::remove_file`.
+
+## Keep in sync when behaviour changes
+
+- `docs/specs/*.md` (one file per feature, Japanese) — update the matching spec.
+- `CHANGELOG.md` — add user-visible changes under `未リリース`.
+- `src/shortcuts.js` — `SHORTCUT_SECTIONS` is a hand-written copy of the key handling in
+  `main.js`; update it when a key changes.
+- `README.md` is an entry point only; detailed behaviour goes in `docs/`.
+- `.claude/rules/*.md` — fix the note there when the code it describes changes.
 
 ## Making common changes
 
 - **Add a setting** → add one entry to `SETTINGS_SECTIONS` in `src/settings-defs.js`.
-  `SETTINGS_DEFAULTS` and the settings window UI are both derived from it. Each section has a
-  `tab` (`general` / `image` / `video` / `audio`, listed in `SETTINGS_TABS`) that picks the
-  settings-window tab it appears under; a new section needs one.
-- **Add a settings-window button** (not a stored value) → add an entry with `type: "action"`
-  and `action: "<name>"`, then register the handler under that name in `ACTIONS` in
-  `src/settings.js`. Keep `settings-defs.js` pure data — `main.js` loads it too.
-- **Add a Rust command** → define it in `lib.rs`, register it in `tauri::generate_handler![...]`
-  inside `run()`, and add any needed permission to the right `src-tauri/capabilities/*.json`.
-  Custom commands need no permission entry; only core/plugin APIs called from JS do.
-- **Add a frontend file** → add a `<script>` / `<link>` tag to `index.html`, `settings.html` and/or `shortcuts.html`.
-  Nothing picks it up automatically.
+  `SETTINGS_DEFAULTS` and the settings window UI are derived from it. A new section needs a `tab`
+  (`general` / `image` / `video` / `audio`, listed in `SETTINGS_TABS`).
+- **Add a settings-window button** → add an entry with `type: "action"` and `action: "<name>"`,
+  then register the handler in `ACTIONS` in `src/settings.js`. Keep `settings-defs.js` pure data —
+  `main.js` loads it too.
+- **Add a Rust command** → define it in `lib.rs` and register it in
+  `tauri::generate_handler![...]` inside `run()`. Custom commands need no permission entry; only
+  core / plugin APIs called from JS do (`src-tauri/capabilities/*.json`).
+- **Add a frontend file** → add a `<script>` / `<link>` tag to `index.html`, `settings.html`
+  and/or `shortcuts.html`. Nothing picks it up automatically.
 
 ## Gotchas
 
-- The CSP in `tauri.conf.json` is strict (`default-src 'self'`; `'unsafe-inline'` for styles only).
-  Inline `<script>` and remote assets are blocked.
-- Capabilities are per-window (`main` / `viewer-*`, `settings`, `shortcuts`). An API missing from that window's
-  capability file fails at runtime, not at build time.
-- `MIN_WINDOW_SIZE` in `lib.rs` must stay in sync with `minWidth` / `minHeight` in `tauri.conf.json`.
-- The supported image extension list is duplicated in three places — update all of them:
-  `IMAGE_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` (`src/main.js`),
-  `fileAssociations` (`tauri.conf.json`). The `supported_extensions_stay_in_sync` test reads
-  `main.js` and `tauri.conf.json` and fails when they drift, so `cargo test` catches it.
-  Video and audio extensions are file-associated too: `fileAssociations` has one entry per kind
-  (`Image` / `Video` / `Audio`), and the test checks each against `IMAGE_EXTS` / `VIDEO_EXTS` /
-  `AUDIO_EXTS` (and `VIDEO_EXT_FILTER` / `AUDIO_EXT_FILTER` in `main.js`).
-  Archives (`ARCHIVE_EXTS`: `zip` / `cbz`) are deliberately **not** file-associated, neither by the
-  installer nor from the settings window; they open via drag & drop, `O` and the command line.
-- A list holds **one kind** only (`MediaKind`: image / video / audio). `list_images` decides it:
-  a single file → that file's kind, its folder's direct children only (`depth` 1); a folder → every
-  media file down to `MAX_DEPTH` (3, the opened folder's direct children = level 1), sorted by the
-  relative path, then filtered to the kind of the first entry; an archive → images only, also down to
-  `MAX_DEPTH` (counted from the archive root, before `common_dir_prefix`). `ImageList` returns `kind`
-  and `depth`; `main.js` keeps them (`listKind` / `listDepth`) and passes them back on every re-list
-  (`R`, `refreshFolder`) and to `watch_folder`, so a re-list never switches the kind or turns a
-  single-file list into a recursive one.
-- Videos play in a `<video>` element with whatever decoder the OS WebView has (WebView2 / WKWebView). **No codec is bundled** — that keeps codec patent licensing out of the
-  app — so `VIDEO_EXTS` is limited to containers most WebViews handle (`mp4` / `m4v` / `webm` /
-  `mov`); anything the WebView can't decode just shows an error. Videos are listed only from
-  folders / single files (`is_media`), never from archives (`read_archive_entry` loads a whole entry into memory).
-  They load through the asset protocol, so the CSP needs `media-src` alongside `img-src`.
-  `unloadVideo()` (pause + drop `src` + `load()`) runs before every `show()` and before
-  `delete_image` so the WebView lets go of the file. Videos are always shown fitted (no zoom);
-  `mediaSize()` / `mediaEl()` stand in for `img.naturalWidth` etc. in the window-fit and freeze
-  logic. While a video is shown, `handleVideoKey` takes Space / K (play-pause), M (mute),
-  ← / → and J / L (±5 s) and ↑ / ↓ (volume ±5 %, saved after a 500 ms pause), and swallows the
-  image paging keys (PageUp / PageDown / Backspace / Home / End): media never changes file by key —
-  only the `#vb-prev` / `#vb-next` buttons in `#videobar` and the mouse side buttons (`step(±1)` for every
-  kind) do. The wheel seeks ±3 s (`WHEEL_SEEK_S`) and right button + wheel or Ctrl + wheel changes the
-  volume (`wheelVolume`). Horizontal wheel input (Shift + wheel, tilt wheel, a trackpad's
-  left / right) is treated like vertical (right = down = next): `wheelDelta` picks the larger axis on the
-  first event of a gesture (`WHEEL_AXIS_GAP_MS`) and keeps it until the gesture ends, so a diagonal swipe
-  cannot fire next and previous in one go. No other trackpad-specific handling. For images ← / → and the wheel page (`wheelStep`:
-  wheel down = next; the first event after `WHEEL_GESTURE_GAP_MS` steps at once, then every
-  threshold), the wheel zooms only while the right button is held (`rightPress`) or with Ctrl
-  (both OSes; a Windows touchpad pinch also arrives as Ctrl + wheel), and ↑ / ↓ are deliberately unbound (reserved for a future feature)
-  except in book mode. `contextmenu` arrives after mouseup on Windows but on mousedown on macOS, so a
-  right press that used the wheel or lasted `MENU_LONG_PRESS_MS` opens no menu: on macOS the
-  menu position is held in `rightPress.menuAt` and opened on mouseup, on Windows `suppressMenu`
-  drops the following `contextmenu`. Images get their own card, `#imagebar` (`‹` / `›` + a slider
-  over the list, `ib-*`), at the same spot as `#videobar` (both `.ctlbar`); it shows when the app
-  is neither `.video` / `.audio` nor `.no-image`. Slider moves go through `seekImageTo`, which
-  updates the chrome at once but throttles `show()` (`IMAGE_SEEK_INTERVAL_MS`) so an archive is not
-  read per pixel; in book mode `imageSeekTarget` keeps the spread's parity. `setFitMode` leaves `#stage` without
-  `data-tauri-drag-region` while a video is shown — with it, the OS move loop starts on mousedown and
-  the release never reaches the WebView, so a click could not be told apart. Instead a press that moves
-  `VIDEO_DRAG_THRESHOLD_PX` calls `appWindow.startDragging()`, and one released within
-  `VIDEO_CLICK_MS` without moving toggles play-pause. The playback controls are the `#videobar` card (seek bar on top; time /
-  ±5 s + play / mute + volume below) inside `#chrome`, so they show and hide with the rest of the chrome.
-- Audio (`AUDIO_EXTS` in `lib.rs` / `AUDIO_EXT_FILTER` in `main.js`, kept in sync by the same test;
-  never listed from archives) plays through the **same `<video>` element**,
-  which stays hidden while `#audio` shows the artwork and the title panel. `showingMedia`
-  (video or audio) gates everything playback-related — keys, the press-to-play logic, `#videobar`,
-  no zoom — while `showingVideo` / `showingAudio` pick what is displayed. Tags and artwork come from
-  `audio_info` / `audio_artwork` (`lofty`, tags only, no audio properties); artwork falls back to a
-  `cover` / `folder` / … image in the same folder (`COVER_STEMS`), then to `DEFAULT_ARTWORK`
-  (`src/audio-artwork.svg`). In "image" mode `mediaSize()` returns the artwork size plus
-  `extraWidth` / `extraHeight` — the fixed-px `#audio-art` padding and `#audio-panel`
-  (`--audio-panel-h`) — which `set_aspect_lock` / `fit_window_to_image` store as
-  `AspectState.extra`; `sized_to_aspect` / `dragged_area` keep the ratio on the window **minus**
-  that margin (images / videos pass 0). Don't fold the margin into the ratio at the current
-  window width: the ratio then depends on the previous window shape and the size drifts. `audioEnd` / `videoEnd` (`mediaEnd()`:
-  `"next"` / `"repeat"` / `"stop"`; `videoEnd` replaced the old `videoLoop` toggle, migrated in
-  `normalizeSettings`) — `"next"` advances on `ended` to the next entry of the same kind
-  (`nextMediaIndex`; never wraps — paging stops at both ends, there is no wrap-around setting) and forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
-  slider value (`getVolume` / `setVolume` wrap `video.volume`; never read or write it directly for
-  the user-facing volume). The volume is stored per kind (`videoVolume` / `audioVolume`, picked by
-  `volumeKey()`); both are `HIDDEN_DEFAULTS` in `settings-defs.js` — stored in `settings.json` but not
-  shown in the settings window, and kept by "Reset to defaults". Mute is never saved: every launch
-  starts unmuted. `#audio-art` has fixed-px padding (left / right / top) that `mediaSize()`
-  reads via `getComputedStyle`. `layoutArtwork()` sizes `#artwork` to the drawn picture (instead
-  of `object-fit` on a full box) so its `border-radius` (`--window-radius`, same as `#app`)
-  rounds the picture itself.
-- Items in `SETTINGS_SECTIONS` without a `default` (i.e. `type: "action"` rows) are excluded from
-  `SETTINGS_DEFAULTS` by a `.filter((i) => "default" in i)`. Removing it writes `undefined`
-  into `settings.json`.
-- Both `settings.json` and `window.json` live in `config_dir()/sview` (`CONFIG_DIR_NAME` in
-  `lib.rs`), **not** in Tauri's `app_config_dir()` — the folder name is deliberately kept
-  independent of the bundle identifier. "Reset to defaults" only touches `settings.json`.
-  `window.json` holds size and position, and **both are restored in both size modes** — the
-  window always reopens where and how it was left (the position is skipped when it lands on no
-  connected monitor, otherwise clamped into that monitor's work area). In "image" mode the first
-  `fit_window_to_image` after startup only corrects the aspect ratio, and anchors the window at
-  the saved top-left (`PendingPosition`) instead of recentering.
-  Logs go to a `logs/` subfolder of the same directory.
-  `window.json` stores `x` / `y` / `width` / `height` in logical px plus `scale` (the window's
-  scale factor when the position was taken). Positions are compared and set in each OS's
-  desktop-wide coordinates (`PHYSICAL_DESKTOP`): **physical px on Windows** (logical px change
-  scale per monitor there, so a mixed-DPI setup restored onto the wrong monitor), **points
-  (logical px) on macOS** (physical px are per monitor there). `saved_position` / `desktop_area` /
-  `desktop_to_physical` / `set_desktop_position` do the conversion; sizes stay logical (both OSes
-  keep the logical size when a window moves to another scale). On macOS never `set_size` after
-  `set_position`: `setContentSize` keeps the bottom-left, so the top-left moves.
-- `fit_window_to_image` does its position math in **physical** pixels and on the **outer**
-  size. On Windows a frameless window's outer rect is larger than its client rect by the
-  invisible shadow border, so mixing outer and inner sizes drifts the window a few pixels
-  toward the bottom-right on every image. The result is clamped into the monitor's work area.
-- `tauri-plugin-log` is registered from `setup()` via `app.handle().plugin(...)`, not on the
-  `Builder`, because the output folder needs an `AppHandle` (`log_dir()` → `config_dir()/logs`).
-  A panic hook installed at the top of `run()` logs the panic and a backtrace before aborting,
-  and a failed `Builder::build()` shows an OS message box instead of panicking.
-- Archives: `MAX_ENTRY_BYTES` (512 MB) guards against zip bombs, and the open archive handle is
-  cached with an `(mtime, size)` stamp — don't re-open it naively.
-- `list_images`, `read_archive_image`, `audio_info` and `audio_artwork` are `#[tauri::command(async)]`:
-  a plain sync command runs on the main thread and blocks window moves / painting while it reads disk.
-  Keep window-touching commands sync. `collect_media` takes file / dir from `DirEntry::file_type()`
-  (`entry_file_type`, follows symlinks only) — don't go back to `path.is_file()` per entry.
-  In `main.js`, `archiveBlobUrl` shares an in-flight read per entry (`blobLoading`) and drops results
-  from before the last `clearBlobCache()` (`blobGeneration`).
-- Folder watching (`watch_folder` / `FolderWatcher`) uses `notify`'s OS-native backends, so it
-  costs nothing while idle — do **not** replace it with polling. Exactly one folder is watched at a
-  time, to the list's `depth` (non-recursive for 1, recursive for more, with events deeper than
-  `depth` dropped by `is_listing_change`), and only while a folder (not an archive) is open; passing
-  `path: null` drops the watcher. `is_listing_change` filters out content-only writes so a save
-  doesn't rebuild the list, and in recursive mode also reacts to sub-folders appearing / vanishing
-  (a moved-in folder may not report its children). Rust only emits `folder-changed`; the debounce (`RESCAN_DELAY_MS`, 800 ms in
-  `main.js`) and the actual re-listing live in the frontend — that delay also keeps a
-  half-copied file from being listed, so don't shorten it without a reason.
-- Deleting goes through `trash`, never `fs::remove_file` — "削除" in this app always means the
-  OS trash. `main.js` splices the entry out itself instead of waiting for the watcher, because
-  watching fails on some network drives. It looks the path up again after `delete_image` returns
-  (`images.indexOf(path)`): a watcher re-list may have rebuilt `images` meanwhile.
-- `save_settings` **merges**: it writes only the top-level keys it is given over the file on disk
-  (`merge_settings`), because on Windows every file launch is its own process holding the settings it
-  read at startup, and writing the whole object back reverted keys another process had changed. So
-  callers pass only what changed — `saveSettings(...keys)` in `main.js`, `persist({ key: value })` in
-  `settings.js` ("Reset to defaults" sends every non-`HIDDEN_DEFAULTS` key). Other running processes still
-  see a change only after a restart. `settings.json` / `window.json` are replaced via a per-process temp
-  file (`temp_path`).
-- `main.js` can write `settings.json` too (the "今後確認しない" checkbox → `saveSettings()`), so
-  `settings.js` listens for `settings-changed` and re-renders — but only when the settings window
-  is unfocused, otherwise its own emit echoes back and fights a slider being dragged.
-- `windowSizeMode` is `"free"` or `"image"` (shown as "メディアに合わせる": it fits videos and audio too); `"fixed"` / `"flexible"` are the 0.1-era values and
-  are still read — `LEGACY_VALUES` in `settings-defs.js` maps them for the frontend, and
-  `fits_window_to_image()` accepts `"flexible"` on the Rust side (Rust reads `settings.json`
-  raw, so it never sees the frontend's mapping).
-- Window geometry is recorded per **slot** (`WindowSlot`): in `"free"` mode one slot for every kind
-  (`Free` = the top level of `window.json`); in `"image"` mode one slot per kind (`Kind(..)` =
-  `WindowState.kinds`, keyed `"image"` / `"video"` / `"audio"` / `"book"`, plus top-level `kind` = the
-  last fit-mode kind, used when launched without a file). The two modes never share a record. There is no
-  per-kind toggle (`windowPerKind` was removed and is in `OBSOLETE_KEYS`). `KindState` (`WindowKind`) has
-  `shown`, `fit` (both from `set_window_kind(kind, fit)`) and `applied` (whose slot the window's *normal*
-  geometry is); `target()` is the slot it should be in. `apply_window_kind` switches only while the window
-  is normal: it stores the current geometry into `applied`, then places the target slot — `Free`: the
-  top level (or keep the window if there is none); `Kind`: `kind_target` = its record, else the default size
-  (`default_geometry`, centred on the current window) — never the previous kind's shape.
-  `KindTarget::Adopt` (keep the window) is only when the window is not in a kind slot yet and `kinds` is
-  still empty (pre-per-kind `window.json`). `place_kind_geometry` resets `AspectLock` to the placed area
-  (so the `set_size` echo is not taken for a drag), re-arms `FirstFitDone` (the next fit clamps to the
-  screen like at launch) and `PendingPosition`, and cascades off other viewers. While maximized /
-  fullscreen / minimized the switch is deferred (`KindState::pending()`): `AspectLock` is cleared and
-  `set_aspect_lock` refuses a ratio, so the OS restoring the old slot's rect is not "corrected"; the
-  frontend retries in `onResizeSettled` and on focus (`catchUpWindowKind*`), and `fit_window_to_image`
-  calls `apply_window_kind` first. Saving is **immediate**: `onResized` / `onMoved` arm
-  `scheduleWindowSave` (`WINDOW_SAVE_DELAY_MS`, waits while `mouse_button_down`) →
-  `save_window_geometry` → `save_window_state`, which writes the current geometry into `applied`
-  (`WindowState::store`; skipped while maximized / fullscreen / minimized) via a temp file + rename; close
-  still saves too. The frontend sends nothing before `settingsReady` (the defaults say "free", which
-  would move a fit-mode window to the free slot). At launch `setup()` reads the mode and builds the
-  startup path's listing once (`prepare_startup_listing` → `list_path`, the body of `list_images`) to get
-  its kind, and `restore_window_state` places that slot **before** the window is shown;
-  `create_viewer_window` (macOS) does the same for the file it opens. The listing (or its error) is
-  parked in `StartupListing` and handed over by the frontend's first `list_images` for that path
-  (`take_startup_listing`; any call empties it), so the folder / archive is read only once — don't add a
-  second read to learn the kind.
-- Book mode (`bookMode`, `B` / context menu; `docs/specs/book.md`) shows images two at a time in
-  `#book` (`#book-left` / `#book-right`) instead of `#image`. `showingBook` = `bookMode && !showingMedia`;
-  the spread is `images[index]` + `images[index + 1]` (`shownEntries()`), and `settings.bookBinding`
-  (`HIDDEN_DEFAULTS`, `"left"` / `"right"`) only decides which `<img>` gets the earlier page — ← is always
-  previous and → next. `step()` moves by 2 (`stepBook(±2)`), ↑ / ↓ by 1 (stops at `lastSpreadIndex()`).
-  `layoutBook()` sizes `#book` in px (pages share the taller page's height, `bookSize()`); zoom / pan /
-  freeze treat the whole spread as one picture via `zoomEl()` / `zoomNaturalSize()` / `mediaEl()`.
-  For the window it is its own kind: `shownKind()` returns `"book"` and Rust stores it under
-  `WindowKindKey::Book` (`kinds.book` in `window.json`), separate from `MediaKind`, which stays the
-  list kind. `bookMode` is not saved and is cleared when a non-image list opens; deleting is disabled
-  in book mode.
-- File associations are one `type: "associations"` row per kind tab (`associationSection(kind)`).
-  On Windows `register()` rebuilds the whole set, so a row's apply also sends the other kinds'
-  currently associated extensions; on macOS it sends only its own kind.
-- In `"image"` mode only the **aspect ratio** comes from the image; the size does not.
-  `sized_to_aspect` turns an area (logical px²) plus the aspect into a size, so paging between
-  portrait and landscape keeps the window equally big. That area lives in `AspectLock` on the
-  Rust side and is rewritten **only** by a real resize, never recomputed from the live window —
-  otherwise the one clamp that does exist would shrink the window for good.
-- The "fit on screen" clamp (`screen_limit`, `SCREEN_RATIO` = 95% of the work area) runs **once
-  per launch and once per kind switch**: `FirstFitDone` is consumed by the first `fit_window_to_image`
-  (and re-armed by `place_kind_geometry`), so a restored window still lands on screen when the
-  monitor setup changed, and nothing fights the user's own size afterwards. That first fit also writes its (possibly clamped) area into `AspectLock` —
-  otherwise the second image would jump back to the unclamped area and the window would grow
-  once (easy to hit on small logical screens such as MacBooks, with a portrait image). A drag (`keep_aspect_on_resize`) is never clamped, so a tall image can end up
-  sized past the bottom of the screen — that is deliberate.
-- The aspect lock is enforced in `WindowEvent::Resized` (`keep_aspect_on_resize`), which also
-  arrives mid-drag, so the window can only be dragged along the image's ratio. Tauri exposes no
-  native aspect hint, so on Windows `win_sizing` subclasses the main window and rewrites the
-  proposed rect in `WM_SIZING` (it knows the edge / corner being pulled; corners take the larger of
-  the width- and height-driven sizes, `sizing_area`, which is continuous in the mouse position) and
-  writes `last` / `reported` / `area` into `AspectLock`, so the following `Resized` is an echo.
-  Without it a corner drag flickered: each mouse move painted the OS size and then our correction,
-  and the "larger relative change" axis choice in `dragged_area` flipped between events.
-  On macOS `mac_sizing` does the same by adding `windowWillResize:toSize:` and
-  `windowWillStartLiveResize:` to tao's window-delegate class at runtime (then re-setting the delegate so
-  NSWindow re-checks what it responds to). The pulled edges are the edges the cursor was near when the
-  live resize started (`LiveResize.edges`), counted only once that axis actually moves from the grab size
-  (`pulled`, sticky for the drag), then `sizing_area`. AppKit also calls `windowWillResize:toSize:` while
-  entering / leaving fullscreen, so `will_resize` passes the size through when the style mask has `FullScreen`,
-  and it uses `try_lock` (like `win_sizing`): it can be called from inside a window-state query on the main
-  thread. For the same reason `keep_aspect_on_resize` queries the window state (fullscreen first) **before**
-  taking `AspectLock`. `keep_aspect_on_resize` returns early while the
-  window is `inLiveResize`: tao's `set_size` is `setContentSize` dispatched **async**, so correcting from
-  `Resized` mid-drag painted the OS size and our size alternately (flicker) and, at corners, left the
-  ratio broken. Outside a live resize it is still a correct-it-as-it-arrives loop. Two details keep it from misbehaving: write
-  `AspectLock.last` **before** calling `set_size` (on Windows the event can come back
-  synchronously, and a size equal to `last` is how the echo is recognised), and **drop the
-  mutex guard before** `set_size` — holding it across that call deadlocks on the re-entrant
-  event. The frontend only sets the ratio (`set_aspect_lock`, from `syncAspectLock`) and leaves
-  the geometry alone.
-- While a drag is in flight the image keeps its pixel size (`#image.frozen` plus an inline
-  width/height captured on the first resize event) and is re-fitted only once `onResized` goes
-  quiet — re-laying out the image on every frame is what made a drag feel heavy. `setFitMode`
-  and `enterZoomMode` both thaw it, the latter because a zoom factor derived from the frozen
-  size would apply twice. This applies in both size modes. A pause mid-drag also makes `onResized`
-  go quiet, so `onResizeSettled` asks Rust `mouse_button_down` (`GetAsyncKeyState` /
-  `NSEvent.pressedMouseButtons`; the OS owns the mouse during a resize, so no `mouseup` reaches the
-  WebView) and keeps waiting while a button is held — thawing at the pause is what made a diagonal
-  drag flicker. A resize we caused ourselves (`selfResizedAt`, `SELF_RESIZE_MS`) is
-  not frozen, so paging images does not leave the picture a step behind the window (maximize,
-  fullscreen and `set_window_kind` stamp it too).
-- Which edge is being dragged is decided against `AspectLock.reported` — the size the OS last
-  announced — **never** against the size we applied. A drag keeps reporting from the rect the
-  window had when it was grabbed, so it re-sends the other axis unchanged; measuring against our
-  own correction instead makes the axis flip every other event and the window snap back to where
-  the drag started (it looks like "it shrinks but won't grow"). `syncAspectLock` on the
-  resize-settled timer puts the baseline back on the real size once a drag ends.
-- Maximizing and fullscreen interact with the window-size logic: `fit_window_to_image` and
-  `keep_aspect_on_resize` both return early in those states (and while minimized), since
-  resizing would silently drop out of them, and `save_window_state` skips those windows too so
-  `window.json` keeps the ordinary geometry.
-- The Windows installer is `installMode: "perMachine"`: NSIS gets `RequestExecutionLevel admin`, so it
-  asks for UAC on launch and defaults to `C:\Program Files\sView` (HKLM, all-users shortcuts and
-  file associations). It used to be per-user (`%LOCALAPPDATA%`), so `installer-hooks.nsh` silently
-  uninstalls a leftover per-user install in `NSIS_HOOK_PREINSTALL` — otherwise the HKCU file
-  associations would keep winning over the new HKLM ones. NSIS files must be UTF-8 **with BOM**.
-- The windows in `tauri.conf.json` (`main` / `settings` / `shortcuts`) are `"create": false`; `create_configured_windows()` builds
-  them from the same config in `setup()`. That detour exists only so `data_directory()` can be set:
-  on Windows an unspecified WebView2 user-data folder is created next to the exe
-  (`C:\Program Files\sView\sview.exe.WebView2`) and the app fails to start. It is pointed at
-  `%LOCALAPPDATA%\sview` (`webview_data_dir()`). macOS (WKWebView) cannot set it — the OS derives
-  `~/Library/WebKit/<bundle id>` and `~/Library/Caches/<bundle id>` from the identifier — so it
-  returns `None` there.
-- File associations from the settings window (`file_association_status` / `apply_file_associations`,
-  `type: "associations"` row in `settings-defs.js`) follow each OS's rules. Windows 8+ forbids apps
-  from setting the default (UserChoice is hash-protected), so `win_assoc` only registers sView in
-  HKCU (one ProgID per kind — `sView.Image` / `sView.Video` / `sView.Audio`, `PROG_IDS` —, `Capabilities`, `RegisteredApplications`,
-  `OpenWithProgids`) and opens `ms-settings:defaultapps?registeredAppUser=sView` for the user to
-  confirm. macOS sets it directly via `LSSetDefaultRoleHandlerForContentType` (raw FFI in
-  `mac_assoc`); there is no API to unset. The selectable list is
-  `associable_exts()` = `IMAGE_EXTS` + `VIDEO_EXTS` + `AUDIO_EXTS` (archives are deliberately
-  excluded); the settings window groups them by `kind`.
-- macOS: WKWebView only tracks the mouse while its window is key, so an inactive window gets no
-  `mousemove` and leaving the window fires no reliable `mouseleave`. `mac_pointer` (in `lib.rs`)
-  adds an always-active `NSTrackingArea` to the main window's content view and emits
-  `pointer-inside` (bool) and, only while the window is not key, a throttled `pointer-moved`;
-  `main.js` feeds both into `showChrome` / `hideChrome`. The window controls are drawn as
-  traffic lights in CSS (`#app.mac`), greyed out via `#app.inactive`; the settings window's close
-  button does the same (`#win.mac` / `#win.inactive` in `settings.css`).
-- macOS: the main window has `acceptFirstMouse: true` (`tauri.conf.json`). Without it AppKit swallows the
-  first click on an inactive window (it only activates it), so `data-tauri-drag-region` could not start a
-  move until the window had been clicked once.
-  Window moves on macOS go through `start_window_drag` (`mac_drag`), not Tauri's `startDragging()`: tao's
-  `drag_window` builds a fake mouse-down with **screen** coordinates as the window location whenever
-  `NSApp.currentEvent` isn't a mouse event (the case right after activation), so the window's top-left
-  jumped to the cursor. `main.js` catches drag-region presses in a capture listener (`isDragRegion`, a copy
-  of Tauri's `drag.js` check) and leaves double clicks to Tauri; the video press-and-move path calls
-  `startWindowDrag()` too.
-- macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv. `open_in_viewer` opens it
-  in a viewer window that has shown nothing yet (`KindState.shown` is `None` and not `claimed` — e.g. `main`
-  right after launch), otherwise in a **new** viewer window (`create_viewer_window`: label `viewer-N`, built
-  from `main`'s config, placed at the opened file's kind geometry and moved `CASCADE_OFFSET` off any viewer
-  sitting at the same spot). Every per-window Rust state
-  (`AspectLock`, `WindowKind`, `PendingPosition`, `FirstFitDone`, `FolderWatcher`, `StartupFile`) is a
-  `PerWindow<T>` map keyed by window label and dropped in `forget_window` on close; closing the last viewer
-  (`is_viewer`) exits. Window-targeted events (`folder-changed`, `pointer-*`, `open-file`) go out with
-  `emit_to(label)` and `main.js` must receive them with `appWindow.listen`, since the global `listen` also
-  catches events aimed at other windows. The same goes for Tauri's own `tauri://drag-enter` / `drag-leave` /
-  `drag-drop`: with the global `listen`, a file dropped on one window opened in every window. `capabilities/default.json` covers `viewer-*`. `ArchiveCache` stays
-  app-wide (it re-opens on a path change). Windows has no in-process multi-window (each file launch is its
-  own process).
-  `macOSPrivateApi` is enabled and builds are ad-hoc signed only.
-- `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a
-  parent-directory path under `_up_/` in the bundle, because `resource_relpath()` rewrites `..`.
-- Prerelease suffixes are no longer used, but the tooling still handles them (`0.1.0-beta.1`
-  shipped with one): NSIS derives a numeric
-  `VIProductVersion` (`0.1.0.0`) from it and compares real semver for upgrade detection, and
-  `tauri-winres` drops the prerelease from the exe's VERSIONINFO. What is *not* allowed is
-  numeric-only build metadata (`+abc`). On macOS the raw string lands in
-  `CFBundleShortVersionString`, which Apple documents as three period-separated integers —
-  out of spec, effect on directly distributed apps unverified.
-- `src-tauri/gen/` and `src-tauri/target/` are generated and gitignored. `capabilities/*.json`
-  reference a schema under `gen/` that does not exist until a build has run.
+- The CSP in `tauri.conf.json` is strict (`default-src 'self'`; `'unsafe-inline'` for styles
+  only). Inline `<script>` and remote assets are blocked.
+- Capabilities are per-window (`main` / `viewer-*`, `settings`, `shortcuts`). An API missing from
+  that window's capability file fails at runtime, not at build time. The files reference a schema
+  under the gitignored `src-tauri/gen/`, which does not exist until a build has run.
+- `MIN_WINDOW_SIZE` in `lib.rs` must stay in sync with `minWidth` / `minHeight` in
+  `tauri.conf.json`.
+- Supported extensions are duplicated in three places — update all of them: `IMAGE_EXTS` /
+  `VIDEO_EXTS` / `AUDIO_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` / `VIDEO_EXT_FILTER` /
+  `AUDIO_EXT_FILTER` (`src/main.js`), `fileAssociations` (`tauri.conf.json`, one entry per kind).
+  The `supported_extensions_stay_in_sync` test fails when they drift. Archives (`ARCHIVE_EXTS`)
+  are deliberately **not** file-associated.
+- No codec is bundled (codec patent licensing): videos and audio play with the OS WebView's
+  decoders only, so don't add formats the WebViews can't handle.
+
+## Detailed implementation notes
+
+Design decisions and pitfalls per area are in `.claude/rules/`. They load automatically when a
+matching file is read or edited; read the relevant one before planning a change in that area.
+
+| File | Covers |
+| --- | --- |
+| `file-listing.md` | `list_images` and list kind / depth, archives, async commands, folder watching, deleting |
+| `media-playback.md` | Video and audio playback, key / wheel / mouse handling, `#videobar` / `#imagebar`, book mode |
+| `window-geometry.md` | `window.json`, size modes, per-kind slots, aspect lock, resize drag, maximize / fullscreen |
+| `settings.md` | `settings.json` merge-saving, settings window sync, file associations |
+| `platform.md` | macOS pointer / drag / multi-window, Windows installer and WebView2 data folder, logging, bundle resources, version strings |
