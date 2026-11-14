@@ -90,6 +90,12 @@ body {
   display: none;
 }
 
+/* 最後の 1 ページだけのとき、#book は 2 ページ分の幅（main.js の bookSize）。
+   左開きはページを左に寄せ（既定）、右開きは右に寄せて、後のページの側を空ける */
+#book.single-end {
+  justify-content: flex-end;
+}
+
 #book img {
   display: block;
   flex: none;

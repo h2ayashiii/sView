@@ -115,6 +115,12 @@ let showingBook = false;
 // （本モードでは見開きの 2 枚と、前後の見開き 2 枚ずつ）
 const BLOB_CACHE_MAX = 6;
 const blobCache = new Map(); // entry -> blob URL（挿入順 = LRU 順）
+// 取り出し中のエントリ（entry -> blob URL の Promise）。先読み中のページへ移ったときなどに、
+// 同じエントリを 2 回取り出さない（2 回目の blob URL が解放されずに残る）
+const blobLoading = new Map();
+// 書庫を開き直すたびに増やす。取り出している間に書庫が変わったら、その結果は使わない
+// （同じエントリ名の別の書庫の画像を出さない）
+let blobGeneration = 0;
 
 function extOf(name) {
   const m = /\.([^.\\/]+)$/.exec(name);
@@ -132,6 +138,8 @@ function isAudioPath(name) {
 function clearBlobCache() {
   for (const url of blobCache.values()) URL.revokeObjectURL(url);
   blobCache.clear();
+  blobLoading.clear();
+  blobGeneration++;
 }
 
 function trimBlobCache() {
@@ -162,19 +170,34 @@ function toBytes(data) {
   throw new Error("画像データを取得できませんでした");
 }
 
-async function archiveBlobUrl(entry) {
+function archiveBlobUrl(entry) {
   const cached = blobCache.get(entry);
   if (cached) {
     // LRU 更新
     blobCache.delete(entry);
     blobCache.set(entry, cached);
-    return cached;
+    return Promise.resolve(cached);
   }
-  const bytes = toBytes(await invoke("read_archive_image", { archive: archivePath, entry }));
-  const url = URL.createObjectURL(new Blob([bytes], { type: MIME[extOf(entry)] ?? "" }));
-  blobCache.set(entry, url);
-  trimBlobCache();
-  return url;
+  // 取り出し中なら、その結果を待つ
+  const loading = blobLoading.get(entry);
+  if (loading) return loading;
+  const generation = blobGeneration;
+  const promise = invoke("read_archive_image", { archive: archivePath, entry })
+    .then((data) => {
+      if (generation !== blobGeneration) {
+        throw new Error("書庫が切り替わったため読み込みを取りやめました");
+      }
+      const bytes = toBytes(data);
+      const url = URL.createObjectURL(new Blob([bytes], { type: MIME[extOf(entry)] ?? "" }));
+      blobCache.set(entry, url);
+      trimBlobCache();
+      return url;
+    })
+    .finally(() => {
+      if (blobLoading.get(entry) === promise) blobLoading.delete(entry);
+    });
+  blobLoading.set(entry, promise);
+  return promise;
 }
 
 // ---- zoom / pan state ----
@@ -261,13 +284,15 @@ function bookPages() {
 }
 
 // 見開きの実寸。2 ページを高い方のページの高さにそろえて横に並べた大きさ。
+// 最後の 1 ページだけのときも、もう 1 ページ分（同じ幅）の空きを含めた見開きの大きさにする
+// （1 ページだけをウィンドウいっぱいに大きく出さず、見開きのまま片側を空ける）。
 // まだ読み込めていなければ null
 function bookSize() {
   const pages = bookPages();
   if (!pages.length || pages.some((el) => !el.complete || !el.naturalWidth)) return null;
   const height = Math.max(...pages.map((el) => el.naturalHeight));
   const width = pages.reduce((sum, el) => sum + (el.naturalWidth * height) / el.naturalHeight, 0);
-  return { width, height };
+  return { width: pages.length === 1 ? width * 2 : width, height };
 }
 
 // 見開きの箱の大きさを決める（中のページは高さ 100% で、縦横比のまま幅が決まる）。
@@ -680,6 +705,9 @@ async function showBook(token) {
     if (srcs[i]) el.src = srcs[i];
     else el.removeAttribute("src");
   });
+  // 最後の 1 ページだけのときは、前のページの側に寄せて後のページの側を空ける
+  // （左開きなら左に置いて右を空け、右開きなら右に置いて左を空ける）
+  bookEl.classList.toggle("single-end", srcs.length === 1 && settings.bookBinding === "right");
   // 読み込むまでは大きさが分からないので、箱をいったん空にする（実寸ではみ出さないように）
   layoutBook();
   await Promise.all(bookPages().map(imageSettled));
@@ -707,6 +735,7 @@ const VOLUME_STEP = 0.05;
 // ↑ ↓ を押し続けている間は保存をまとめる（押すたびに settings.json を書かない）
 const VOLUME_SAVE_DELAY_MS = 500;
 let volumeSaveTimer = null;
+const volumeSaveKeys = new Set();
 // シークバーをつかんでいる間は、再生位置でつまみを動かさない
 let seekDragging = false;
 // 自動再生の制限で音を消したことは 1 回だけ知らせる（動画ごとに出すとうるさい）
@@ -807,8 +836,13 @@ function changeVolumeBy(delta) {
   settings[volumeKey()] = Math.round(volume * 100);
   // 音量を上げたら消音も解く（再生バーの音量つまみと同じ扱い）
   if (delta > 0 && video.muted) video.muted = false;
+  // 待っている間に動画と音楽を行き来しても、変えた方の音量をどちらも保存する
+  volumeSaveKeys.add(volumeKey());
   clearTimeout(volumeSaveTimer);
-  volumeSaveTimer = setTimeout(saveSettings, VOLUME_SAVE_DELAY_MS);
+  volumeSaveTimer = setTimeout(() => {
+    saveSettings(...volumeSaveKeys);
+    volumeSaveKeys.clear();
+  }, VOLUME_SAVE_DELAY_MS);
   // 音量つまみで結果が見えるよう、再生操作を出す
   showChrome();
 }
@@ -1040,7 +1074,7 @@ vbVolume.addEventListener("input", () => {
 // 保存はつまみを離したときだけ（ドラッグ中に何度も書き込まない）
 vbVolume.addEventListener("change", () => {
   settings[volumeKey()] = Number(vbVolume.value);
-  saveSettings();
+  saveSettings(volumeKey());
   vbVolume.blur();
 });
 
@@ -1261,14 +1295,16 @@ function toggleBookMode() {
 function setBookBinding(binding) {
   if (settings.bookBinding === binding) return;
   settings.bookBinding = binding;
-  saveSettings();
+  saveSettings("bookBinding");
   if (showingBook) show();
 }
 
 async function rescan() {
   if (index < 0 || !images.length) return;
   if (archivePath) {
-    // 書庫の中身が差し替わっている可能性があるのでキャッシュを捨てて開き直す
+    // 書庫の中身が差し替わっている可能性があるのでキャッシュを捨てて開き直す。
+    // 読み込み途中の表示は取りやめる（取りやめた読み込みのエラーを出さない）
+    showToken++;
     clearBlobCache();
     await openPath(archivePath, { preferredIndex: index });
   } else if (folderPath) {
@@ -1413,7 +1449,7 @@ async function deleteCurrent() {
     if (!answer.ok) return;
     if (answer.skip) {
       settings.confirmDelete = false;
-      saveSettings();
+      saveSettings("confirmDelete");
     }
     // 確認している間に別の画像へ移っていたら、そのときの 1 枚を消さない
     if (images[index] !== path) return;
@@ -1430,13 +1466,24 @@ async function deleteCurrent() {
     return;
   }
   // 監視の合図を待たずにその場で一覧から外す
-  // （ネットワークドライブなど監視が効かない場所でも確実に反映する）
-  images.splice(index, 1);
-  if (!images.length) {
-    clearView();
-  } else {
-    if (index >= images.length) index = images.length - 1;
-    await show();
+  // （ネットワークドライブなど監視が効かない場所でも確実に反映する）。
+  // 送っている間に監視の読み直しで一覧が作り直されていることがあるので、位置は取り直す
+  // （元の位置のまま外すと、別のファイルを一覧から外してしまう）。
+  // 見つからなければ、読み直しで既に外れていて表示も移っている
+  const at = images.indexOf(path);
+  if (at >= 0) {
+    const wasShown = at === index;
+    images.splice(at, 1);
+    if (!images.length) {
+      clearView();
+    } else if (wasShown) {
+      if (index >= images.length) index = images.length - 1;
+      await show();
+    } else {
+      // 表示中のものは変えない（前にあったものが消えたら位置を 1 つ詰める）
+      if (at < index) index--;
+      updateChrome();
+    }
   }
   showToast("ゴミ箱へ移動しました", "notice");
 }
@@ -2028,11 +2075,15 @@ function applySettings() {
   syncWatcher();
 }
 
-// 本体ウィンドウ側から設定を書き換える（削除確認の「今後確認しない」）。
+// 本体ウィンドウ側から設定を書き換える（削除確認の「今後確認しない」・音量・本の綴じ方）。
+// settings.json には keys の項目だけを書く（Windows ではファイルごとに別のプロセスで、
+// 全体を書き戻すとほかのプロセスで変えた項目を古い値へ戻してしまう）。
 // 設定ウィンドウが開いていればそちらの表示も合わせる
-async function saveSettings() {
+async function saveSettings(...keys) {
+  if (!keys.length) return;
+  const changes = Object.fromEntries(keys.map((key) => [key, settings[key]]));
   try {
-    await invoke("save_settings", { settings });
+    await invoke("save_settings", { settings: changes });
     await emit("settings-changed", settings);
   } catch (e) {
     showError(e);

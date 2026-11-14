@@ -53,9 +53,11 @@ function setStatus(text, isError) {
   if (!isError) setStatus.timer = setTimeout(() => (statusEl.textContent = ""), 1200);
 }
 
-async function persist() {
+// settings.json には changes の項目だけを書く（Windows ではファイルごとに別のプロセスで、
+// 全体を書き戻すとほかのプロセスで変えた項目を古い値へ戻してしまう）
+async function persist(changes) {
   try {
-    await invoke("save_settings", { settings });
+    await invoke("save_settings", { settings: changes });
     setStatus("保存しました");
   } catch (e) {
     setStatus(String(e), true);
@@ -67,7 +69,7 @@ function update(key, value) {
   settings[key] = value;
   applyTheme(settings);
   emit("settings-changed", settings).catch(() => {});
-  persist();
+  persist({ [key]: value });
 }
 
 // type: "action" の行から呼ぶ処理。settings-defs.js は本体ウィンドウからも読む
@@ -341,7 +343,9 @@ document.getElementById("s-reset").addEventListener("click", () => {
   settings = { ...SETTINGS_DEFAULTS, ...kept };
   render();
   emit("settings-changed", settings).catch(() => {});
-  persist();
+  // 書くのは設定ウィンドウに出している項目だけ（音量などは、ほかのプロセスで変えた値を残す）
+  const shown = Object.keys(SETTINGS_DEFAULTS).filter((k) => !(k in HIDDEN_DEFAULTS));
+  persist(Object.fromEntries(shown.map((k) => [k, settings[k]])));
 });
 
 build();

@@ -936,6 +936,24 @@ mod tests {
     }
 
     #[test]
+    fn merge_settings_overwrites_only_the_given_keys() {
+        use serde_json::json;
+        // ほかのプロセスで変えた項目（backgroundOpacity）は残し、渡した項目だけを書き換える
+        let current = json!({ "audioVolume": 40, "backgroundOpacity": 70, "old": true });
+        let merged = merge_settings(Some(current), json!({ "audioVolume": 55 }));
+        assert_eq!(
+            merged,
+            json!({ "audioVolume": 55, "backgroundOpacity": 70, "old": true })
+        );
+        // 保存済みが無い・壊れているときは渡した項目だけ
+        assert_eq!(merge_settings(None, json!({ "a": 1 })), json!({ "a": 1 }));
+        assert_eq!(
+            merge_settings(Some(json!([1, 2])), json!({ "a": 1 })),
+            json!({ "a": 1 })
+        );
+    }
+
+    #[test]
     fn natural_sort_orders_numbers_numerically() {
         let mut v = vec!["img10.png", "img2.png", "img1.png", "IMG3.png"];
         v.sort_by(|a, b| natural_cmp(a, b));
@@ -1555,21 +1573,37 @@ fn read_archive_entry(path: &Path, entry: &str, cache: &ArchiveCache) -> Result<
 }
 
 /// `dir` の下の画像・動画・音楽を `depth` 層目まで集める（`dir` の直下が 1 層目）。
-/// 読めないサブフォルダは飛ばす
+/// 読めないサブフォルダは飛ばす。
+/// ファイルかフォルダかは read_dir が一緒に返す種類で見て、1 件ずつ OS に問い合わせない
+/// （ファイルの多いフォルダやネットワークドライブで遅くなるため）
 fn collect_media(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)?.filter_map(|e| e.ok()) {
         let path = entry.path();
-        if path.is_file() {
+        let Some(file_type) = entry_file_type(&entry, &path) else {
+            continue;
+        };
+        if file_type.is_file() {
             if is_media(&path) {
                 out.push(path);
             }
-        } else if depth > 1 && path.is_dir() {
+        } else if depth > 1 && file_type.is_dir() {
             if let Err(e) = collect_media(&path, depth - 1, out) {
                 log::warn!("フォルダを読めません ({}): {e}", path.display());
             }
         }
     }
     Ok(())
+}
+
+/// read_dir の 1 件の種類。シンボリックリンク（Windows のジャンクションも含む）だけは
+/// 指す先を問い合わせて、その種類を返す。取れなければ None
+fn entry_file_type(entry: &fs::DirEntry, path: &Path) -> Option<fs::FileType> {
+    let file_type = entry.file_type().ok()?;
+    if file_type.is_symlink() {
+        fs::metadata(path).ok().map(|m| m.file_type())
+    } else {
+        Some(file_type)
+    }
 }
 
 /// 並べ替えに使う、`root` からの相対パス（区切りは書庫と同じ "/" にそろえる）
@@ -1649,7 +1683,9 @@ fn list_dir_images(
 /// - フォルダ・書庫: MAX_DEPTH 層目までのうち、並べたとき先頭に来るファイルと同じ種類だけ
 ///
 /// `kind` / `depth` は読み直しのときに、最初に開いたときと同じ条件で並べるために渡す
-#[tauri::command]
+/// 重い処理（フォルダ・書庫・タグの読み込み）なので async にして、メインスレッド
+/// （ウィンドウの描画・移動・入力）を止めないようにする
+#[tauri::command(async)]
 fn list_images(
     window: WebviewWindow,
     path: String,
@@ -1731,7 +1767,9 @@ fn prepare_startup_listing(app: &AppHandle, label: &str, path: &str) -> Option<W
 }
 
 /// 書庫内の画像 1 枚をバイト列のまま返す（IPC の raw payload で転送）
-#[tauri::command]
+/// 重い処理（フォルダ・書庫・タグの読み込み）なので async にして、メインスレッド
+/// （ウィンドウの描画・移動・入力）を止めないようにする
+#[tauri::command(async)]
 fn read_archive_image(
     archive: String,
     entry: String,
@@ -1787,7 +1825,9 @@ fn non_empty(text: Option<std::borrow::Cow<'_, str>>) -> Option<String> {
 
 /// 音楽ファイルの曲名・アーティスト・アルバム名を返す。
 /// タグが無い・読めないときもエラーにはせず、空の情報を返す（再生はできるため）
-#[tauri::command]
+/// 重い処理（フォルダ・書庫・タグの読み込み）なので async にして、メインスレッド
+/// （ウィンドウの描画・移動・入力）を止めないようにする
+#[tauri::command(async)]
 fn audio_info(path: String) -> Result<AudioInfo, String> {
     use lofty::prelude::*;
     let target = PathBuf::from(&path);
@@ -1829,16 +1869,18 @@ fn embedded_artwork(path: &Path) -> Option<Vec<u8>> {
 /// 候補が複数あれば COVER_STEMS の順に選ぶ
 fn folder_artwork(path: &Path) -> Option<Vec<u8>> {
     let dir = path.parent()?;
+    // 名前で絞ってから種類を問い合わせる（フォルダの全ファイルに問い合わせない）
     let mut candidates: Vec<(usize, PathBuf)> = fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.is_file() && is_image(p) && !has_ext(p, &["svg"]))
+        .filter(|p| is_image(p) && !has_ext(p, &["svg"]))
         .filter_map(|p| {
             let stem = p.file_stem()?.to_str()?.to_ascii_lowercase();
             let rank = COVER_STEMS.iter().position(|s| *s == stem)?;
             Some((rank, p))
         })
+        .filter(|(_, p)| p.is_file())
         .collect();
     candidates.sort();
     candidates.into_iter().find_map(|(_, p)| {
@@ -1853,7 +1895,9 @@ fn folder_artwork(path: &Path) -> Option<Vec<u8>> {
 /// 音楽ファイルのアートワークをバイト列のまま返す（IPC の raw payload で転送）。
 /// 埋め込みが無ければ同じフォルダのジャケット画像を探し、それも無ければ空を返す
 /// （そのときはフロントエンドが既定の絵を出す）
-#[tauri::command]
+/// 重い処理（フォルダ・書庫・タグの読み込み）なので async にして、メインスレッド
+/// （ウィンドウの描画・移動・入力）を止めないようにする
+#[tauri::command(async)]
 fn audio_artwork(path: String) -> Result<Response, String> {
     let target = PathBuf::from(&path);
     if !target.is_file() || !is_audio(&target) {
@@ -2161,7 +2205,7 @@ fn write_window_state(app: &AppHandle, state: &WindowState) {
         return;
     };
     let _ = fs::create_dir_all(dir);
-    let tmp = path.with_extension("json.tmp");
+    let tmp = temp_path(&path);
     if fs::write(&tmp, text).is_ok() && fs::rename(&tmp, &path).is_err() {
         let _ = fs::remove_file(&tmp);
     }
@@ -3111,18 +3155,50 @@ fn load_settings(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
     }
 }
 
-/// 設定を保存する（書き込み途中で壊れないよう一時ファイル経由で置き換える）
+/// 設定を保存する。settings に入っている項目だけを、いまの settings.json に上書きする
+/// （書き込み途中で壊れないよう一時ファイル経由で置き換える）。
+/// Windows ではファイルを開くたびに別のプロセスになり、それぞれが起動時に読んだ設定を持っている。
+/// 全体を書き戻すと、ほかのプロセスで変えた項目を古い値へ戻してしまうので、変えた項目だけを渡す
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: serde_json::Value) -> Result<(), String> {
     let path = settings_file(&app)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("設定フォルダを作れません: {e}"))?;
     }
+    let current = fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok());
+    let merged = merge_settings(current, settings);
     let text =
-        serde_json::to_string_pretty(&settings).map_err(|e| format!("設定を書けません: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
+        serde_json::to_string_pretty(&merged).map_err(|e| format!("設定を書けません: {e}"))?;
+    let tmp = temp_path(&path);
     fs::write(&tmp, text).map_err(|e| format!("設定を書けません: {e}"))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("設定を保存できません: {e}"))
+    fs::rename(&tmp, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("設定を保存できません: {e}")
+    })
+}
+
+/// 保存済みの設定 current に、変えた項目 changes を上書きする（最上位の項目ごと）。
+/// current が無い・壊れている（オブジェクトでない）ときは changes だけにする
+fn merge_settings(
+    current: Option<serde_json::Value>,
+    changes: serde_json::Value,
+) -> serde_json::Value {
+    let serde_json::Value::Object(changes) = changes else {
+        return changes;
+    };
+    let mut merged = match current {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    merged.extend(changes);
+    serde_json::Value::Object(merged)
+}
+
+/// 置き換え用の一時ファイル。別のプロセスが同時に書いても取り合わないよう、プロセス番号を付ける
+fn temp_path(path: &Path) -> PathBuf {
+    path.with_extension(format!("json.{}.tmp", std::process::id()))
 }
 
 /// 設定ウィンドウを作り直す（tauri.conf.json の定義が失われた場合の保険）。

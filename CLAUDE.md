@@ -209,6 +209,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   and a failed `Builder::build()` shows an OS message box instead of panicking.
 - Archives: `MAX_ENTRY_BYTES` (512 MB) guards against zip bombs, and the open archive handle is
   cached with an `(mtime, size)` stamp — don't re-open it naively.
+- `list_images`, `read_archive_image`, `audio_info` and `audio_artwork` are `#[tauri::command(async)]`:
+  a plain sync command runs on the main thread and blocks window moves / painting while it reads disk.
+  Keep window-touching commands sync. `collect_media` takes file / dir from `DirEntry::file_type()`
+  (`entry_file_type`, follows symlinks only) — don't go back to `path.is_file()` per entry.
+  In `main.js`, `archiveBlobUrl` shares an in-flight read per entry (`blobLoading`) and drops results
+  from before the last `clearBlobCache()` (`blobGeneration`).
 - Folder watching (`watch_folder` / `FolderWatcher`) uses `notify`'s OS-native backends, so it
   costs nothing while idle — do **not** replace it with polling. Exactly one folder is watched at a
   time, to the list's `depth` (non-recursive for 1, recursive for more, with events deeper than
@@ -220,7 +226,15 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   half-copied file from being listed, so don't shorten it without a reason.
 - Deleting goes through `trash`, never `fs::remove_file` — "削除" in this app always means the
   OS trash. `main.js` splices the entry out itself instead of waiting for the watcher, because
-  watching fails on some network drives.
+  watching fails on some network drives. It looks the path up again after `delete_image` returns
+  (`images.indexOf(path)`): a watcher re-list may have rebuilt `images` meanwhile.
+- `save_settings` **merges**: it writes only the top-level keys it is given over the file on disk
+  (`merge_settings`), because on Windows every file launch is its own process holding the settings it
+  read at startup, and writing the whole object back reverted keys another process had changed. So
+  callers pass only what changed — `saveSettings(...keys)` in `main.js`, `persist({ key: value })` in
+  `settings.js` ("Reset to defaults" sends every non-`HIDDEN_DEFAULTS` key). Other running processes still
+  see a change only after a restart. `settings.json` / `window.json` are replaced via a per-process temp
+  file (`temp_path`).
 - `main.js` can write `settings.json` too (the "今後確認しない" checkbox → `saveSettings()`), so
   `settings.js` listens for `settings-changed` and re-renders — but only when the settings window
   is unfocused, otherwise its own emit echoes back and fights a slider being dragged.
