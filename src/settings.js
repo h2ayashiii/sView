@@ -64,10 +64,15 @@ async function persist(changes) {
   }
 }
 
+// 設定ウィンドウは「背景の不透明度」によらず常に不透明（100%）で表示する
+function applySettingsTheme() {
+  applyTheme({ ...settings, backgroundOpacity: 100 });
+}
+
 // 本体ウィンドウは この通知を受けて即座に見た目・挙動を更新する
 function update(key, value) {
   settings[key] = value;
-  applyTheme(settings);
+  applySettingsTheme();
   emit("settings-changed", settings).catch(() => {});
   persist({ [key]: value });
 }
@@ -325,7 +330,7 @@ function build() {
 
 function render() {
   for (const [key, apply] of controls) apply(settings[key]);
-  applyTheme(settings);
+  applySettingsTheme();
 }
 
 // 本体ウィンドウ側でも設定は変わる（削除確認の「今後確認しない」）。

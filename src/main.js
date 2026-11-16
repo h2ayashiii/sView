@@ -2063,9 +2063,28 @@ function hexToRgba(hex, alpha) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
+// 「すりガラス」は OS のウィンドウ効果（Windows: Acrylic、macOS: ぼかし）で背後をぼかす。
+// 同じ値で何度も呼ばないよう、最後に適用した値を覚えておく
+let appliedBackgroundEffect = null;
+function applyBackgroundEffect() {
+  const effect = settings.backgroundEffect === "frosted" ? "frosted" : "plain";
+  if (effect === appliedBackgroundEffect) return;
+  appliedBackgroundEffect = effect;
+  const request =
+    effect === "frosted"
+      ? appWindow.setEffects({
+          effects: [IS_MAC ? "hudWindow" : "acrylic"],
+          state: "followsWindowActiveState",
+          radius: 8,
+        })
+      : appWindow.clearEffects();
+  request.catch(() => {});
+}
+
 function applySettings() {
   app.style.background = hexToRgba(settings.backgroundColor, settings.backgroundOpacity / 100);
   applyCorners();
+  applyBackgroundEffect();
   app.classList.toggle("hide-filename", !settings.showFilename);
   img.style.imageRendering = settings.imageRendering;
   bookEl.style.imageRendering = settings.imageRendering;

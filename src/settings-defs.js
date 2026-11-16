@@ -65,6 +65,19 @@ const SETTINGS_SECTIONS = [
         default: 97,
       },
       {
+        key: "backgroundEffect",
+        label: "透過の方式",
+        hint:
+          "「すりガラス」は透けて見える背後をぼかします（OS の効果を使います。" +
+          "透け具合は「背景の不透明度」で調整します）",
+        type: "select",
+        options: [
+          ["plain", "そのまま透かす"],
+          ["frosted", "すりガラス"],
+        ],
+        default: "plain",
+      },
+      {
         key: "showFilename",
         label: "ファイル名を表示する",
         hint: "マウスを動かしたときに左下へ出るファイル名と、右下の枚数表示です",
