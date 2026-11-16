@@ -2063,21 +2063,23 @@ function hexToRgba(hex, alpha) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
-// 「すりガラス」は OS のウィンドウ効果（Windows: Acrylic、macOS: ぼかし）で背後をぼかす。
+// 「すりガラス」は OS のウィンドウ効果（Windows: Blur、macOS: ぼかし）で背後をぼかす。
+// Windows の Acrylic は OS が濃い色を重ねて透け具合を変えられないため、色を重ねない Blur を使う。
+// 透け具合は #app の背景（背景の不透明度）だけで決まり、「そのまま透かす」と同じになる。
 // 同じ値で何度も呼ばないよう、最後に適用した値を覚えておく
-let appliedBackgroundEffect = null;
+let appliedFrosted = null;
 function applyBackgroundEffect() {
-  const effect = settings.backgroundEffect === "frosted" ? "frosted" : "plain";
-  if (effect === appliedBackgroundEffect) return;
-  appliedBackgroundEffect = effect;
-  const request =
-    effect === "frosted"
-      ? appWindow.setEffects({
-          effects: [IS_MAC ? "hudWindow" : "acrylic"],
-          state: "followsWindowActiveState",
-          radius: 8,
-        })
-      : appWindow.clearEffects();
+  const frosted = !!settings.frostedGlass;
+  if (frosted === appliedFrosted) return;
+  appliedFrosted = frosted;
+  const request = frosted
+    ? appWindow.setEffects({
+        effects: [IS_MAC ? "hudWindow" : "blur"],
+        state: "followsWindowActiveState",
+        radius: 8,
+        color: [0, 0, 0, 0],
+      })
+    : appWindow.clearEffects();
   request.catch(() => {});
 }
 
