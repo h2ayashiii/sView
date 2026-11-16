@@ -65,8 +65,8 @@ const SETTINGS_SECTIONS = [
         default: 97,
       },
       {
-        key: "frostedGlass",
-        label: "すりガラスにする",
+        key: "blurBehind",
+        label: "背後をぼかす",
         hint:
           "透けて見える背後をぼかします（OS の効果を使います。" +
           "透け具合は「背景の不透明度」で調整します）",
