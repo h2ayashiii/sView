@@ -2066,6 +2066,7 @@ function hexToRgba(hex, alpha) {
 // 「すりガラス」は OS のウィンドウ効果（Windows: Blur、macOS: ぼかし）で背後をぼかす。
 // Windows の Acrylic は OS が濃い色を重ねて透け具合を変えられないため、色を重ねない Blur を使う。
 // 透け具合は #app の背景（背景の不透明度）だけで決まり、「そのまま透かす」と同じになる。
+// ウィンドウがアクティブかどうかで見た目を変えないよう、常に active の状態で描かせる（macOS）。
 // 同じ値で何度も呼ばないよう、最後に適用した値を覚えておく
 let appliedFrosted = null;
 function applyBackgroundEffect() {
@@ -2075,7 +2076,7 @@ function applyBackgroundEffect() {
   const request = frosted
     ? appWindow.setEffects({
         effects: [IS_MAC ? "hudWindow" : "blur"],
-        state: "followsWindowActiveState",
+        state: "active",
         radius: 8,
         color: [0, 0, 0, 0],
       })
