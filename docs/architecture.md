@@ -26,6 +26,7 @@ sView/
 │   ├── src/main.rs          # sview_lib::run() を呼ぶだけ
 │   ├── src/lib.rs           # バックエンドの処理すべて（下記）とテスト
 │   ├── tauri.conf.json      # ウィンドウ設定（フレームレス等）・CSP・バンドル設定・関連付け
+│   ├── tauri.windows.conf.json # Windows だけの上書き（mkv を含む関連付け）
 │   ├── capabilities/        # ウィンドウごとにフロントエンドへ許可する API の定義
 │   ├── installer-hooks.nsh  # Windows インストーラ（NSIS）のフック。旧ユーザー単位インストールの後始末
 │   └── icons/               # アプリのアイコン

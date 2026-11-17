@@ -57,6 +57,7 @@ let settingsReady = false;
 // macOS だけ閉じるボタンを左上に置く（OS の慣習に合わせる）
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 app.classList.toggle("mac", IS_MAC);
+const IS_WINDOWS = /Win/.test(navigator.platform || navigator.userAgent);
 
 const IMAGE_EXT_FILTER = [
   "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg",
@@ -65,6 +66,12 @@ const IMAGE_EXT_FILTER = [
 // 動画は OS の WebView が再生できるものだけ（コーデックは同梱しない）。
 // 書庫の中の動画は一覧に出さない
 const VIDEO_EXT_FILTER = ["mp4", "m4v", "webm", "mov"];
+// Windows だけで扱う動画（WebView2 は MKV を再生できるが、macOS の WKWebView はできない）
+const WINDOWS_VIDEO_EXT_FILTER = ["mkv"];
+// この OS で開ける動画の拡張子
+const OPENABLE_VIDEO_EXTS = IS_WINDOWS
+  ? [...VIDEO_EXT_FILTER, ...WINDOWS_VIDEO_EXT_FILTER]
+  : VIDEO_EXT_FILTER;
 // 音楽も同じく OS の WebView 任せ。書庫の中の音楽は一覧に出さない
 const AUDIO_EXT_FILTER = ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus"];
 const ARCHIVE_EXT_FILTER = ["zip", "cbz"];
@@ -128,7 +135,7 @@ function extOf(name) {
 }
 
 function isVideoPath(name) {
-  return VIDEO_EXT_FILTER.includes(extOf(name));
+  return OPENABLE_VIDEO_EXTS.includes(extOf(name));
 }
 
 function isAudioPath(name) {
@@ -1496,11 +1503,11 @@ async function openDialog() {
         {
           name: "画像・動画・音楽・圧縮フォルダ",
           extensions: [
-            ...IMAGE_EXT_FILTER, ...VIDEO_EXT_FILTER, ...AUDIO_EXT_FILTER, ...ARCHIVE_EXT_FILTER,
+            ...IMAGE_EXT_FILTER, ...OPENABLE_VIDEO_EXTS, ...AUDIO_EXT_FILTER, ...ARCHIVE_EXT_FILTER,
           ],
         },
         { name: "画像", extensions: IMAGE_EXT_FILTER },
-        { name: "動画", extensions: VIDEO_EXT_FILTER },
+        { name: "動画", extensions: OPENABLE_VIDEO_EXTS },
         { name: "音楽", extensions: AUDIO_EXT_FILTER },
         { name: "圧縮フォルダ (zip / cbz)", extensions: ARCHIVE_EXT_FILTER },
       ],
@@ -2170,7 +2177,7 @@ const SETTINGS_ACCEL = IS_MAC ? "\u2318," : "Ctrl+,";
 
 const REVEAL_LABEL = IS_MAC
   ? "Finder で表示"
-  : /Win/.test(navigator.platform || navigator.userAgent)
+  : IS_WINDOWS
     ? "エクスプローラーで表示"
     : "ファイルマネージャーで表示";
 

@@ -19,10 +19,22 @@ const IMAGE_EXTS: &[&str] = &[
     "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp",
 ];
 
-/// 対応する動画拡張子（小文字で比較）。
+/// 対応する動画拡張子（小文字で比較。全 OS 共通）。
 /// デコードは OS の WebView に任せる（コーデックは同梱しない）ので、
 /// どの OS の WebView でもおおむね再生できるコンテナだけに絞っている
 const VIDEO_EXTS: &[&str] = &["m4v", "mov", "mp4", "webm"];
+
+/// Windows だけで扱う動画拡張子（小文字で比較）。
+/// WebView2（Chromium）は MKV をそのまま再生できるが、macOS の WKWebView はできないので、
+/// macOS では一覧・ファイル選択・関連付けのどれにも出さない
+const WINDOWS_VIDEO_EXTS: &[&str] = &["mkv"];
+
+/// この OS で VIDEO_EXTS に加えて扱う動画拡張子
+const PLATFORM_VIDEO_EXTS: &[&str] = if cfg!(target_os = "windows") {
+    WINDOWS_VIDEO_EXTS
+} else {
+    &[]
+};
 
 /// 対応する音楽拡張子（小文字で比較）。
 /// 動画と同じく再生は OS の WebView に任せる（コーデックは同梱しない）
@@ -274,7 +286,7 @@ fn is_image(path: &Path) -> bool {
 }
 
 fn is_video(path: &Path) -> bool {
-    has_ext(path, VIDEO_EXTS)
+    has_ext(path, VIDEO_EXTS) || has_ext(path, PLATFORM_VIDEO_EXTS)
 }
 
 fn is_audio(path: &Path) -> bool {
@@ -980,6 +992,11 @@ mod tests {
         assert!(is_video(Path::new("/x/clip.MP4")));
         assert!(is_video(Path::new("/x/clip.webm")));
         assert!(!is_video(Path::new("/x/clip.avi")));
+        // MKV は Windows でだけ動画として扱う
+        assert_eq!(
+            is_video(Path::new("/x/clip.MKV")),
+            cfg!(target_os = "windows")
+        );
         assert!(!is_video(Path::new("/x/photo.png")));
         assert!(is_media(Path::new("/x/clip.mov")));
         assert!(is_media(Path::new("/x/photo.png")));
@@ -1302,22 +1319,28 @@ mod tests {
         assert!(!text.contains('\n'));
     }
 
-    /// 対応拡張子の一覧は lib.rs / main.js / tauri.conf.json の 3 箇所にあり、
-    /// 手で揃えるしかない。ずれたらここで落として気付けるようにする
+    /// 対応拡張子の一覧は lib.rs / main.js / tauri.conf.json（Windows だけの分は
+    /// tauri.windows.conf.json）にあり、手で揃えるしかない。ずれたらここで落として気付けるようにする
     #[test]
     fn supported_extensions_stay_in_sync() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("リポジトリのルートが取れません");
         let main_js = fs::read_to_string(root.join("src/main.js")).expect("main.js を読めません");
-        let conf: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(root.join("src-tauri/tauri.conf.json"))
-                .expect("tauri.conf.json を読めません"),
-        )
-        .expect("tauri.conf.json が JSON として壊れています");
+        let read_conf = |name: &str| -> serde_json::Value {
+            serde_json::from_str(
+                &fs::read_to_string(root.join("src-tauri").join(name))
+                    .unwrap_or_else(|_| panic!("{name} を読めません")),
+            )
+            .unwrap_or_else(|_| panic!("{name} が JSON として壊れています"))
+        };
+        let conf = read_conf("tauri.conf.json");
+        // Windows でのビルドでは tauri.conf.json に JSON Merge Patch で重ねられる。
+        // 配列は丸ごと置き換わるので、fileAssociations は全種類を書いてある
+        let win_conf = read_conf("tauri.windows.conf.json");
 
-        // tauri.conf.json の fileAssociations から、指定した name の ext を取り出す
-        let association = |name: &str| -> Vec<String> {
+        // fileAssociations から、指定した name の ext を取り出す
+        let association_in = |conf: &serde_json::Value, name: &str| -> Vec<String> {
             conf["bundle"]["fileAssociations"]
                 .as_array()
                 .expect("fileAssociations がありません")
@@ -1330,6 +1353,7 @@ mod tests {
                 .map(|e| e.as_str().expect("ext が文字列ではありません").to_string())
                 .collect()
         };
+        let association = |name: &str| association_in(&conf, name);
 
         let images = sorted(IMAGE_EXTS.to_vec());
         assert_eq!(
@@ -1358,6 +1382,35 @@ mod tests {
             sorted(association("Video")),
             videos,
             "tauri.conf.json の fileAssociations が VIDEO_EXTS とずれています"
+        );
+        assert_eq!(
+            sorted(quoted_items(
+                &main_js,
+                "const WINDOWS_VIDEO_EXT_FILTER = [",
+                ']'
+            )),
+            sorted(WINDOWS_VIDEO_EXTS.to_vec()),
+            "main.js の WINDOWS_VIDEO_EXT_FILTER が WINDOWS_VIDEO_EXTS とずれています"
+        );
+        assert_eq!(
+            sorted(association_in(&win_conf, "Video")),
+            sorted([VIDEO_EXTS, WINDOWS_VIDEO_EXTS].concat()),
+            "tauri.windows.conf.json の動画の fileAssociations が VIDEO_EXTS + WINDOWS_VIDEO_EXTS とずれています"
+        );
+        // 動画以外は tauri.conf.json と同じにする（Windows だけ関連付けがずれないように）
+        for name in ["Image", "Audio"] {
+            assert_eq!(
+                association_in(&win_conf, name),
+                association(name),
+                "tauri.windows.conf.json の {name} の fileAssociations が tauri.conf.json とずれています"
+            );
+        }
+        assert_eq!(
+            win_conf["bundle"]["fileAssociations"]
+                .as_array()
+                .map(|a| a.len()),
+            Some(3),
+            "tauri.windows.conf.json の fileAssociations は画像・動画・音楽の 3 件だけにします"
         );
         let audios = sorted(AUDIO_EXTS.to_vec());
         assert_eq!(
@@ -3408,10 +3461,10 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
 //   アプリ」として登録し、最後の選択は Windows の「既定のアプリ」画面で本人にしてもらう
 // - macOS は LaunchServices の API で既定のアプリを直接設定できる
 
-/// 関連付けの対象にできる拡張子（画像・動画・音楽すべて）。
+/// 関連付けの対象にできる拡張子（画像・動画・音楽すべて。この OS だけの動画拡張子も含む）。
 /// 書庫（zip / cbz）はここでは扱わない
 fn associable_exts() -> Vec<&'static str> {
-    [IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS].concat()
+    [IMAGE_EXTS, VIDEO_EXTS, PLATFORM_VIDEO_EXTS, AUDIO_EXTS].concat()
 }
 
 #[derive(serde::Serialize)]

@@ -10,7 +10,8 @@ paths:
 
 - Videos play in a `<video>` element with whatever decoder the OS WebView has (WebView2 / WKWebView). **No codec is bundled** — that keeps codec patent licensing out of the
   app — so `VIDEO_EXTS` is limited to containers most WebViews handle (`mp4` / `m4v` / `webm` /
-  `mov`); anything the WebView can't decode just shows an error. Videos are listed only from
+  `mov`; plus `mkv` on Windows only via `WINDOWS_VIDEO_EXTS` / `PLATFORM_VIDEO_EXTS` — WKWebView
+  can't play MKV, so macOS never lists, offers or associates it); anything the WebView can't decode just shows an error. Videos are listed only from
   folders / single files (`is_media`), never from archives (`read_archive_entry` loads a whole entry into memory).
   They load through the asset protocol, so the CSP needs `media-src` alongside `img-src`.
   `unloadVideo()` (pause + drop `src` + `load()`) runs before every `show()` and before
