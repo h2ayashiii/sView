@@ -24,6 +24,7 @@ const vbVolume = document.getElementById("vb-volume");
 const vbTime = document.getElementById("vb-time");
 const vbDuration = document.getElementById("vb-duration");
 const vbTip = document.getElementById("vb-tip");
+const vbAudioTrack = document.getElementById("vb-audio-track");
 const ibPrev = document.getElementById("ib-prev");
 const ibNext = document.getElementById("ib-next");
 const ibSeek = document.getElementById("ib-seek");
@@ -911,6 +912,69 @@ video.addEventListener("error", () => {
       : `${kind}を読み込めませんでした: ${name}`
   );
 });
+
+// ---- 音声の切り替え（副音声） ----
+// MKV などに音声が 2 つ以上入っているとき、再生操作カードに切り替えのボックスを出す。
+// audioTracks は WebView2 では実験的機能で、起動引数（lib.rs の WEBVIEW2_BROWSER_ARGS）で
+// 有効にしている。使えない WebView では audioTracks が無いので、ボックスは出さない
+function audioTrackList() {
+  return showingVideo ? video.audioTracks ?? null : null;
+}
+
+// トラックの表示名（番号 + 名前・言語のうちあるもの。どちらも無ければ「音声 n」）
+function audioTrackLabel(track, i) {
+  const { label, language } = track;
+  const name = label && language && !label.includes(language)
+    ? `${label} (${language})`
+    : label || language;
+  return name ? `${i + 1}: ${name}` : `音声 ${i + 1}`;
+}
+
+function syncAudioTracks() {
+  const tracks = audioTrackList();
+  const count = tracks?.length ?? 0;
+  if (count < 2) {
+    vbAudioTrack.hidden = true;
+    vbAudioTrack.replaceChildren();
+    return;
+  }
+  const options = [];
+  let selected = 0;
+  for (let i = 0; i < count; i++) {
+    const option = document.createElement("option");
+    option.value = String(i);
+    option.textContent = audioTrackLabel(tracks[i], i);
+    options.push(option);
+    if (tracks[i].enabled) selected = i;
+  }
+  vbAudioTrack.replaceChildren(...options);
+  vbAudioTrack.value = String(selected);
+  vbAudioTrack.title = `音声: ${options[selected].textContent}`;
+  vbAudioTrack.hidden = false;
+}
+
+// 選んだ 1 つだけを有効にする（複数を有効にすると重ねて鳴る WebView がある）
+function selectAudioTrack(n) {
+  const tracks = audioTrackList();
+  if (!tracks || n < 0 || n >= tracks.length) return;
+  for (let i = 0; i < tracks.length; i++) tracks[i].enabled = i === n;
+}
+
+vbAudioTrack.addEventListener("change", () => {
+  selectAudioTrack(Number(vbAudioTrack.value));
+  syncAudioTracks();
+  // フォーカスを残すと ← → ↑ ↓ がボックスの選択を変えてしまう
+  vbAudioTrack.blur();
+});
+
+for (const type of ["loadedmetadata", "emptied"]) {
+  video.addEventListener(type, syncAudioTracks);
+}
+if (video.audioTracks) {
+  for (const type of ["addtrack", "removetrack", "change"]) {
+    video.audioTracks.addEventListener(type, syncAudioTracks);
+  }
+}
 
 // ---- 音楽 ----
 // 再生は動画と同じ #video で行い（映像は出さない）、代わりにアートワークと曲名を出す。

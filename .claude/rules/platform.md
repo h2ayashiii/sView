@@ -15,7 +15,11 @@ paths:
   (`C:\Program Files\sView\sview.exe.WebView2`) and the app fails to start. It is pointed at
   `%LOCALAPPDATA%\sview` (`webview_data_dir()`). macOS (WKWebView) cannot set it — the OS derives
   `~/Library/WebKit/<bundle id>` and `~/Library/Caches/<bundle id>` from the identifier — so it
-  returns `None` there.
+  returns `None` there. All window builders go through `webview_options()`, which sets that folder and,
+  on Windows, `additional_browser_args(WEBVIEW2_BROWSER_ARGS)`: wry's default
+  `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection` (passing args replaces it, so it is
+  copied) plus `--enable-blink-features=AudioVideoTracks` for audio-track switching. WebView2 instances on
+  the same data folder must share identical args, so never give one window different args.
 - `tauri-plugin-log` is registered from `setup()` via `app.handle().plugin(...)`, not on the
   `Builder`, because the output folder needs an `AppHandle` (`log_dir()` → `config_dir()/logs`).
   A panic hook installed at the top of `run()` logs the panic and a backtrace before aborting,

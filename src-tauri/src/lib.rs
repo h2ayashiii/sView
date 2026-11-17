@@ -2125,18 +2125,41 @@ fn webview_data_dir(_app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+/// WebView2 の起動引数（Windows のみ）。
+/// 前半は wry が既定で渡している指定（引数を自分で渡すと既定のものは渡されなくなるので書き写す）。
+/// `AudioVideoTracks` は実験的機能の `HTMLMediaElement.audioTracks` を有効にし、
+/// MKV などに入っている複数の音声（副音声）を再生操作カードから切り替えられるようにする。
+/// 同じデータフォルダを使う WebView2 は起動引数がそろっていないと作れないので、
+/// すべてのウィンドウに同じものを渡す（webview_options）
+#[cfg(target_os = "windows")]
+const WEBVIEW2_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+     --enable-blink-features=AudioVideoTracks";
+
+/// すべてのウィンドウに共通の WebView の指定（データフォルダと、Windows では起動引数）
+fn webview_options<'a>(
+    app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    let mut builder = builder;
+    if let Some(dir) = webview_data_dir(app) {
+        builder = builder.data_directory(dir);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.additional_browser_args(WEBVIEW2_BROWSER_ARGS);
+    }
+    builder
+}
+
 /// tauri.conf.json のウィンドウ定義から実際のウィンドウを作る。
-/// 定義側を `create: false` にして自前で作っているのは、webview_data_dir を
-/// 渡せるようにするため。ウィンドウの見た目や大きさは tauri.conf.json のまま
+/// 定義側を `create: false` にして自前で作っているのは、webview_options（データフォルダと
+/// WebView2 の起動引数）を渡せるようにするため。ウィンドウの見た目や大きさは tauri.conf.json のまま
 fn create_configured_windows(app: &AppHandle) -> Result<(), String> {
-    let data_dir = webview_data_dir(app);
     for config in &app.config().app.windows {
-        let mut builder = WebviewWindowBuilder::from_config(app, config)
+        let builder = WebviewWindowBuilder::from_config(app, config)
             .map_err(|e| format!("ウィンドウ「{}」を作れません: {e}", config.label))?;
-        if let Some(dir) = &data_dir {
-            builder = builder.data_directory(dir.clone());
-        }
-        builder
+        webview_options(app, builder)
             .build()
             .map_err(|e| format!("ウィンドウ「{}」を作れません: {e}", config.label))?;
     }
@@ -3257,7 +3280,7 @@ fn temp_path(path: &Path) -> PathBuf {
 /// 設定ウィンドウを作り直す（tauri.conf.json の定義が失われた場合の保険）。
 /// 通常は起動時に非表示で作られたものを使い回すので、ここは通らない
 fn build_settings_window(app: &AppHandle) -> Result<(), String> {
-    let mut builder =
+    let builder =
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("sView の設定")
             .inner_size(470.0, 560.0)
@@ -3266,10 +3289,7 @@ fn build_settings_window(app: &AppHandle) -> Result<(), String> {
             .decorations(false)
             .transparent(true)
             .center();
-    if let Some(dir) = webview_data_dir(app) {
-        builder = builder.data_directory(dir);
-    }
-    builder
+    webview_options(app, builder)
         .build()
         .map(|_| ())
         .map_err(|e| format!("設定ウィンドウを開けません: {e}"))
@@ -4485,12 +4505,9 @@ fn create_viewer_window(app: &AppHandle, path: &str) -> Result<WebviewWindow, St
         NEXT.fetch_add(1, AtomicOrdering::Relaxed)
     );
     config.label = label.clone();
-    let mut builder = WebviewWindowBuilder::from_config(app, &config)
+    let builder = WebviewWindowBuilder::from_config(app, &config)
         .map_err(|e| format!("ウィンドウを作れません: {e}"))?;
-    if let Some(dir) = webview_data_dir(app) {
-        builder = builder.data_directory(dir);
-    }
-    let window = builder
+    let window = webview_options(app, builder)
         .build()
         .map_err(|e| format!("ウィンドウを作れません: {e}"))?;
 

@@ -96,6 +96,8 @@
         <div class="vb-bottom">
           <div class="vb-left">
             <span class="vb-time"><span id="vb-time">0:00</span> / <span id="vb-duration">0:00</span></span>
+            <!-- 音声が 2 つ以上ある動画（副音声）のときだけ出す音声の切り替え -->
+            <select id="vb-audio-track" title="音声" aria-label="音声" hidden></select>
           </div>
           <div class="vb-center">
             <button id="vb-prev" class="vb" type="button" title="前のファイル" aria-label="前のファイル">

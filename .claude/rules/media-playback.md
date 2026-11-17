@@ -42,6 +42,11 @@ paths:
   `VIDEO_DRAG_THRESHOLD_PX` calls `appWindow.startDragging()`, and one released within
   `VIDEO_CLICK_MS` without moving toggles play-pause. The playback controls are the `#videobar` card (seek bar on top; time /
   ±5 s + play / mute + volume below) inside `#chrome`, so they show and hide with the rest of the chrome.
+  `#vb-audio-track` (a `<select>` next to the time) appears only for a video whose `video.audioTracks` has
+  2+ tracks (`syncAudioTracks`, on `loadedmetadata` / `emptied` and the track list's events); choosing one
+  enables only that track (`selectAudioTrack`) and blurs the box so arrow keys keep seeking. WebView2 exposes
+  `audioTracks` only behind the experimental Blink feature `AudioVideoTracks`, switched on through
+  `WEBVIEW2_BROWSER_ARGS` (see `platform.md`); where it is absent the box simply never shows.
 - Audio (`AUDIO_EXTS` in `lib.rs` / `AUDIO_EXT_FILTER` in `main.js`, kept in sync by the same test;
   never listed from archives) plays through the **same `<video>` element**,
   which stays hidden while `#audio` shows the artwork and the title panel. `showingMedia`
