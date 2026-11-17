@@ -47,6 +47,18 @@ paths:
   enables only that track (`selectAudioTrack`) and blurs the box so arrow keys keep seeking. WebView2 exposes
   `audioTracks` only behind the experimental Blink feature `AudioVideoTracks`, switched on through
   `WEBVIEW2_BROWSER_ARGS` (see `platform.md`); where it is absent the box simply never shows.
+  MKV text subtitles: Chromium never exposes in-band MKV subtitles, so `video_subtitles` (Rust, async, MKV only
+  and only where `is_video` accepts mkv) returns SRT / ASS tracks with their cues. Track info and
+  ContentEncoding (zlib / header stripping; encrypted tracks are skipped) come from `matroska-demuxer`, but the
+  blocks are walked by our own `scan_subtitle_blocks` from the first Cluster: the crate's `next_frame` reads every
+  video / audio frame, i.e. the whole file, while the scan `seek_relative`s past other tracks' blocks. ASS is
+  reduced to plain text (`clean_ass_text`: override tags dropped, `\p` drawings skipped, then HTML-escaped);
+  SRT keeps `<i>`/`<b>`/`<u>`. `main.js` keeps **one** `addTextTrack` track (`subtitleTextTrack`) for good —
+  tracks added that way can't be removed — and swaps its cues in `selectSubtitle` (set `hidden` first: `cues`
+  is null while `disabled`). Subtitles load per `show()` (`loadSubtitles`, dropped on a stale `showToken`) and are
+  cleared in `unloadVideo`. The context menu shows 「字幕」/「音声」 only for videos, as items with a `submenu`
+  (`.ctx-submenu`, opened on hover by `openSubmenu`, placed inside `#ctxmenu` so the outside-click check still
+  works); they are disabled when there is nothing to pick (no subtitles, < 2 audio tracks).
 - Audio (`AUDIO_EXTS` in `lib.rs` / `AUDIO_EXT_FILTER` in `main.js`, kept in sync by the same test;
   never listed from archives) plays through the **same `<video>` element**,
   which stays hidden while `#audio` shows the artwork and the title panel. `showingMedia`

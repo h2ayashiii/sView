@@ -38,7 +38,7 @@ MPL-2.0 について
 入手できます。
 
 
-依存クレート一覧（314 件）
+依存クレート一覧（315 件）
 ========================================
 
 --- MIT OR Apache-2.0  (162 件) ---
@@ -734,3 +734,8 @@ MPL-2.0 について
 
   dunce 1.0.5
       https://gitlab.com/kornelski/dunce
+
+--- Zlib OR MIT OR Apache-2.0  (1 件) ---
+
+  matroska-demuxer 0.8.1
+      https://github.com/hasenbanck/matroska-demuxer

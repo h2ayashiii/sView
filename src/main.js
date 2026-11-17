@@ -639,6 +639,7 @@ async function show() {
       loadAudioInfo(images[index], token);
     } else {
       setArtwork(null);
+      loadSubtitles(images[index], token);
       onVideoReady(() => {
         if (token === showToken) fitWindowToImage();
       });
@@ -770,6 +771,7 @@ function mediaLoop() {
 // src を外して読み込み直すと、WebView はファイルを手放す
 // （Windows では再生中のファイルをゴミ箱へ送れないことがあるため）
 function unloadVideo() {
+  if (subtitleTracks.length || subtitleLoading) clearSubtitles();
   if (!video.getAttribute("src")) return;
   video.pause();
   video.removeAttribute("src");
@@ -921,13 +923,24 @@ function audioTrackList() {
   return showingVideo ? video.audioTracks ?? null : null;
 }
 
-// トラックの表示名（番号 + 名前・言語のうちあるもの。どちらも無ければ「音声 n」）
-function audioTrackLabel(track, i) {
-  const { label, language } = track;
+// 音声・字幕のトラックの表示名（番号 + 名前・言語のうちあるもの。どちらも無ければ「音声 n」など）
+function trackLabel(label, language, i, kind) {
   const name = label && language && !label.includes(language)
     ? `${label} (${language})`
     : label || language;
-  return name ? `${i + 1}: ${name}` : `音声 ${i + 1}`;
+  return name ? `${i + 1}: ${name}` : `${kind} ${i + 1}`;
+}
+
+function audioTrackLabel(track, i) {
+  return trackLabel(track.label, track.language, i, "音声");
+}
+
+// 表示中の音声トラックの番号（分からなければ -1）
+function selectedAudioTrack() {
+  const tracks = audioTrackList();
+  if (!tracks) return -1;
+  for (let i = 0; i < tracks.length; i++) if (tracks[i].enabled) return i;
+  return -1;
 }
 
 function syncAudioTracks() {
@@ -974,6 +987,65 @@ if (video.audioTracks) {
   for (const type of ["addtrack", "removetrack", "change"]) {
     video.audioTracks.addEventListener(type, syncAudioTracks);
   }
+}
+
+// ---- 字幕 ----
+// WebView（Chromium）は MKV の中の字幕を出さないので、Rust 側（video_subtitles）で
+// テキスト字幕（SRT / ASS）を取り出し、自前の TextTrack に VTTCue として入れて表示する。
+// addTextTrack で足したトラックは <video> から外せないので、1 本だけ作って使い回し、
+// 字幕を切り替えるときは中身（cue）を入れ替える
+let subtitleTextTrack = null;
+// 表示中の動画の字幕トラック（Rust の SubtitleTrack の配列）
+let subtitleTracks = [];
+// 表示している字幕の番号（-1 = オフ）
+let subtitleIndex = -1;
+// 字幕を読み込んでいる最中か（右クリックメニューで「読み込み中」と出す）
+let subtitleLoading = false;
+
+function ensureSubtitleTextTrack() {
+  if (!subtitleTextTrack) subtitleTextTrack = video.addTextTrack("subtitles", "sView");
+  return subtitleTextTrack;
+}
+
+// 字幕 n を表示する（-1 で消す）。選んだものは保存しない
+function selectSubtitle(n) {
+  subtitleIndex = n >= 0 && n < subtitleTracks.length ? n : -1;
+  if (!subtitleTextTrack && subtitleIndex < 0) return;
+  const track = ensureSubtitleTextTrack();
+  // disabled のあいだは cues が null なので、いったん hidden にしてから空にする
+  track.mode = "hidden";
+  for (const cue of Array.from(track.cues ?? [])) track.removeCue(cue);
+  if (subtitleIndex < 0) {
+    track.mode = "disabled";
+    return;
+  }
+  for (const { start, end, text } of subtitleTracks[subtitleIndex].cues) {
+    if (end > start) track.addCue(new VTTCue(start, end, text));
+  }
+  track.mode = "showing";
+}
+
+function clearSubtitles() {
+  subtitleTracks = [];
+  subtitleLoading = false;
+  selectSubtitle(-1);
+}
+
+// 動画の字幕を読み込む。動画で既定とされている字幕があれば表示する
+async function loadSubtitles(path, token) {
+  clearSubtitles();
+  subtitleLoading = true;
+  let tracks = [];
+  try {
+    tracks = await invoke("video_subtitles", { path });
+  } catch (e) {
+    // 字幕が読めなくても動画は再生できるので、知らせずに字幕なしで続ける
+    console.warn("字幕を読み込めませんでした", e);
+  }
+  if (token !== showToken) return; // 既に別のファイルへ移動している
+  subtitleLoading = false;
+  subtitleTracks = tracks.filter((t) => t.cues.length > 0);
+  selectSubtitle(subtitleTracks.findIndex((t) => t.default));
 }
 
 // ---- 音楽 ----
@@ -2276,6 +2348,8 @@ function buildContextMenu() {
       disabled: !canDelete(),
       action: deleteCurrent,
     },
+    // 字幕・音声の切り替えは動画のときだけ出す（選べるものが無ければグレーアウト）
+    ...(showingVideo ? [{ separator: true }, subtitleMenuItem(), audioMenuItem()] : []),
     // 本モードの項目は画像の一覧のときだけ出す（動画・音楽では出さない）
     ...(canUseBookMode()
       ? [
@@ -2312,37 +2386,145 @@ function buildContextMenu() {
   ];
 }
 
-function openContextMenu(x, y) {
-  ctxmenu.textContent = "";
-  for (const item of buildContextMenu()) {
-    if (item.separator) {
-      const hr = document.createElement("div");
-      hr.className = "ctx-sep";
-      ctxmenu.appendChild(hr);
-      continue;
-    }
-    const btn = document.createElement("button");
-    btn.className = "ctx-item";
-    btn.type = "button";
-    // checked を持つ項目はチェック（radio なら丸）を左に出す（style.css の .ctx-item::before）
-    const checkable = item.checked !== undefined;
-    btn.setAttribute(
-      "role",
-      !checkable ? "menuitem" : item.radio ? "menuitemradio" : "menuitemcheckbox"
-    );
-    if (checkable) btn.setAttribute("aria-checked", String(!!item.checked));
-    btn.disabled = !!item.disabled;
-    const label = document.createElement("span");
-    label.className = "ctx-label";
-    label.textContent = item.label;
-    const accel = document.createElement("span");
-    accel.className = "ctx-accel";
-    accel.textContent = item.accel ?? "";
-    btn.append(label, accel);
+// 右クリックメニューの「字幕」。合わせると「オフ」と字幕トラックの一覧を出す
+function subtitleMenuItem() {
+  if (subtitleLoading) return { label: "字幕（読み込み中）", disabled: true, submenu: [] };
+  const items = subtitleTracks.map((t, i) => ({
+    label: trackLabel(t.name, t.language, i, "字幕"),
+    radio: true,
+    checked: subtitleIndex === i,
+    action: () => selectSubtitle(i),
+  }));
+  return {
+    label: "字幕",
+    disabled: items.length === 0,
+    submenu: [
+      { label: "オフ", radio: true, checked: subtitleIndex < 0, action: () => selectSubtitle(-1) },
+      ...items,
+    ],
+  };
+}
+
+// 右クリックメニューの「音声」。音声が 2 つ以上あるときだけ選べる
+function audioMenuItem() {
+  const tracks = audioTrackList();
+  const count = tracks?.length ?? 0;
+  const selected = selectedAudioTrack();
+  const items = [];
+  for (let i = 0; i < count; i++) {
+    items.push({
+      label: audioTrackLabel(tracks[i], i),
+      radio: true,
+      checked: selected === i,
+      action: () => {
+        selectAudioTrack(i);
+        syncAudioTracks();
+      },
+    });
+  }
+  return { label: "音声", disabled: count < 2, submenu: items };
+}
+
+// メニューの項目のボタンを作る（サブメニューの中の項目も同じ）
+function menuItemButton(item) {
+  const btn = document.createElement("button");
+  btn.className = "ctx-item";
+  btn.type = "button";
+  // checked を持つ項目はチェック（radio なら丸）を左に出す（style.css の .ctx-item::before）
+  const checkable = item.checked !== undefined;
+  btn.setAttribute(
+    "role",
+    !checkable ? "menuitem" : item.radio ? "menuitemradio" : "menuitemcheckbox"
+  );
+  if (checkable) btn.setAttribute("aria-checked", String(!!item.checked));
+  btn.disabled = !!item.disabled;
+  const label = document.createElement("span");
+  label.className = "ctx-label";
+  label.textContent = item.label;
+  const accel = document.createElement("span");
+  accel.className = "ctx-accel";
+  // サブメニューを持つ項目は右端に「›」を出す
+  accel.textContent = item.submenu ? "\u203a" : item.accel ?? "";
+  if (item.submenu) btn.setAttribute("aria-haspopup", "menu");
+  btn.append(label, accel);
+  if (!item.submenu) {
     btn.addEventListener("click", () => {
       hideContextMenu();
       item.action();
     });
+  }
+  return btn;
+}
+
+function appendMenuItems(container, items) {
+  for (const item of items) {
+    if (item.separator) {
+      const hr = document.createElement("div");
+      hr.className = "ctx-sep";
+      container.appendChild(hr);
+    } else {
+      container.appendChild(menuItemButton(item));
+    }
+  }
+}
+
+// 開いているサブメニュー（無ければ null）
+let ctxSubmenu = null;
+
+function closeSubmenu() {
+  ctxSubmenu?.remove();
+  ctxSubmenu = null;
+  for (const el of ctxmenu.querySelectorAll(".ctx-item.open")) el.classList.remove("open");
+}
+
+// 親の項目の右（入りきらなければ左）にサブメニューを開く
+function openSubmenu(btn, items) {
+  closeSubmenu();
+  const sub = document.createElement("div");
+  sub.className = "ctx-submenu";
+  sub.setAttribute("role", "menu");
+  appendMenuItems(sub, items);
+  ctxmenu.appendChild(sub);
+  ctxSubmenu = sub;
+  btn.classList.add("open");
+  const menuRect = ctxmenu.getBoundingClientRect();
+  const btnRect = btn.getBoundingClientRect();
+  const subRect = sub.getBoundingClientRect();
+  // 親の項目と少し重ねて、斜めにカーソルを動かしても途切れにくくする
+  let left = btnRect.right - 4;
+  if (left + subRect.width > window.innerWidth - 4) left = btnRect.left - subRect.width + 4;
+  left = Math.max(4, left);
+  // 上端は親の項目にそろえる（項目の余白の分だけ上げる）
+  let top = btnRect.top - 5;
+  top = Math.max(4, Math.min(top, window.innerHeight - subRect.height - 4));
+  // サブメニューは #ctxmenu の中に置くので、#ctxmenu の内側（枠線の内側）からの位置で入れる
+  sub.style.left = `${left - menuRect.left - ctxmenu.clientLeft}px`;
+  sub.style.top = `${top - menuRect.top - ctxmenu.clientTop}px`;
+}
+
+function openContextMenu(x, y) {
+  ctxSubmenu = null;
+  ctxmenu.textContent = "";
+  for (const item of buildContextMenu()) {
+    if (item.separator) {
+      appendMenuItems(ctxmenu, [item]);
+      continue;
+    }
+    const btn = menuItemButton(item);
+    // 項目に合わせたらサブメニューを開き、ほかの項目に移ったら閉じる
+    btn.addEventListener("mouseenter", () => {
+      if (item.submenu && !item.disabled) {
+        if (ctxSubmenu && btn.classList.contains("open")) return;
+        openSubmenu(btn, item.submenu);
+      } else {
+        closeSubmenu();
+      }
+    });
+    if (item.submenu) {
+      btn.addEventListener("click", () => {
+        if (!item.disabled && !btn.classList.contains("open")) openSubmenu(btn, item.submenu);
+      });
+    }
     ctxmenu.appendChild(btn);
   }
 

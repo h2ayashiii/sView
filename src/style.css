@@ -756,7 +756,8 @@ body {
 }
 
 /* ---- context menu ---- */
-#ctxmenu {
+#ctxmenu,
+.ctx-submenu {
   position: absolute;
   z-index: 10;
   min-width: 200px;
@@ -765,6 +766,28 @@ body {
   border-radius: 8px;
   background: rgba(26, 26, 30, 0.98);
   box-shadow: 0 8px 26px rgba(0, 0, 0, 0.5);
+}
+
+/* 字幕・音声の一覧（右クリックメニューの項目に合わせると横に出る）。
+   位置は main.js が #ctxmenu の内側からの left / top で入れる */
+.ctx-submenu {
+  top: 0;
+  left: 0;
+  max-width: 320px;
+  max-height: calc(100vh - 8px);
+  overflow-y: auto;
+}
+
+/* サブメニューを開いている項目は、合わせている間と同じ色にしておく */
+.ctx-item.open {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* 動画の字幕（VTTCue）。操作カードと同じ系統の暗い下地に白い文字 */
+#video::cue {
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-family: inherit;
 }
 
 .ctx-item {
