@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Mutex;
@@ -19,10 +19,22 @@ const IMAGE_EXTS: &[&str] = &[
     "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp",
 ];
 
-/// 対応する動画拡張子（小文字で比較）。
+/// 対応する動画拡張子（小文字で比較。全 OS 共通）。
 /// デコードは OS の WebView に任せる（コーデックは同梱しない）ので、
 /// どの OS の WebView でもおおむね再生できるコンテナだけに絞っている
 const VIDEO_EXTS: &[&str] = &["m4v", "mov", "mp4", "webm"];
+
+/// Windows だけで扱う動画拡張子（小文字で比較）。
+/// WebView2（Chromium）は MKV をそのまま再生できるが、macOS の WKWebView はできないので、
+/// macOS では一覧・ファイル選択・関連付けのどれにも出さない
+const WINDOWS_VIDEO_EXTS: &[&str] = &["mkv"];
+
+/// この OS で VIDEO_EXTS に加えて扱う動画拡張子
+const PLATFORM_VIDEO_EXTS: &[&str] = if cfg!(target_os = "windows") {
+    WINDOWS_VIDEO_EXTS
+} else {
+    &[]
+};
 
 /// 対応する音楽拡張子（小文字で比較）。
 /// 動画と同じく再生は OS の WebView に任せる（コーデックは同梱しない）
@@ -274,7 +286,7 @@ fn is_image(path: &Path) -> bool {
 }
 
 fn is_video(path: &Path) -> bool {
-    has_ext(path, VIDEO_EXTS)
+    has_ext(path, VIDEO_EXTS) || has_ext(path, PLATFORM_VIDEO_EXTS)
 }
 
 fn is_audio(path: &Path) -> bool {
@@ -980,6 +992,11 @@ mod tests {
         assert!(is_video(Path::new("/x/clip.MP4")));
         assert!(is_video(Path::new("/x/clip.webm")));
         assert!(!is_video(Path::new("/x/clip.avi")));
+        // MKV は Windows でだけ動画として扱う
+        assert_eq!(
+            is_video(Path::new("/x/clip.MKV")),
+            cfg!(target_os = "windows")
+        );
         assert!(!is_video(Path::new("/x/photo.png")));
         assert!(is_media(Path::new("/x/clip.mov")));
         assert!(is_media(Path::new("/x/photo.png")));
@@ -1302,22 +1319,28 @@ mod tests {
         assert!(!text.contains('\n'));
     }
 
-    /// 対応拡張子の一覧は lib.rs / main.js / tauri.conf.json の 3 箇所にあり、
-    /// 手で揃えるしかない。ずれたらここで落として気付けるようにする
+    /// 対応拡張子の一覧は lib.rs / main.js / tauri.conf.json（Windows だけの分は
+    /// tauri.windows.conf.json）にあり、手で揃えるしかない。ずれたらここで落として気付けるようにする
     #[test]
     fn supported_extensions_stay_in_sync() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("リポジトリのルートが取れません");
         let main_js = fs::read_to_string(root.join("src/main.js")).expect("main.js を読めません");
-        let conf: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(root.join("src-tauri/tauri.conf.json"))
-                .expect("tauri.conf.json を読めません"),
-        )
-        .expect("tauri.conf.json が JSON として壊れています");
+        let read_conf = |name: &str| -> serde_json::Value {
+            serde_json::from_str(
+                &fs::read_to_string(root.join("src-tauri").join(name))
+                    .unwrap_or_else(|_| panic!("{name} を読めません")),
+            )
+            .unwrap_or_else(|_| panic!("{name} が JSON として壊れています"))
+        };
+        let conf = read_conf("tauri.conf.json");
+        // Windows でのビルドでは tauri.conf.json に JSON Merge Patch で重ねられる。
+        // 配列は丸ごと置き換わるので、fileAssociations は全種類を書いてある
+        let win_conf = read_conf("tauri.windows.conf.json");
 
-        // tauri.conf.json の fileAssociations から、指定した name の ext を取り出す
-        let association = |name: &str| -> Vec<String> {
+        // fileAssociations から、指定した name の ext を取り出す
+        let association_in = |conf: &serde_json::Value, name: &str| -> Vec<String> {
             conf["bundle"]["fileAssociations"]
                 .as_array()
                 .expect("fileAssociations がありません")
@@ -1330,6 +1353,7 @@ mod tests {
                 .map(|e| e.as_str().expect("ext が文字列ではありません").to_string())
                 .collect()
         };
+        let association = |name: &str| association_in(&conf, name);
 
         let images = sorted(IMAGE_EXTS.to_vec());
         assert_eq!(
@@ -1359,6 +1383,35 @@ mod tests {
             videos,
             "tauri.conf.json の fileAssociations が VIDEO_EXTS とずれています"
         );
+        assert_eq!(
+            sorted(quoted_items(
+                &main_js,
+                "const WINDOWS_VIDEO_EXT_FILTER = [",
+                ']'
+            )),
+            sorted(WINDOWS_VIDEO_EXTS.to_vec()),
+            "main.js の WINDOWS_VIDEO_EXT_FILTER が WINDOWS_VIDEO_EXTS とずれています"
+        );
+        assert_eq!(
+            sorted(association_in(&win_conf, "Video")),
+            sorted([VIDEO_EXTS, WINDOWS_VIDEO_EXTS].concat()),
+            "tauri.windows.conf.json の動画の fileAssociations が VIDEO_EXTS + WINDOWS_VIDEO_EXTS とずれています"
+        );
+        // 動画以外は tauri.conf.json と同じにする（Windows だけ関連付けがずれないように）
+        for name in ["Image", "Audio"] {
+            assert_eq!(
+                association_in(&win_conf, name),
+                association(name),
+                "tauri.windows.conf.json の {name} の fileAssociations が tauri.conf.json とずれています"
+            );
+        }
+        assert_eq!(
+            win_conf["bundle"]["fileAssociations"]
+                .as_array()
+                .map(|a| a.len()),
+            Some(3),
+            "tauri.windows.conf.json の fileAssociations は画像・動画・音楽の 3 件だけにします"
+        );
         let audios = sorted(AUDIO_EXTS.to_vec());
         assert_eq!(
             sorted(quoted_items(&main_js, "const AUDIO_EXT_FILTER = [", ']')),
@@ -1385,6 +1438,77 @@ mod tests {
                 .map(|a| a.len()),
             Some(3),
             "tauri.conf.json の fileAssociations は画像・動画・音楽の 3 件だけにします"
+        );
+    }
+
+    #[test]
+    fn mkv_subtitles_are_read_from_srt_and_ass_tracks() {
+        // ffmpeg で作った 2 秒の動画。字幕は SRT（日本語・既定）と ASS（英語）の 2 本
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/subtitles.mkv");
+        let tracks = read_mkv_subtitles(&path).unwrap();
+        assert_eq!(tracks.len(), 2);
+
+        let srt = &tracks[0];
+        assert_eq!(srt.name.as_deref(), Some("日本語"));
+        assert_eq!(srt.language.as_deref(), Some("jpn"));
+        assert!(srt.default);
+        let texts: Vec<&str> = srt.cues.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["こんにちは\n<i>二行目</i>", "上に出す"]);
+        assert!((srt.cues[0].start - 0.5).abs() < 0.01);
+        assert!((srt.cues[0].end - 1.2).abs() < 0.01);
+
+        let ass = &tracks[1];
+        assert_eq!(ass.language.as_deref(), Some("eng"));
+        assert!(!ass.default);
+        let texts: Vec<&str> = ass.cues.iter().map(|c| c.text.as_str()).collect();
+        // 上書きタグは外し、描画命令だけの行は捨て、記号は文字参照にする
+        assert_eq!(texts, vec!["Hello, world\nline two", "a &lt; b"]);
+        assert!((ass.cues[0].start - 0.2).abs() < 0.01);
+        assert!((ass.cues[0].end - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn subtitles_are_only_read_from_mkv() {
+        // MKV 以外（と、MKV を扱わない OS の MKV）は読まずに空を返す
+        assert!(video_subtitles("/x/clip.mp4".into()).unwrap().is_empty());
+        if !cfg!(target_os = "windows") {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/subtitles.mkv");
+            assert!(video_subtitles(path.to_string_lossy().into_owned())
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn ass_text_drops_override_tags_and_drawings() {
+        assert_eq!(clean_ass_text(r"{\i1}a{\i0}\Nb\hc"), "a\nb\u{a0}c");
+        assert_eq!(clean_ass_text(r"{\pos(10,20)}x"), "x");
+        assert_eq!(clean_ass_text(r"a{\p1}m 0 0 l 1 1{\p0}b"), "ab");
+        assert_eq!(
+            subtitle_text(b"0,0,Default,,0,0,0,,{\\b1}Hi, there", SubtitleFormat::Ass).as_deref(),
+            Some("Hi, there")
+        );
+        assert_eq!(subtitle_text(b"{\\an8}  \r\n", SubtitleFormat::Srt), None);
+    }
+
+    #[test]
+    fn subtitle_blocks_are_decompressed() {
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(b"hello").unwrap();
+        let zipped = z.finish().unwrap();
+        assert_eq!(
+            decode_subtitle_block(zipped, &[SubtitleDecode::Zlib]).as_deref(),
+            Some(&b"hello"[..])
+        );
+        assert_eq!(
+            decode_subtitle_block(b"llo".to_vec(), &[SubtitleDecode::Strip(b"he".to_vec())])
+                .as_deref(),
+            Some(&b"hello"[..])
+        );
+        assert_eq!(
+            decode_subtitle_block(b"bad".to_vec(), &[SubtitleDecode::Zlib]),
+            None
         );
     }
 
@@ -2072,18 +2196,41 @@ fn webview_data_dir(_app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+/// WebView2 の起動引数（Windows のみ）。
+/// 前半は wry が既定で渡している指定（引数を自分で渡すと既定のものは渡されなくなるので書き写す）。
+/// `AudioVideoTracks` は実験的機能の `HTMLMediaElement.audioTracks` を有効にし、
+/// MKV などに入っている複数の音声（副音声）を再生操作カードから切り替えられるようにする。
+/// 同じデータフォルダを使う WebView2 は起動引数がそろっていないと作れないので、
+/// すべてのウィンドウに同じものを渡す（webview_options）
+#[cfg(target_os = "windows")]
+const WEBVIEW2_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+     --enable-blink-features=AudioVideoTracks";
+
+/// すべてのウィンドウに共通の WebView の指定（データフォルダと、Windows では起動引数）
+fn webview_options<'a>(
+    app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    let mut builder = builder;
+    if let Some(dir) = webview_data_dir(app) {
+        builder = builder.data_directory(dir);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.additional_browser_args(WEBVIEW2_BROWSER_ARGS);
+    }
+    builder
+}
+
 /// tauri.conf.json のウィンドウ定義から実際のウィンドウを作る。
-/// 定義側を `create: false` にして自前で作っているのは、webview_data_dir を
-/// 渡せるようにするため。ウィンドウの見た目や大きさは tauri.conf.json のまま
+/// 定義側を `create: false` にして自前で作っているのは、webview_options（データフォルダと
+/// WebView2 の起動引数）を渡せるようにするため。ウィンドウの見た目や大きさは tauri.conf.json のまま
 fn create_configured_windows(app: &AppHandle) -> Result<(), String> {
-    let data_dir = webview_data_dir(app);
     for config in &app.config().app.windows {
-        let mut builder = WebviewWindowBuilder::from_config(app, config)
+        let builder = WebviewWindowBuilder::from_config(app, config)
             .map_err(|e| format!("ウィンドウ「{}」を作れません: {e}", config.label))?;
-        if let Some(dir) = &data_dir {
-            builder = builder.data_directory(dir.clone());
-        }
-        builder
+        webview_options(app, builder)
             .build()
             .map_err(|e| format!("ウィンドウ「{}」を作れません: {e}", config.label))?;
     }
@@ -3204,7 +3351,7 @@ fn temp_path(path: &Path) -> PathBuf {
 /// 設定ウィンドウを作り直す（tauri.conf.json の定義が失われた場合の保険）。
 /// 通常は起動時に非表示で作られたものを使い回すので、ここは通らない
 fn build_settings_window(app: &AppHandle) -> Result<(), String> {
-    let mut builder =
+    let builder =
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("sView の設定")
             .inner_size(470.0, 560.0)
@@ -3213,10 +3360,7 @@ fn build_settings_window(app: &AppHandle) -> Result<(), String> {
             .decorations(false)
             .transparent(true)
             .center();
-    if let Some(dir) = webview_data_dir(app) {
-        builder = builder.data_directory(dir);
-    }
-    builder
+    webview_options(app, builder)
         .build()
         .map(|_| ())
         .map_err(|e| format!("設定ウィンドウを開けません: {e}"))
@@ -3400,6 +3544,418 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
     result.map_err(|e| format!("ファイルマネージャーを開けません: {e}"))
 }
 
+// ---- MKV のテキスト字幕 ----
+// WebView（Chromium）は MKV の中の字幕を textTracks に出さないので、ここで取り出して
+// フロントへ渡し、フロントが VTTCue にして表示する。対象は SRT（S_TEXT/UTF8）と
+// ASS / SSA のテキスト字幕だけ（PGS・VobSub などの画像字幕は扱わない）。
+// トラックの情報（名前・言語・圧縮）は matroska-demuxer で読み、ブロックは自前で走査する。
+// matroska-demuxer の next_frame はすべてのフレーム（映像・音声）の中身を読むので、
+// 数 GB の動画では丸ごと読むことになる。自前の走査なら字幕以外のブロックは読み飛ばせる
+
+/// 字幕 1 件（時刻は秒）
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct SubtitleCue {
+    start: f64,
+    end: f64,
+    text: String,
+}
+
+/// 字幕トラック 1 本
+#[derive(Clone, Debug, serde::Serialize)]
+struct SubtitleTrack {
+    name: Option<String>,
+    language: Option<String>,
+    /// 動画で既定とされている字幕か（開いたときに表示する）
+    default: bool,
+    cues: Vec<SubtitleCue>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SubtitleFormat {
+    Srt,
+    Ass,
+}
+
+fn subtitle_format(codec_id: &str) -> Option<SubtitleFormat> {
+    match codec_id {
+        "S_TEXT/UTF8" => Some(SubtitleFormat::Srt),
+        "S_TEXT/ASS" | "S_TEXT/SSA" | "S_ASS" | "S_SSA" => Some(SubtitleFormat::Ass),
+        _ => None,
+    }
+}
+
+/// ブロックの中身に掛かっている符号化（ContentEncoding）を戻す手順
+#[derive(Clone, Debug, PartialEq)]
+enum SubtitleDecode {
+    Zlib,
+    /// 各フレームの先頭から取り除かれているバイト列（header stripping）
+    Strip(Vec<u8>),
+}
+
+/// 字幕 1 件の中身として読む上限（壊れたファイルで巨大な領域を確保しない）
+const MAX_SUBTITLE_BLOCK_BYTES: u64 = 1024 * 1024;
+
+/// 符号化の手順（戻す順）。暗号化・未対応の圧縮なら None（そのトラックは読まない）
+fn subtitle_decoders(track: &matroska_demuxer::TrackEntry) -> Option<Vec<SubtitleDecode>> {
+    use matroska_demuxer::{ContentCompAlgo, ContentEncodingValue};
+    let mut encodings: Vec<_> = track.content_encodings().unwrap_or(&[]).iter().collect();
+    // 戻すときは order の大きいものから
+    encodings.sort_by_key(|e| std::cmp::Reverse(e.order()));
+    let mut out = Vec::new();
+    for encoding in encodings {
+        // scope の 1 ビット目が立っているものだけがフレームに掛かっている
+        if encoding.scope() & 1 == 0 {
+            continue;
+        }
+        match encoding.encoding() {
+            ContentEncodingValue::Compression(c) => match c.algo() {
+                ContentCompAlgo::Zlib => out.push(SubtitleDecode::Zlib),
+                ContentCompAlgo::Stripping => {
+                    out.push(SubtitleDecode::Strip(c.settings().unwrap_or(&[]).to_vec()))
+                }
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+fn decode_subtitle_block(mut data: Vec<u8>, decoders: &[SubtitleDecode]) -> Option<Vec<u8>> {
+    for decoder in decoders {
+        data = match decoder {
+            SubtitleDecode::Zlib => {
+                let mut out = Vec::new();
+                flate2::read::ZlibDecoder::new(data.as_slice())
+                    .take(MAX_SUBTITLE_BLOCK_BYTES)
+                    .read_to_end(&mut out)
+                    .ok()?;
+                out
+            }
+            SubtitleDecode::Strip(prefix) => [prefix.as_slice(), &data].concat(),
+        };
+    }
+    Some(data)
+}
+
+/// ASS の上書きタグ（`{\b1}` など）を外し、改行を直す。
+/// 描画命令（`{\p1}` 〜 `{\p0}`）は文字ではないので捨てる
+fn clean_ass_text(text: &str) -> String {
+    let mut out = String::new();
+    let mut drawing = false;
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        if !drawing {
+            out.push_str(&rest[..open]);
+        }
+        let Some(close) = rest[open..].find('}') else {
+            rest = &rest[open..];
+            break;
+        };
+        let tags = &rest[open + 1..open + close];
+        // \p の後の数字が 0 以外なら描画の始まり、0 なら終わり（\pos などは対象外）
+        for (i, _) in tags.match_indices("\\p") {
+            let digits: String = tags[i + 2..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if !digits.is_empty() {
+                drawing = digits.trim_start_matches('0') != "";
+            }
+        }
+        rest = &rest[open + close + 1..];
+    }
+    if !drawing {
+        out.push_str(rest);
+    }
+    out.replace("\\N", "\n")
+        .replace("\\n", "\n")
+        .replace("\\h", "\u{a0}")
+}
+
+/// WebVTT の字幕文として解釈されないよう、記号を文字参照にする
+fn escape_cue_text(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// ブロックの中身から表示する文字を取り出す（空なら None）
+fn subtitle_text(data: &[u8], format: SubtitleFormat) -> Option<String> {
+    let raw = String::from_utf8_lossy(data);
+    let raw = raw.trim_end_matches(['\0', '\r', '\n']);
+    let text = match format {
+        // ReadOrder, Layer, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+        SubtitleFormat::Ass => escape_cue_text(&clean_ass_text(raw.splitn(9, ',').nth(8)?)),
+        // SRT の <i> <b> <u> は WebVTT でもそのまま使える。
+        // {\an8} などの ASS 由来の位置指定だけ外す
+        SubtitleFormat::Srt => {
+            let mut s = String::new();
+            let mut rest = raw;
+            while let Some(open) = rest.find("{\\") {
+                s.push_str(&rest[..open]);
+                match rest[open..].find('}') {
+                    Some(close) => rest = &rest[open + close + 1..],
+                    None => {
+                        rest = &rest[open..];
+                        break;
+                    }
+                }
+            }
+            s.push_str(rest);
+            s.replace("\r\n", "\n")
+        }
+    };
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+// 走査に使う Matroska の要素 ID
+const MKV_CLUSTER: u64 = 0x1F43_B675;
+const MKV_TIMESTAMP: u64 = 0xE7;
+const MKV_BLOCK_GROUP: u64 = 0xA0;
+const MKV_BLOCK: u64 = 0xA1;
+const MKV_SIMPLE_BLOCK: u64 = 0xA3;
+const MKV_BLOCK_DURATION: u64 = 0x9B;
+
+/// EBML の可変長整数を読む。`keep_marker` は要素 ID（先頭の印のビットも値に含める）。
+/// 戻り値は (値, バイト数)。サイズで全ビットが 1 のもの（長さ不明）は None
+fn read_ebml_vint<R: Read>(r: &mut R, keep_marker: bool) -> std::io::Result<(Option<u64>, u64)> {
+    let mut first = [0u8; 1];
+    r.read_exact(&mut first)?;
+    let len = first[0].leading_zeros() as usize + 1;
+    if len > 8 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "EBML の整数が壊れています",
+        ));
+    }
+    let mut value = if keep_marker {
+        first[0] as u64
+    } else {
+        (first[0] as u64) & (0xFF >> len)
+    };
+    let mut all_ones = value == (0xFF >> len);
+    let mut rest = [0u8; 7];
+    r.read_exact(&mut rest[..len - 1])?;
+    for &b in &rest[..len - 1] {
+        value = (value << 8) | b as u64;
+        all_ones &= b == 0xFF;
+    }
+    let unknown = !keep_marker && all_ones;
+    Ok(((!unknown).then_some(value), len as u64))
+}
+
+fn read_ebml_uint<R: Read>(r: &mut R, size: u64) -> std::io::Result<u64> {
+    if size > 8 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "EBML の整数が長すぎます",
+        ));
+    }
+    let mut buf = [0u8; 8];
+    r.read_exact(&mut buf[..size as usize])?;
+    Ok(buf[..size as usize]
+        .iter()
+        .fold(0, |v, &b| (v << 8) | b as u64))
+}
+
+/// 字幕として拾ったブロック（時刻は Matroska の単位）
+struct RawSubtitle {
+    track: u64,
+    timestamp: i64,
+    duration: Option<u64>,
+    data: Vec<u8>,
+}
+
+/// 最初の Cluster から末尾までを走査し、`tracks` のトラック番号のブロックだけを読む。
+/// 途中で壊れていたら（ファイルが途中で切れているなど）、そこまでに読めた分を返す
+fn scan_subtitle_blocks<R: BufRead + Seek>(r: &mut R, tracks: &[u64]) -> Vec<RawSubtitle> {
+    let mut out = Vec::new();
+    let _ = scan_subtitle_blocks_inner(r, tracks, &mut out);
+    out
+}
+
+fn scan_subtitle_blocks_inner<R: BufRead + Seek>(
+    r: &mut R,
+    tracks: &[u64],
+    out: &mut Vec<RawSubtitle>,
+) -> std::io::Result<()> {
+    let mut cluster_timestamp: u64 = 0;
+    // BlockGroup の終わりの位置と、その中の Block（BlockDuration を待っている）
+    let mut group_end: Option<u64> = None;
+    let mut pending: Option<RawSubtitle> = None;
+    loop {
+        if let Some(end) = group_end {
+            if r.stream_position()? >= end {
+                group_end = None;
+                out.extend(pending.take());
+            }
+        }
+        let (Some(id), _) = (match read_ebml_vint(r, true) {
+            Ok(v) => v,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        }) else {
+            break;
+        };
+        let (size, _) = read_ebml_vint(r, false)?;
+        match id {
+            // 中へ入る（長さ不明の Cluster もそのまま続けて読める）
+            MKV_CLUSTER => {}
+            MKV_BLOCK_GROUP => {
+                out.extend(pending.take());
+                group_end = match size {
+                    Some(size) => Some(r.stream_position()? + size),
+                    None => None,
+                };
+            }
+            MKV_TIMESTAMP => cluster_timestamp = read_ebml_uint(r, size.unwrap_or(0))?,
+            MKV_BLOCK | MKV_SIMPLE_BLOCK => {
+                let Some(size) = size else { break };
+                let (track, track_len) = read_ebml_vint(r, false)?;
+                let mut header = [0u8; 3];
+                r.read_exact(&mut header)?;
+                let body = size.saturating_sub(track_len + 3);
+                let relative = i16::from_be_bytes([header[0], header[1]]) as i64;
+                // レーシング（1 ブロックに複数フレーム）は字幕では使われないので読まない
+                let laced = header[2] & 0x06 != 0;
+                let wanted = track.is_some_and(|t| tracks.contains(&t));
+                if wanted && !laced && body <= MAX_SUBTITLE_BLOCK_BYTES {
+                    let mut data = vec![0u8; body as usize];
+                    r.read_exact(&mut data)?;
+                    let raw = RawSubtitle {
+                        track: track.unwrap_or(0),
+                        timestamp: cluster_timestamp as i64 + relative,
+                        duration: None,
+                        data,
+                    };
+                    if id == MKV_BLOCK && group_end.is_some() {
+                        out.extend(pending.replace(raw));
+                    } else {
+                        out.push(raw);
+                    }
+                } else {
+                    r.seek_relative(body as i64)?;
+                }
+            }
+            MKV_BLOCK_DURATION => {
+                let duration = read_ebml_uint(r, size.unwrap_or(0))?;
+                if let Some(raw) = pending.as_mut() {
+                    raw.duration = Some(duration);
+                }
+            }
+            // ほかの要素（映像・音声の情報、Cues、Tags など）は読み飛ばす
+            _ => match size {
+                Some(size) => r.seek_relative(size as i64)?,
+                None => break,
+            },
+        }
+    }
+    out.extend(pending.take());
+    Ok(())
+}
+
+/// 字幕が終わる時刻が無いものは、次の字幕まで（最後なら 5 秒）表示する
+const SUBTITLE_FALLBACK_S: f64 = 5.0;
+
+/// MKV からテキスト字幕のトラックをすべて取り出す（字幕が無ければ空）
+fn read_mkv_subtitles(path: &Path) -> Result<Vec<SubtitleTrack>, String> {
+    let file = File::open(path).map_err(|e| format!("動画を開けません: {e}"))?;
+    let mut reader = BufReader::new(file);
+    let mkv = matroska_demuxer::MatroskaFile::open(&mut reader)
+        .map_err(|e| format!("MKV を読めません: {e}"))?;
+    // 1 単位あたりのナノ秒
+    let scale = mkv.info().timestamp_scale().get() as f64;
+    struct Wanted {
+        number: u64,
+        format: SubtitleFormat,
+        decoders: Vec<SubtitleDecode>,
+        default_duration: Option<f64>,
+        track: SubtitleTrack,
+    }
+    let mut wanted: Vec<Wanted> = mkv
+        .tracks()
+        .iter()
+        .filter(|t| t.track_type() == matroska_demuxer::TrackType::Subtitle)
+        .filter_map(|t| {
+            Some(Wanted {
+                number: t.track_number().get(),
+                format: subtitle_format(t.codec_id())?,
+                decoders: subtitle_decoders(t)?,
+                default_duration: t.default_duration().map(|d| d.get() as f64 / 1e9),
+                track: SubtitleTrack {
+                    name: t.name().map(str::to_string),
+                    language: t
+                        .language_bcp47()
+                        .or(t.language())
+                        .filter(|l| *l != "und")
+                        .map(str::to_string),
+                    default: t.flag_default(),
+                    cues: Vec::new(),
+                },
+            })
+        })
+        .collect();
+    // open() のあと、読む位置は最初の Cluster の頭にある
+    drop(mkv);
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let numbers: Vec<u64> = wanted.iter().map(|w| w.number).collect();
+    for raw in scan_subtitle_blocks(&mut reader, &numbers) {
+        let Some(w) = wanted.iter_mut().find(|w| w.number == raw.track) else {
+            continue;
+        };
+        let Some(data) = decode_subtitle_block(raw.data, &w.decoders) else {
+            continue;
+        };
+        let Some(text) = subtitle_text(&data, w.format) else {
+            continue;
+        };
+        let start = (raw.timestamp as f64 * scale / 1e9).max(0.0);
+        let end = raw
+            .duration
+            .map(|d| start + d as f64 * scale / 1e9)
+            .or(w.default_duration.map(|d| start + d));
+        w.track.cues.push(SubtitleCue {
+            start,
+            // 終わりが分からないものは後で埋める（NaN にしておく）
+            end: end.unwrap_or(f64::NAN),
+            text,
+        });
+    }
+    Ok(wanted
+        .into_iter()
+        .map(|mut w| {
+            let cues = &mut w.track.cues;
+            cues.sort_by(|a, b| a.start.total_cmp(&b.start));
+            for i in 0..cues.len() {
+                if cues[i].end.is_nan() {
+                    let next = cues.get(i + 1).map(|c| c.start);
+                    let start = cues[i].start;
+                    cues[i].end = next
+                        .filter(|n| *n > start)
+                        .unwrap_or(start + SUBTITLE_FALLBACK_S)
+                        .min(start + SUBTITLE_FALLBACK_S);
+                }
+            }
+            w.track
+        })
+        .collect())
+}
+
+/// 動画に入っているテキスト字幕を返す。MKV を扱う OS（Windows）の MKV だけが対象で、
+/// それ以外の動画では空
+#[tauri::command(async)]
+fn video_subtitles(path: String) -> Result<Vec<SubtitleTrack>, String> {
+    let path = Path::new(&path);
+    if !(has_ext(path, &["mkv"]) && is_video(path)) {
+        return Ok(Vec::new());
+    }
+    read_mkv_subtitles(path)
+}
+
 // ---- 拡張子の関連付け ----
 // 設定ウィンドウから、どの拡張子を sView で開くかを選んで OS に登録する。
 // OS ごとに「アプリが勝手に既定を奪えるか」が違うので、それぞれの流儀に従う:
@@ -3408,10 +3964,10 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
 //   アプリ」として登録し、最後の選択は Windows の「既定のアプリ」画面で本人にしてもらう
 // - macOS は LaunchServices の API で既定のアプリを直接設定できる
 
-/// 関連付けの対象にできる拡張子（画像・動画・音楽すべて）。
+/// 関連付けの対象にできる拡張子（画像・動画・音楽すべて。この OS だけの動画拡張子も含む）。
 /// 書庫（zip / cbz）はここでは扱わない
 fn associable_exts() -> Vec<&'static str> {
-    [IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS].concat()
+    [IMAGE_EXTS, VIDEO_EXTS, PLATFORM_VIDEO_EXTS, AUDIO_EXTS].concat()
 }
 
 #[derive(serde::Serialize)]
@@ -4432,12 +4988,9 @@ fn create_viewer_window(app: &AppHandle, path: &str) -> Result<WebviewWindow, St
         NEXT.fetch_add(1, AtomicOrdering::Relaxed)
     );
     config.label = label.clone();
-    let mut builder = WebviewWindowBuilder::from_config(app, &config)
+    let builder = WebviewWindowBuilder::from_config(app, &config)
         .map_err(|e| format!("ウィンドウを作れません: {e}"))?;
-    if let Some(dir) = webview_data_dir(app) {
-        builder = builder.data_directory(dir);
-    }
-    let window = builder
+    let window = webview_options(app, builder)
         .build()
         .map_err(|e| format!("ウィンドウを作れません: {e}"))?;
 
@@ -4679,6 +5232,7 @@ pub fn run() {
             delete_image,
             audio_info,
             audio_artwork,
+            video_subtitles,
             watch_folder,
             file_association_status,
             apply_file_associations

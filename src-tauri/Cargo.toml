@@ -31,6 +31,10 @@ notify = "8"
 trash = { version = "5", default-features = false, features = ["coinit_apartmentthreaded"] }
 # 音楽ファイルのタグ（曲名・アーティスト・アルバム）と埋め込みアートワークを読む
 lofty = "0.25"
+# MKV に入っているテキスト字幕（SRT / ASS）を取り出す（MKV を扱うのは Windows だけ）
+matroska-demuxer = "0.8"
+# MKV の字幕に掛かっている zlib 圧縮を戻す。zip と同じ版・同じ実装（zlib-rs）にそろえる
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 # 拡張子の関連付け（Windows のレジストリ操作）
 [target.'cfg(windows)'.dependencies]

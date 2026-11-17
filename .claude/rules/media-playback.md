@@ -10,7 +10,8 @@ paths:
 
 - Videos play in a `<video>` element with whatever decoder the OS WebView has (WebView2 / WKWebView). **No codec is bundled** — that keeps codec patent licensing out of the
   app — so `VIDEO_EXTS` is limited to containers most WebViews handle (`mp4` / `m4v` / `webm` /
-  `mov`); anything the WebView can't decode just shows an error. Videos are listed only from
+  `mov`; plus `mkv` on Windows only via `WINDOWS_VIDEO_EXTS` / `PLATFORM_VIDEO_EXTS` — WKWebView
+  can't play MKV, so macOS never lists, offers or associates it); anything the WebView can't decode just shows an error. Videos are listed only from
   folders / single files (`is_media`), never from archives (`read_archive_entry` loads a whole entry into memory).
   They load through the asset protocol, so the CSP needs `media-src` alongside `img-src`.
   `unloadVideo()` (pause + drop `src` + `load()`) runs before every `show()` and before
@@ -41,6 +42,24 @@ paths:
   `VIDEO_DRAG_THRESHOLD_PX` calls `appWindow.startDragging()`, and one released within
   `VIDEO_CLICK_MS` without moving toggles play-pause. The playback controls are the `#videobar` card (seek bar on top; time /
   ±5 s + play / mute + volume below) inside `#chrome`, so they show and hide with the rest of the chrome.
+  Audio tracks are switched only from the context menu (「音声」, read live from `video.audioTracks` when the
+  menu opens; `selectAudioTrack` enables just the chosen one) — there is deliberately no control on the card.
+  WebView2 exposes `audioTracks` only behind the experimental Blink feature `AudioVideoTracks`, switched on
+  through `WEBVIEW2_BROWSER_ARGS` (see `platform.md`); where it is absent the item is greyed out.
+  MKV text subtitles: Chromium never exposes in-band MKV subtitles, so `video_subtitles` (Rust, async, MKV only
+  and only where `is_video` accepts mkv) returns SRT / ASS tracks with their cues. Track info and
+  ContentEncoding (zlib / header stripping; encrypted tracks are skipped) come from `matroska-demuxer`, but the
+  blocks are walked by our own `scan_subtitle_blocks` from the first Cluster: the crate's `next_frame` reads every
+  video / audio frame, i.e. the whole file, while the scan `seek_relative`s past other tracks' blocks. ASS is
+  reduced to plain text (`clean_ass_text`: override tags dropped, `\p` drawings skipped, then HTML-escaped);
+  SRT keeps `<i>`/`<b>`/`<u>`. `main.js` keeps **one** `addTextTrack` track (`subtitleTextTrack`) for good —
+  tracks added that way can't be removed — and swaps its cues in `selectSubtitle` (set `hidden` first: `cues`
+  is null while `disabled`); each cue gets `line = SUBTITLE_LINE` (-2) so it sits one line above the video's
+  bottom edge instead of on it. Subtitles start **off** on every video (the track's default flag is ignored).
+  Subtitles load per `show()` (`loadSubtitles`, dropped on a stale `showToken`) and are
+  cleared in `unloadVideo`. The context menu shows 「音声」/「字幕」 (in that order) only for videos, as items with a `submenu`
+  (`.ctx-submenu`, opened on hover by `openSubmenu`, placed inside `#ctxmenu` so the outside-click check still
+  works); they are disabled when there is nothing to pick (no subtitles, < 2 audio tracks).
 - Audio (`AUDIO_EXTS` in `lib.rs` / `AUDIO_EXT_FILTER` in `main.js`, kept in sync by the same test;
   never listed from archives) plays through the **same `<video>` element**,
   which stays hidden while `#audio` shows the artwork and the title panel. `showingMedia`
