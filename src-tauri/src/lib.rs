@@ -149,13 +149,15 @@ struct KindState {
 
 impl KindState {
     /// 今の設定と表示中の種類で、ウィンドウが使うべき枠。
-    /// 「メディアに合わせる」で何も表示していなければ None
+    /// まだ何も表示していなければ（ファイルを指定せずに起動しただけなら）どちらの設定でも None。
+    /// そのウィンドウは既定の大きさで画面の中央に出し、どの枠にも記録しない
     fn target(&self) -> Option<WindowSlot> {
-        if self.fit {
-            self.shown.map(WindowSlot::Kind)
+        let shown = self.shown?;
+        Some(if self.fit {
+            WindowSlot::Kind(shown)
         } else {
-            Some(WindowSlot::Free)
-        }
+            WindowSlot::Free
+        })
     }
 
     /// 使うべき枠の大きさ・位置へまだ置き直していないか
@@ -164,11 +166,6 @@ impl KindState {
     }
 }
 type WindowKind = PerWindow<KindState>;
-
-/// 画面に収まる大きさへ抑えるのは、ウィンドウを開いてから最初に合わせるときだけ。
-/// false の間がその 1 回で、済ませたら true にして、閉じるまで戻さない
-/// （動かしている間は、ユーザーが決めた大きさをそのまま尊重する）
-type FirstFitDone = PerWindow<bool>;
 
 /// 「画像に合わせる」で、ウィンドウを画像の縦横比から外させないための覚え書き。
 /// ドラッグの最中も含め、大きさが変わるたびに参照する
@@ -195,6 +192,18 @@ struct AspectState {
     area: f64,
 }
 type AspectLock = PerWindow<AspectState>;
+
+impl AspectState {
+    /// 縦横比の固定を外す。広さ（area）は残す。
+    /// 広さを今のウィンドウから取り直すと、画面に収めるために縮めた大きさが
+    /// そのまま広さになり、以後の画像がずっと小さくなってしまう
+    fn unlock(&mut self) {
+        *self = AspectState {
+            area: self.area,
+            ..AspectState::default()
+        };
+    }
+}
 
 /// macOS で端・角を引っ張っている間の様子
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -539,7 +548,6 @@ mod tests {
     fn kind_target_uses_only_that_kinds_record() {
         // 最後に閉じたのは動画（横長）。画像の分は別に覚えている
         let mut saved = sized(1280.0, 720.0, 100.0, 100.0);
-        saved.kind = Some("video".into());
         saved
             .kinds
             .insert("video".into(), sized(1280.0, 720.0, 100.0, 100.0));
@@ -591,7 +599,6 @@ mod tests {
     #[test]
     fn kind_target_record_does_not_carry_nested_state() {
         let mut record = sized(800.0, 600.0, 0.0, 0.0);
-        record.kind = Some("image".into());
         record
             .kinds
             .insert("video".into(), sized(1.0, 1.0, 0.0, 0.0));
@@ -600,41 +607,45 @@ mod tests {
         let KindTarget::Record(target) = kind_target(&saved, WindowKindKey::Image, false) else {
             panic!("画像の分を使うはず");
         };
-        assert_eq!(target.kind, None);
         assert!(target.kinds.is_empty());
         assert_eq!((target.width, target.height), (Some(800.0), Some(600.0)));
     }
 
     #[test]
-    fn window_state_keeps_the_kind_of_the_last_window() {
-        let mut state = sized(800.0, 600.0, 10.0, 20.0);
-        state.kind = Some(kind_key(WindowKindKey::Book).to_string());
-        state
-            .kinds
-            .insert("book".into(), sized(800.0, 600.0, 10.0, 20.0));
+    fn window_state_keeps_the_fit_area_of_each_kind() {
+        // 縦長の画像で画面に収めたため、ウィンドウは広さより小さい
+        let mut record = sized(540.0, 960.0, 10.0, 20.0);
+        record.area = Some(1280.0 * 720.0);
+        let mut state = WindowState::default();
+        state.store(WindowSlot::Kind(WindowKindKey::Image), &record);
         let text = serde_json::to_string(&state).unwrap();
         let read: WindowState = serde_json::from_str(&text).unwrap();
-        assert_eq!(
-            read.kind.as_deref().and_then(parse_kind_key),
-            Some(WindowKindKey::Book)
-        );
-        // 種類ごとの分には種類を書かない
-        assert!(!serde_json::to_string(&read.kinds["book"])
+        let KindTarget::Record(target) = kind_target(&read, WindowKindKey::Image, false) else {
+            panic!("画像の分を使うはず");
+        };
+        // 広さは大きさから求め直さず、覚えていた値で戻す
+        assert_eq!(target.fit_area(), 1280.0 * 720.0);
+        // 広さの無い古い記録は大きさから求める
+        assert_eq!(sized(800.0, 600.0, 0.0, 0.0).fit_area(), 800.0 * 600.0);
+        // 「自由に変更」の枠（最上位）には広さを書かない
+        state.store(WindowSlot::Free, &record);
+        assert_eq!(state.area, None);
+        assert!(!serde_json::to_string(&WindowState::default())
             .unwrap()
-            .contains("kind"));
-        // 知らない値が入っていても、ファイルごと読めなくはならない
-        let odd: WindowState =
-            serde_json::from_str(r#"{"width":800,"height":600,"kind":"movie"}"#).unwrap();
-        assert_eq!(odd.kind.as_deref().and_then(parse_kind_key), None);
-        assert_eq!(odd.width, Some(800.0));
+            .contains("area"));
+        // 以前の「最後に使った種類」（kind）が残っていても読める
+        let old: WindowState =
+            serde_json::from_str(r#"{"width":800,"height":600,"kind":"video"}"#).unwrap();
+        assert_eq!(old.width, Some(800.0));
     }
 
     #[test]
     fn kind_state_targets_one_slot_when_free() {
-        let mut state = KindState {
-            applied: Some(WindowSlot::Free),
-            ..KindState::default()
-        };
+        let mut state = KindState::default();
+        // 何も表示していない（ファイルを指定せずに起動しただけの）ウィンドウはどの枠でもない
+        assert_eq!(state.target(), None);
+        assert!(!state.pending());
+        state.applied = Some(WindowSlot::Free);
         // 「自由に変更」は種類によらず 1 つの枠。種類が変わっても置き直さない
         for kind in [
             WindowKindKey::Image,
@@ -682,15 +693,12 @@ mod tests {
         assert_eq!((state.width, state.height), (Some(800.0), Some(600.0)));
         assert_eq!((state.x, state.y), (Some(10.0), Some(20.0)));
         assert_eq!(state.kinds["video"], sized(1280.0, 720.0, 50.0, 60.0));
-        assert_eq!(state.kind.as_deref(), Some("video"));
-        // 「自由に変更」の枠に書いても、種類ごとの枠と最後の種類は変わらない
+        // 「自由に変更」の枠に書いても、種類ごとの枠は変わらない
         state.store(WindowSlot::Free, &sized(640.0, 480.0, 0.0, 0.0));
         assert_eq!((state.width, state.height), (Some(640.0), Some(480.0)));
         assert_eq!(state.kinds["video"], sized(1280.0, 720.0, 50.0, 60.0));
-        assert_eq!(state.kind.as_deref(), Some("video"));
         // 種類ごとの枠には入れ子を持たせない
         let mut nested = sized(300.0, 300.0, 0.0, 0.0);
-        nested.kind = Some("image".into());
         nested
             .kinds
             .insert("audio".into(), sized(1.0, 1.0, 0.0, 0.0));
@@ -926,6 +934,32 @@ mod tests {
         let (w, h) = sized_to_aspect(1.0, extra, 4000.0 * 4000.0, limit);
         assert!(w <= limit.0 + 1e-9 && h <= limit.1 + 1e-9);
         assert!(((w - extra.0) / (h - extra.1) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn within_limit_shrinks_keeping_the_ratio() {
+        let limit = (1824.0, 988.0);
+        // 収まっていればそのまま
+        assert_eq!(within_limit((960.0, 640.0), limit), (960.0, 640.0));
+        // はみ出す分は縦横比を保って縮める（縦が決め手）
+        let (w, h) = within_limit((1200.0, 2000.0), limit);
+        assert!((h - 988.0).abs() < 1e-9);
+        assert!((w / h - 0.6).abs() < 1e-9);
+        // 制限が無ければそのまま
+        assert_eq!(within_limit((5000.0, 4000.0), NO_LIMIT), (5000.0, 4000.0));
+    }
+
+    #[test]
+    fn centered_in_area_uses_the_work_area() {
+        let area = Area {
+            x: 1920.0,
+            y: 40.0,
+            width: 1920.0,
+            height: 1040.0,
+        };
+        assert_eq!(centered_in_area(960.0, 640.0, &area), (2400.0, 240.0));
+        // 作業領域より大きければ左上に合わせる
+        assert_eq!(centered_in_area(2000.0, 1200.0, &area), (1920.0, 40.0));
     }
 
     #[test]
@@ -2257,10 +2291,13 @@ struct WindowState {
     /// x / y を記録したときのウィンドウの倍率（ディスプレイの拡大率）。
     /// Windows で位置を物理ピクセルへ戻すのに使う（無い古いファイルは今の倍率で読む）
     scale: Option<f64>,
-    /// 「メディアに合わせる」で最後に使った種類（"image" / "video" / "audio" / "book"）。
-    /// 最上位だけが持つ。ファイルを指定せずに起動したとき、この種類の枠で開く
+    /// 「メディアに合わせる」の種類ごとの枠だけが持つ、縦横比を合わせるときに保つ広さ
+    /// （論理ピクセルの面積。AspectState::area）。ウィンドウの大きさは画面に収めるために
+    /// 広さより小さくなっていることがあるので、大きさから求め直さず、これで戻す
+    /// （求め直すと、縦長の画像で画面に収めたあと種類を行き来するたびに縮んでいく）。
+    /// 無い古いファイルは大きさから求める
     #[serde(skip_serializing_if = "Option::is_none")]
-    kind: Option<String>,
+    area: Option<f64>,
     /// 「メディアに合わせる」の、種類（"image" / "video" / "audio" / "book"）ごとの大きさと位置。
     /// 表示する種類が変わるたびに、その種類で最後に使っていた大きさと位置へ戻す
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -2273,23 +2310,30 @@ impl WindowState {
         matches!((self.width, self.height), (Some(w), Some(h)) if w >= 1.0 && h >= 1.0)
     }
 
-    /// 大きさ・位置だけを取り出す（種類ごとの分や種類の名前は含めない）
+    /// 大きさ・位置（と広さ）だけを取り出す（種類ごとの分は含めない）
     fn geometry_only(&self) -> WindowState {
         WindowState {
-            kind: None,
             kinds: BTreeMap::new(),
             ..self.clone()
         }
     }
 
-    /// 枠 slot に geometry を書き込む
+    /// 縦横比を合わせるときに保つ広さ。覚えていなければ大きさから求める
+    fn fit_area(&self) -> f64 {
+        match (self.area, self.width, self.height) {
+            (Some(area), _, _) if area > 0.0 => area,
+            (_, Some(width), Some(height)) => width * height,
+            _ => 0.0,
+        }
+    }
+
+    /// 枠 slot に geometry を書き込む。広さは種類ごとの枠だけが持つ
     fn store(&mut self, slot: WindowSlot, geometry: &WindowState) {
         match slot {
             WindowSlot::Free => copy_geometry(self, geometry),
             WindowSlot::Kind(kind) => {
-                let key = kind_key(kind).to_string();
-                self.kinds.insert(key.clone(), geometry.geometry_only());
-                self.kind = Some(key);
+                self.kinds
+                    .insert(kind_key(kind).to_string(), geometry.geometry_only());
             }
         }
     }
@@ -2303,18 +2347,6 @@ fn kind_key(kind: WindowKindKey) -> &'static str {
         WindowKindKey::Audio => "audio",
         WindowKindKey::Book => "book",
     }
-}
-
-/// window.json のキーを種類に戻す（知らない値は None）
-fn parse_kind_key(key: &str) -> Option<WindowKindKey> {
-    [
-        WindowKindKey::Image,
-        WindowKindKey::Video,
-        WindowKindKey::Audio,
-        WindowKindKey::Book,
-    ]
-    .into_iter()
-    .find(|k| kind_key(*k) == key)
 }
 
 /// 種類を表示するときに置くウィンドウの姿
@@ -2416,6 +2448,7 @@ fn save_window_state(window: &tauri::Window) {
     let Some(geometry) = current_geometry(window) else {
         return;
     };
+    // 何も表示していない（どの枠にも属していない）ウィンドウは記録しない
     let Some(slot) = app
         .state::<WindowKind>()
         .with(window.label(), |k| k.applied)
@@ -2423,9 +2456,26 @@ fn save_window_state(window: &tauri::Window) {
     else {
         return;
     };
+    let geometry = with_fit_area(window, slot, geometry);
     let mut state = read_window_state(app).unwrap_or_default();
     state.store(slot, &geometry);
     write_window_state(app, &state);
+}
+
+/// 種類ごとの枠に書くときは、縦横比を合わせるときに保っている広さも添える
+fn with_fit_area(
+    window: &tauri::Window,
+    slot: WindowSlot,
+    mut geometry: WindowState,
+) -> WindowState {
+    if matches!(slot, WindowSlot::Kind(_)) {
+        geometry.area = window
+            .app_handle()
+            .state::<AspectLock>()
+            .with(window.label(), |aspect| aspect.area)
+            .filter(|area| *area > 0.0);
+    }
+    geometry
 }
 
 /// 大きさ・位置が決まったところで、すぐに window.json へ書く（閉じるまで待たない）。
@@ -2628,36 +2678,52 @@ fn fits_window_to_image(app: &AppHandle) -> bool {
     )
 }
 
-/// 起動時に、前回のウィンドウを復元する（ウィンドウを見せる前に呼ぶ）。
-/// 「自由に変更」では種類によらず 1 つの枠（最上位）の大きさ・位置で開く。
-/// 「メディアに合わせる」では、開くファイルの種類 kind（関連付け・コマンドラインから
-/// 開いたとき）の枠で開く。kind が分からなければ、最後に使った種類の枠で開く。
+/// 起動時に、開くファイルの種類 kind（関連付け・コマンドラインから開いたとき）に合わせて
+/// ウィンドウを置く（ウィンドウを見せる前に呼ぶ）。
+/// 「自由に変更」では種類によらず 1 つの枠（最上位）、「メディアに合わせる」では kind の枠の
+/// 大きさ・位置で開く。ファイルを指定せずに起動したとき（kind が None）は何もしない
+/// （tauri.conf.json の既定の大きさのまま、画面の中央に出る）。
 /// 「画像に合わせる」では最初の画像で縦横比を合わせ直すので、そのときも
 /// 同じ左上に置けるよう、保存した位置を PendingPosition に残しておく
 fn restore_window_state(window: &tauri::Window, kind: Option<WindowKindKey>) {
     let app = window.app_handle();
-    let saved = read_window_state(app).unwrap_or_default();
     let label = window.label();
     let fit = fits_window_to_image(app);
     let kinds = app.state::<WindowKind>();
     kinds.with(label, |k| k.fit = fit);
+    let Some(kind) = kind else {
+        return;
+    };
+    let saved = read_window_state(app).unwrap_or_default();
     if !fit {
         kinds.with(label, |k| k.applied = Some(WindowSlot::Free));
         place_and_remember(window, &saved.geometry_only());
         return;
     }
-    let Some(kind) = kind.or_else(|| saved.kind.as_deref().and_then(parse_kind_key)) else {
-        // どの種類の枠でもない姿（「自由に変更」の枠）で開き、最初に表示した種類で置き直す
-        place_and_remember(window, &saved.geometry_only());
-        return;
-    };
     kinds.with(label, |k| k.applied = Some(WindowSlot::Kind(kind)));
     match kind_target(&saved, kind, true) {
-        KindTarget::Record(record) => place_and_remember(window, &record),
+        KindTarget::Record(record) => {
+            set_fit_area(window, record.fit_area());
+            place_and_remember(window, &record);
+        }
         KindTarget::Adopt => place_and_remember(window, &saved.geometry_only()),
         // 初めて表示する種類は tauri.conf.json の既定の大きさのまま、画面の中央に開く
         KindTarget::Default => {}
     }
+}
+
+/// 縦横比を合わせるときに保つ広さを area にする（縦横比の固定は外す。
+/// フロントエンドが表示するものに合わせてかけ直す）
+fn set_fit_area(window: &tauri::Window, area: f64) {
+    window
+        .app_handle()
+        .state::<AspectLock>()
+        .with(window.label(), |aspect| {
+            *aspect = AspectState {
+                area,
+                ..AspectState::default()
+            }
+        });
 }
 
 /// 保存した姿へ置き、「画像に合わせる」なら最初の縦横比合わせをその左上に合わせる
@@ -2677,31 +2743,47 @@ fn remember_placement(window: &tauri::Window, placed: Option<RestoredPosition>) 
 }
 
 /// 保存した大きさ・位置にウィンドウを置く。
-/// ウィンドウ全体が作業領域に収まるよう寄せる（ディスプレイの構成が
+/// 大きさは置く先のディスプレイの作業領域の SCREEN_RATIO に収まるよう、縦横比を保って縮める。
+/// 位置はウィンドウ全体が作業領域に収まるよう寄せる（ディスプレイの構成が
 /// 変わっていたり、前回より大きく開いたりしたときに画面外へ出さない）。
+/// 保存した位置がどの画面にも載らない（前回のディスプレイが外れている）・位置を覚えていない
+/// ときは、今のディスプレイの作業領域の中央に置く。
 /// 位置を戻したときは、保存した左上と実際に置いた左上を返す。
 ///
 /// 大きさは論理ピクセルで戻す。倍率の違うディスプレイへ移ると、Windows でも macOS でも
 /// 論理ピクセルの大きさを保ったまま描き直されるので、見た目の大きさは閉じたときと同じになる
 fn place_window(window: &tauri::Window, state: &WindowState) -> Option<RestoredPosition> {
     let scale = window.scale_factor().ok()?;
-    // 中身の大きさ（論理ピクセル）。保存した大きさがあればそれにする
+    let size = (state.width, state.height);
+    let size = match size {
+        (Some(width), Some(height)) if width >= 1.0 && height >= 1.0 => Some((width, height)),
+        _ => None,
+    };
+    let saved = saved_position(state, scale, PHYSICAL_DESKTOP);
+    if size.is_none() && saved.is_none() {
+        return None;
+    }
+    // 保存した位置が載っているディスプレイ。無ければ今のディスプレイ（そこの中央に置く）
+    let restored = saved.and_then(|(x, y)| work_area_at(window, x, y));
+    let screen = restored.or_else(|| current_desktop_work_area(window));
+
+    // 中身の大きさ（論理ピクセル）。保存した大きさがあれば、画面に収めてそれにする
     let mut inner = window
         .inner_size()
         .map(|s| s.to_logical::<f64>(scale))
         .unwrap_or_else(|_| LogicalSize::new(0.0, 0.0));
     let mut resized = false;
-    if let (Some(width), Some(height)) = (state.width, state.height) {
-        if width >= 1.0 && height >= 1.0 {
-            let _ = window.set_size(LogicalSize::new(width, height));
-            inner = LogicalSize::new(width, height);
-            resized = true;
-        }
+    if let Some(size) = size {
+        let limit = screen
+            .map(|(area, target_scale)| desktop_limit(&area, target_scale))
+            .unwrap_or(NO_LIMIT);
+        let (width, height) = within_limit(size, limit);
+        let _ = window.set_size(LogicalSize::new(width, height));
+        inner = LogicalSize::new(width, height);
+        resized = true;
     }
 
-    let (saved_x, saved_y) = saved_position(state, scale, PHYSICAL_DESKTOP)?;
-    let (work_area, target_scale) = work_area_at(window, saved_x, saved_y)?;
-
+    let (work_area, target_scale) = screen?;
     // 外枠の大きさ = 中身 + 枠（Windows の枠なしウィンドウの影のぶん）。
     // 置く先のディスプレイの倍率で、画面上の位置の座標へ直す
     let frame = match (window.outer_size(), window.inner_size()) {
@@ -2711,7 +2793,12 @@ fn place_window(window: &tauri::Window, state: &WindowState) -> Option<RestoredP
     let ratio = desktop_ratio(target_scale, PHYSICAL_DESKTOP);
     let outer_width = (inner.width + f64::from(frame.0) / scale) * ratio;
     let outer_height = (inner.height + f64::from(frame.1) / scale) * ratio;
-    let (x, y) = clamp_to_area(saved_x, saved_y, outer_width, outer_height, &work_area);
+    let (x, y) = match (saved, restored) {
+        (Some((saved_x, saved_y)), Some(_)) => {
+            clamp_to_area(saved_x, saved_y, outer_width, outer_height, &work_area)
+        }
+        _ => centered_in_area(outer_width, outer_height, &work_area),
+    };
     set_desktop_position(window, (x, y));
     // Windows で倍率の違うディスプレイへ移したときは、移った先の倍率で大きさを付け直す
     // （移る前に付けた大きさは前のディスプレイの倍率で物理ピクセルにしてあり、
@@ -2725,10 +2812,53 @@ fn place_window(window: &tauri::Window, state: &WindowState) -> Option<RestoredP
             }
         }
     }
+    // 中央に置いたときは、最初の縦横比合わせも中心を保てばよいので覚えない
+    if restored.is_none() {
+        return None;
+    }
     Some(RestoredPosition {
-        saved: (saved_x, saved_y),
+        saved: saved?,
         placed: (x, y),
     })
+}
+
+/// 今のディスプレイの作業領域（画面上の位置の座標）と、そのディスプレイの倍率
+fn current_desktop_work_area(window: &tauri::Window) -> Option<(Area, f64)> {
+    let monitor = window.current_monitor().ok().flatten()?;
+    let scale = monitor.scale_factor();
+    Some((desktop_area(monitor_work_area(&monitor), scale), scale))
+}
+
+/// 作業領域（画面上の位置の座標）の中央に、大きさ (width, height)（同じ座標）のウィンドウを
+/// 置くときの左上。作業領域より大きいときは左上を作業領域の左上に合わせる
+fn centered_in_area(width: f64, height: f64, area: &Area) -> (f64, f64) {
+    clamp_to_area(
+        area.x + (area.width - width) / 2.0,
+        area.y + (area.height - height) / 2.0,
+        width,
+        height,
+        area,
+    )
+}
+
+/// ディスプレイの作業領域（画面上の位置の座標。倍率 scale のディスプレイ）に収める
+/// ウィンドウの中身の大きさの上限（論理ピクセル）
+fn desktop_limit(area: &Area, scale: f64) -> (f64, f64) {
+    let ratio = desktop_ratio(scale, PHYSICAL_DESKTOP);
+    (
+        area.width / ratio * SCREEN_RATIO,
+        area.height / ratio * SCREEN_RATIO,
+    )
+}
+
+/// 大きさ size を、縦横比を保ったまま limit に収める（収まっていればそのまま）。
+/// 最小サイズは下回らない
+fn within_limit((width, height): (f64, f64), limit: (f64, f64)) -> (f64, f64) {
+    let shrink = 1.0_f64.min(limit.0 / width).min(limit.1 / height);
+    (
+        (width * shrink).max(MIN_WINDOW_SIZE.0),
+        (height * shrink).max(MIN_WINDOW_SIZE.1),
+    )
 }
 
 /// 表示するファイルの種類（画像の本モードも 1 つの種類として扱う）と、ウィンドウのサイズの
@@ -2776,8 +2906,9 @@ fn apply_window_kind(window: &tauri::Window) -> bool {
     // ウィンドウの状態は、ロックを取っていないここで調べる（current_geometry の中で
     // macOS の AppKit がサイズ変更の問い合わせ（mac_sizing）を呼ぶことがある）
     let Some(geometry) = current_geometry(window) else {
+        // 縦横比の固定だけ外す。広さはまだ前の枠のものなので、置き直すときにそちらへ書く
         app.state::<AspectLock>()
-            .with(label, |aspect| *aspect = AspectState::default());
+            .with(label, |aspect| aspect.unlock());
         return false;
     };
     let mut saved = read_window_state(app).unwrap_or_default();
@@ -2795,8 +2926,9 @@ fn apply_window_kind(window: &tauri::Window) -> bool {
         }
     };
     // 今の姿はそれまでの枠のもの。そちらに書いておく
+    // （何も表示していなかったウィンドウの姿は、どの枠のものでもないので書かない）
     if let Some(previous) = applied {
-        saved.store(previous, &geometry);
+        saved.store(previous, &with_fit_area(window, previous, geometry));
         write_window_state(app, &saved);
     }
     kinds.with(label, |k| k.applied = Some(target));
@@ -2805,7 +2937,11 @@ fn apply_window_kind(window: &tauri::Window) -> bool {
             place_kind_geometry(window, &placement);
             true
         }
-        None => false,
+        None => {
+            // 今の姿をそのまま使う。前の枠の広さは持ち越さず、今の大きさから取り直す
+            set_fit_area(window, 0.0);
+            false
+        }
     }
 }
 
@@ -2823,13 +2959,16 @@ fn default_window_size(app: &AppHandle) -> (f64, f64) {
 /// まだ表示したことのない種類の姿。既定の大きさで、今のウィンドウの中心に置く
 /// （画面からはみ出す分は作業領域の中へ寄せる）
 fn default_geometry(window: &tauri::Window) -> Option<WindowState> {
-    let (width, height) = default_window_size(window.app_handle());
     let scale = window.scale_factor().ok()?;
+    let work_area = current_work_area(window);
+    let (width, height) = within_limit(
+        default_window_size(window.app_handle()),
+        screen_limit(work_area, scale),
+    );
     let pos = window.outer_position().ok()?;
     let outer = window.outer_size().ok()?;
     let inner = window.inner_size().ok()?;
     let new_inner: PhysicalSize<u32> = LogicalSize::new(width, height).to_physical(scale);
-    let work_area = current_work_area(window);
     let at = fitted_position(pos, outer, inner, new_inner, None, work_area.as_ref());
     // window.json と同じく、論理ピクセルと記録したときの倍率で持つ
     let at = at.to_logical::<f64>(scale);
@@ -2844,26 +2983,13 @@ fn default_geometry(window: &tauri::Window) -> Option<WindowState> {
 }
 
 /// 種類の姿へ置き直す。
-/// 縦横比の固定を外し、置いた広さを次の縦横比合わせの基準にする
+/// 縦横比の固定を外し、その枠の広さを次の縦横比合わせの基準にする
 /// （外さないと、set_size の通知を手で変えたものと取り違えて前の縦横比へ引き戻す。
 /// 固定はこのあとフロントエンドが表示するものに合わせてかけ直す）。
-/// 置いたあと最初の縦横比合わせは、起動直後と同じく画面に収め、置いた左上に合わせる。
+/// 置いたあと最初の縦横比合わせは、置いた左上に合わせる。
 /// ロックは set_size の前に手放す（その場で Resized が呼ばれると止まる）
 fn place_kind_geometry(window: &tauri::Window, target: &WindowState) {
-    let app = window.app_handle();
-    let label = window.label();
-    let area = match (target.width, target.height) {
-        (Some(width), Some(height)) => width * height,
-        _ => 0.0,
-    };
-    app.state::<AspectLock>().with(label, |aspect| {
-        *aspect = AspectState {
-            area,
-            ..AspectState::default()
-        }
-    });
-    app.state::<FirstFitDone>()
-        .with(label, |done| *done = false);
+    set_fit_area(window, target.fit_area());
     let target = cascaded(window, target);
     place_and_remember(window, &target);
 }
@@ -2898,14 +3024,15 @@ fn cascaded(window: &tauri::Window, target: &WindowState) -> WindowState {
     result
 }
 
-/// 立ち上げて最初に開くときの、ウィンドウの大きさの上限（作業領域に対する割合）。
-/// 画面ぎりぎりではなく少し余裕を残す
+/// ウィンドウの大きさの上限（作業領域に対する割合）。
+/// 記録した大きさで置くときと、「メディアに合わせる」で縦横比を合わせるたびに、この中へ収める
+/// （手で端を引っ張ったときは抑えない）。画面ぎりぎりではなく少し余裕を残す
 const SCREEN_RATIO: f64 = 0.95;
 
 /// 大きさの制限なし（sized_to_aspect の limit に渡す）
 const NO_LIMIT: (f64, f64) = (f64::INFINITY, f64::INFINITY);
 
-/// 立ち上げて最初に開くときの、ウィンドウの大きさの上限（論理ピクセル）。
+/// ウィンドウの中身の大きさの上限（論理ピクセル）。
 /// 画面（タスクバーなどを除いた作業領域）からはみ出させないためのもので、
 /// 作業領域が分からないときは制限しない
 fn screen_limit(work_area: Option<Area>, scale: f64) -> (f64, f64) {
@@ -2953,8 +3080,9 @@ fn sized_to_aspect(aspect: f64, extra: (f64, f64), area: f64, limit: (f64, f64))
 }
 
 /// 「画像に合わせる」で、ウィンドウの縦横比を表示中の画像に固定する。
-/// ratio が null のときは解除する（「自由に変更」や、画像を開いていないとき）。
-/// かけ直したときは、そのときのウィンドウの大きさを基準の広さとして覚える
+/// ratio が null のときは解除する（「自由に変更」や、画像を開いていない・読み込み中のとき）。
+/// 解除しても基準の広さは残す。広さを覚えていないときだけ、今のウィンドウの大きさを
+/// 基準の広さとして覚える
 ///
 /// 表示中の種類の大きさ・位置へまだ置き直していない間（最大化中などに種類が変わったとき）は
 /// 固定しない。ウィンドウの普段の姿はまだ前の種類のもので、元に戻したときに OS が戻す
@@ -2974,7 +3102,7 @@ fn set_aspect_lock(
     };
     let state = map.entry(window.label().to_string()).or_default();
     let Some(ratio) = ratio.filter(|r| *r > 0.0 && !pending) else {
-        *state = AspectState::default();
+        state.unlock();
         return;
     };
     state.ratio = Some(ratio);
@@ -3130,8 +3258,11 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
     let Some(ratio) = state.ratio else {
         return;
     };
-    // 自分で直したぶんの跳ね返り
-    if size == state.last {
+    // 自分で直したぶんの跳ね返り。OS の丸めで 1 ピクセルずれて返ってくることもある
+    // （macOS の倍率など）。それを手で変えたものとして広さを取り直すと、画面に収めるために
+    // 縮めた大きさが広さになってしまうので、基準だけ合わせて何もしない
+    if size.width.abs_diff(state.last.width) <= 1 && size.height.abs_diff(state.last.height) <= 1 {
+        state.reported = size;
         return;
     }
     let now = size.to_logical::<f64>(scale);
@@ -3164,17 +3295,17 @@ fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u32>) {
 /// ウィンドウを画像の縦横比に合わせる（「画像に合わせる」のとき）。
 /// 大きさは set_aspect_lock が覚えている広さを保ち、縦横比だけを画像に合わせるので、
 /// 画像を切り替えても、手でサイズを変えたあとも、大きさの印象は変わらない。
+/// 毎回、作業領域（タスクバーなどを除いた画面）の SCREEN_RATIO に収まるよう
+/// 縦横比を保ったまま縮める（覚えている広さは縮めない。縦長の画像で縮めても、
+/// 次の横長の画像は元の広さで開く）。
 /// 大きさを変えても中心は動かさず、作業領域からはみ出す分は中へ寄せる。
-/// 立ち上げて最初の 1 枚だけは、作業領域（タスクバーなどを除いた画面）の 95% に
-/// 収まるよう縦横比を保ったまま縮め（縮めた広さを以後の基準にする）、
-/// 前回閉じたときと同じ左上に合わせる。
+/// 起動直後・種類の姿へ置き直した直後の 1 枚だけは、置いた左上に合わせる。
 /// 最大化中・全画面中は大きさを変えない（変えると解けてしまう）
 #[tauri::command]
 fn fit_window_to_image(
     window: WebviewWindow,
     pending: State<PendingPosition>,
     lock: State<AspectLock>,
-    first_fit: State<FirstFitDone>,
     kinds: State<WindowKind>,
     width: f64,
     height: f64,
@@ -3220,16 +3351,7 @@ fn fit_window_to_image(
     };
 
     let work_area = current_work_area(&window.as_ref().window());
-    // 画面に収めるのはウィンドウを開いて最初の 1 枚だけ。前回のディスプレイ構成が
-    // 変わっていても画面内に開くための保険で、以後は口を出さない
-    let first = first_fit
-        .with(label, |done| !std::mem::replace(done, true))
-        .unwrap_or(false);
-    let limit = if first {
-        screen_limit(work_area, scale)
-    } else {
-        NO_LIMIT
-    };
+    let limit = screen_limit(work_area, scale);
     let extra = (extra_width.unwrap_or(0.0), extra_height.unwrap_or(0.0));
     let (w, h) = sized_to_aspect(width / height, extra, area, limit);
     let new_inner: PhysicalSize<u32> = LogicalSize::new(w, h).to_physical(scale);
@@ -3249,9 +3371,8 @@ fn fit_window_to_image(
         });
 
     // set_size の跳ね返りを手動のサイズ変更と取り違えないよう、先に大きさを覚える。
-    // 広さは普段は変えないが、立ち上げて最初の 1 枚で画面に収めるために縮めたときは
-    // その広さを以後の基準にする（元の広さのままだと、次の画像へ移った途端に
-    // 縮める前の大きさへ戻り、ウィンドウが一度だけ大きくなってしまう）
+    // 広さは変えない（画面に収めるために縮めた大きさを広さにすると、以後ずっと小さくなる）。
+    // 覚えていなかったときだけ、上で使った広さを覚える
     lock.with(label, |state| {
         // 縦横比の固定もここでかけておく（上で種類の姿へ置き直したときは外れているため。
         // フロントエンドの set_aspect_lock と同じ値）
@@ -3259,8 +3380,8 @@ fn fit_window_to_image(
         state.extra = extra;
         state.last = new_inner;
         state.reported = new_inner;
-        if first {
-            state.area = w * h;
+        if state.area <= 0.0 {
+            state.area = area;
         }
     });
     // 既に縦横比どおりなら何もしない
@@ -5027,30 +5148,25 @@ fn create_viewer_window(app: &AppHandle, path: &str) -> Result<WebviewWindow, St
             front().map(|(geometry, _)| geometry)
         }
     } else {
-        let kind = prepare_startup_listing(app, &label, path);
-        match kind.map(|k| (k, kind_target(&saved, k, true))) {
-            Some((k, KindTarget::Record(record))) => {
+        match prepare_startup_listing(app, &label, path) {
+            Some(k) => {
                 set_applied(Some(WindowSlot::Kind(k)));
-                Some(record)
-            }
-            Some((k, KindTarget::Default)) => {
-                set_applied(Some(WindowSlot::Kind(k)));
-                default_geometry(&target)
-            }
-            // 種類が分からない・種類ごとの分をまだ覚えていないときは、前面のビューアの姿
-            // （無ければ「自由に変更」の枠）から作る。ただし前面のビューアが別の種類の枠なら、
-            // その形は写さず既定の大きさにする
-            Some((_, KindTarget::Adopt)) | None => match (kind, front()) {
-                (Some(k), Some((_, Some(WindowSlot::Kind(f))))) if f != k => {
-                    set_applied(Some(WindowSlot::Kind(k)));
-                    default_geometry(&target)
+                match kind_target(&saved, k, true) {
+                    KindTarget::Record(record) => Some(record),
+                    KindTarget::Default => default_geometry(&target),
+                    // 種類ごとの分をまだ 1 つも覚えていないときは、前面のビューアの姿から作る。
+                    // ただし前面のビューアが別の種類の枠なら、その形は写さず既定の大きさにする
+                    KindTarget::Adopt => match front() {
+                        Some((geometry, slot)) if !matches!(slot, Some(WindowSlot::Kind(f)) if f != k) => {
+                            Some(geometry)
+                        }
+                        _ => default_geometry(&target),
+                    },
                 }
-                (_, Some((geometry, _))) => Some(geometry),
-                (k, None) => {
-                    set_applied(k.map(WindowSlot::Kind));
-                    Some(saved.geometry_only())
-                }
-            },
+            }
+            // 種類が分からない（開けなかった）ときは、どの枠にも属さない既定の大きさのまま
+            // （ほかのビューアと重なるならずらす）
+            None => default_geometry(&target),
         }
     };
     if let Some(state) = source {
@@ -5114,7 +5230,6 @@ fn forget_window(window: &tauri::Window) {
     app.state::<StartupListing>().remove(label);
     app.state::<PendingPosition>().remove(label);
     app.state::<WindowKind>().remove(label);
-    app.state::<FirstFitDone>().remove(label);
     app.state::<AspectLock>().remove(label);
     app.state::<FolderWatcher>().remove(label);
     #[cfg(target_os = "macos")]
@@ -5210,7 +5325,6 @@ pub fn run() {
         .manage(PendingPosition::new())
         .manage(WindowKind::new())
         .manage(AspectLock::new())
-        .manage(FirstFitDone::new())
         .manage(FolderWatcher::new())
         .invoke_handler(tauri::generate_handler![
             set_window_kind,
