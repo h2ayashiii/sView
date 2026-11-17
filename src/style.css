@@ -681,36 +681,6 @@ body {
   display: none;
 }
 
-/* 音声の切り替え（音声が 2 つ以上あるときだけ出す）。再生時間の右に、入りきる幅で置く */
-#vb-audio-track {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 140px;
-  height: 22px;
-  padding: 0 4px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.06);
-  color: #e8e8ec;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-
-#vb-audio-track:hover {
-  background: rgba(255, 255, 255, 0.16);
-}
-
-#vb-audio-track[hidden] {
-  display: none;
-}
-
-/* 一覧はカードの暗い色に合わせる（OS 標準の白い一覧にしない） */
-#vb-audio-track option {
-  background: #26262c;
-  color: #e8e8ec;
-}
-
 /* 狭いウィンドウでは音量つまみを省く（消音ボタンと ↑ ↓ キーは使える） */
 @media (max-width: 320px) {
   #vb-volume {

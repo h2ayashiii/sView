@@ -24,7 +24,6 @@ const vbVolume = document.getElementById("vb-volume");
 const vbTime = document.getElementById("vb-time");
 const vbDuration = document.getElementById("vb-duration");
 const vbTip = document.getElementById("vb-tip");
-const vbAudioTrack = document.getElementById("vb-audio-track");
 const ibPrev = document.getElementById("ib-prev");
 const ibNext = document.getElementById("ib-next");
 const ibSeek = document.getElementById("ib-seek");
@@ -916,9 +915,9 @@ video.addEventListener("error", () => {
 });
 
 // ---- 音声の切り替え（副音声） ----
-// MKV などに音声が 2 つ以上入っているとき、再生操作カードに切り替えのボックスを出す。
+// MKV などに音声が 2 つ以上入っているとき、右クリックメニューの「音声」から切り替える。
 // audioTracks は WebView2 では実験的機能で、起動引数（lib.rs の WEBVIEW2_BROWSER_ARGS）で
-// 有効にしている。使えない WebView では audioTracks が無いので、ボックスは出さない
+// 有効にしている。使えない WebView では audioTracks が無いので、「音声」はグレーアウトする
 function audioTrackList() {
   return showingVideo ? video.audioTracks ?? null : null;
 }
@@ -943,50 +942,11 @@ function selectedAudioTrack() {
   return -1;
 }
 
-function syncAudioTracks() {
-  const tracks = audioTrackList();
-  const count = tracks?.length ?? 0;
-  if (count < 2) {
-    vbAudioTrack.hidden = true;
-    vbAudioTrack.replaceChildren();
-    return;
-  }
-  const options = [];
-  let selected = 0;
-  for (let i = 0; i < count; i++) {
-    const option = document.createElement("option");
-    option.value = String(i);
-    option.textContent = audioTrackLabel(tracks[i], i);
-    options.push(option);
-    if (tracks[i].enabled) selected = i;
-  }
-  vbAudioTrack.replaceChildren(...options);
-  vbAudioTrack.value = String(selected);
-  vbAudioTrack.title = `音声: ${options[selected].textContent}`;
-  vbAudioTrack.hidden = false;
-}
-
 // 選んだ 1 つだけを有効にする（複数を有効にすると重ねて鳴る WebView がある）
 function selectAudioTrack(n) {
   const tracks = audioTrackList();
   if (!tracks || n < 0 || n >= tracks.length) return;
   for (let i = 0; i < tracks.length; i++) tracks[i].enabled = i === n;
-}
-
-vbAudioTrack.addEventListener("change", () => {
-  selectAudioTrack(Number(vbAudioTrack.value));
-  syncAudioTracks();
-  // フォーカスを残すと ← → ↑ ↓ がボックスの選択を変えてしまう
-  vbAudioTrack.blur();
-});
-
-for (const type of ["loadedmetadata", "emptied"]) {
-  video.addEventListener(type, syncAudioTracks);
-}
-if (video.audioTracks) {
-  for (const type of ["addtrack", "removetrack", "change"]) {
-    video.audioTracks.addEventListener(type, syncAudioTracks);
-  }
 }
 
 // ---- 字幕 ----
@@ -1001,6 +961,8 @@ let subtitleTracks = [];
 let subtitleIndex = -1;
 // 字幕を読み込んでいる最中か（右クリックメニューで「読み込み中」と出す）
 let subtitleLoading = false;
+// 字幕を出す行（下から数える。-1 が最下行なので -2 で 1 行分上に離す）
+const SUBTITLE_LINE = -2;
 
 function ensureSubtitleTextTrack() {
   if (!subtitleTextTrack) subtitleTextTrack = video.addTextTrack("subtitles", "sView");
@@ -1020,7 +982,12 @@ function selectSubtitle(n) {
     return;
   }
   for (const { start, end, text } of subtitleTracks[subtitleIndex].cues) {
-    if (end > start) track.addCue(new VTTCue(start, end, text));
+    if (end <= start) continue;
+    const cue = new VTTCue(start, end, text);
+    // 既定（line: "auto"）では動画の下端に張り付くので、1 行分だけ上に離す
+    // （負の値は下から数えた行。-1 が最下行）
+    cue.line = SUBTITLE_LINE;
+    track.addCue(cue);
   }
   track.mode = "showing";
 }
@@ -1031,7 +998,7 @@ function clearSubtitles() {
   selectSubtitle(-1);
 }
 
-// 動画の字幕を読み込む。動画で既定とされている字幕があれば表示する
+// 動画の字幕を読み込む。開いたときは常にオフ（動画で既定とされている字幕があっても出さない）
 async function loadSubtitles(path, token) {
   clearSubtitles();
   subtitleLoading = true;
@@ -1045,7 +1012,6 @@ async function loadSubtitles(path, token) {
   if (token !== showToken) return; // 既に別のファイルへ移動している
   subtitleLoading = false;
   subtitleTracks = tracks.filter((t) => t.cues.length > 0);
-  selectSubtitle(subtitleTracks.findIndex((t) => t.default));
 }
 
 // ---- 音楽 ----
@@ -2349,7 +2315,7 @@ function buildContextMenu() {
       action: deleteCurrent,
     },
     // 字幕・音声の切り替えは動画のときだけ出す（選べるものが無ければグレーアウト）
-    ...(showingVideo ? [{ separator: true }, subtitleMenuItem(), audioMenuItem()] : []),
+    ...(showingVideo ? [{ separator: true }, audioMenuItem(), subtitleMenuItem()] : []),
     // 本モードの項目は画像の一覧のときだけ出す（動画・音楽では出さない）
     ...(canUseBookMode()
       ? [
@@ -2416,10 +2382,7 @@ function audioMenuItem() {
       label: audioTrackLabel(tracks[i], i),
       radio: true,
       checked: selected === i,
-      action: () => {
-        selectAudioTrack(i);
-        syncAudioTracks();
-      },
+      action: () => selectAudioTrack(i),
     });
   }
   return { label: "音声", disabled: count < 2, submenu: items };

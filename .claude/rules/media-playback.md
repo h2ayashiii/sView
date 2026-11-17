@@ -42,11 +42,10 @@ paths:
   `VIDEO_DRAG_THRESHOLD_PX` calls `appWindow.startDragging()`, and one released within
   `VIDEO_CLICK_MS` without moving toggles play-pause. The playback controls are the `#videobar` card (seek bar on top; time /
   ±5 s + play / mute + volume below) inside `#chrome`, so they show and hide with the rest of the chrome.
-  `#vb-audio-track` (a `<select>` next to the time) appears only for a video whose `video.audioTracks` has
-  2+ tracks (`syncAudioTracks`, on `loadedmetadata` / `emptied` and the track list's events); choosing one
-  enables only that track (`selectAudioTrack`) and blurs the box so arrow keys keep seeking. WebView2 exposes
-  `audioTracks` only behind the experimental Blink feature `AudioVideoTracks`, switched on through
-  `WEBVIEW2_BROWSER_ARGS` (see `platform.md`); where it is absent the box simply never shows.
+  Audio tracks are switched only from the context menu (「音声」, read live from `video.audioTracks` when the
+  menu opens; `selectAudioTrack` enables just the chosen one) — there is deliberately no control on the card.
+  WebView2 exposes `audioTracks` only behind the experimental Blink feature `AudioVideoTracks`, switched on
+  through `WEBVIEW2_BROWSER_ARGS` (see `platform.md`); where it is absent the item is greyed out.
   MKV text subtitles: Chromium never exposes in-band MKV subtitles, so `video_subtitles` (Rust, async, MKV only
   and only where `is_video` accepts mkv) returns SRT / ASS tracks with their cues. Track info and
   ContentEncoding (zlib / header stripping; encrypted tracks are skipped) come from `matroska-demuxer`, but the
@@ -55,8 +54,10 @@ paths:
   reduced to plain text (`clean_ass_text`: override tags dropped, `\p` drawings skipped, then HTML-escaped);
   SRT keeps `<i>`/`<b>`/`<u>`. `main.js` keeps **one** `addTextTrack` track (`subtitleTextTrack`) for good —
   tracks added that way can't be removed — and swaps its cues in `selectSubtitle` (set `hidden` first: `cues`
-  is null while `disabled`). Subtitles load per `show()` (`loadSubtitles`, dropped on a stale `showToken`) and are
-  cleared in `unloadVideo`. The context menu shows 「字幕」/「音声」 only for videos, as items with a `submenu`
+  is null while `disabled`); each cue gets `line = SUBTITLE_LINE` (-2) so it sits one line above the video's
+  bottom edge instead of on it. Subtitles start **off** on every video (the track's default flag is ignored).
+  Subtitles load per `show()` (`loadSubtitles`, dropped on a stale `showToken`) and are
+  cleared in `unloadVideo`. The context menu shows 「音声」/「字幕」 (in that order) only for videos, as items with a `submenu`
   (`.ctx-submenu`, opened on hover by `openSubmenu`, placed inside `#ctxmenu` so the outside-click check still
   works); they are disabled when there is nothing to pick (no subtitles, < 2 audio tracks).
 - Audio (`AUDIO_EXTS` in `lib.rs` / `AUDIO_EXT_FILTER` in `main.js`, kept in sync by the same test;
