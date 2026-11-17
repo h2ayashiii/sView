@@ -9,9 +9,15 @@ paths:
 - Both `settings.json` and `window.json` live in `config_dir()/sview` (`CONFIG_DIR_NAME` in
   `lib.rs`), **not** in Tauri's `app_config_dir()` — the folder name is deliberately kept
   independent of the bundle identifier. "Reset to defaults" only touches `settings.json`.
-  `window.json` holds size and position, and **both are restored in both size modes** — the
-  window always reopens where and how it was left (the position is skipped when it lands on no
-  connected monitor, otherwise clamped into that monitor's work area). In "image" mode the first
+  `window.json` holds size and position, and **both are restored in both size modes** — a window
+  opened **with a file** reopens where and how that slot was left. `place_window` shrinks the size
+  (`within_limit`, keeps the ratio) to `SCREEN_RATIO` of the target monitor's work area
+  (`desktop_limit`), clamps the position into it, and centres the window on the current monitor
+  (`centered_in_area`) when the saved position lands on no connected monitor.
+  **Launched without a file** (`restore_window_state(.., None)`), nothing is restored in either mode:
+  the window keeps `tauri.conf.json`'s 960×640 + `center: true`, and stays in no slot
+  (`applied: None`, `KindState::target()` is `None` while `shown` is `None`), so it is never saved;
+  the first file shown moves it to that file's slot. In "image" mode the first
   `fit_window_to_image` after startup only corrects the aspect ratio, and anchors the window at
   the saved top-left (`PendingPosition`) instead of recentering.
   Logs go to a `logs/` subfolder of the same directory.
@@ -29,8 +35,9 @@ paths:
   raw, so it never sees the frontend's mapping).
 - Window geometry is recorded per **slot** (`WindowSlot`): in `"free"` mode one slot for every kind
   (`Free` = the top level of `window.json`); in `"image"` mode one slot per kind (`Kind(..)` =
-  `WindowState.kinds`, keyed `"image"` / `"video"` / `"audio"` / `"book"`, plus top-level `kind` = the
-  last fit-mode kind, used when launched without a file). The two modes never share a record. There is no
+  `WindowState.kinds`, keyed `"image"` / `"video"` / `"audio"` / `"book"`; each kind record also stores
+  `area` = `AspectState.area`, added by `with_fit_area` and read back by `WindowState::fit_area()`). The
+  old top-level `kind` (last fit-mode kind) is no longer read or written. The two modes never share a record. There is no
   per-kind toggle (`windowPerKind` was removed and is in `OBSOLETE_KEYS`). `KindState` (`WindowKind`) has
   `shown`, `fit` (both from `set_window_kind(kind, fit)`) and `applied` (whose slot the window's *normal*
   geometry is); `target()` is the slot it should be in. `apply_window_kind` switches only while the window
@@ -38,11 +45,11 @@ paths:
   top level (or keep the window if there is none); `Kind`: `kind_target` = its record, else the default size
   (`default_geometry`, centred on the current window) — never the previous kind's shape.
   `KindTarget::Adopt` (keep the window) is only when the window is not in a kind slot yet and `kinds` is
-  still empty (pre-per-kind `window.json`). `place_kind_geometry` resets `AspectLock` to the placed area
-  (so the `set_size` echo is not taken for a drag), re-arms `FirstFitDone` (the next fit clamps to the
-  screen like at launch) and `PendingPosition`, and cascades off other viewers. While maximized /
-  fullscreen / minimized the switch is deferred (`KindState::pending()`): `AspectLock` is cleared and
-  `set_aspect_lock` refuses a ratio, so the OS restoring the old slot's rect is not "corrected"; the
+  still empty (pre-per-kind `window.json`); it resets the area to 0 so it is re-taken from the live window.
+  `place_kind_geometry` resets `AspectLock` to the slot's `fit_area()` (`set_fit_area`; so the `set_size`
+  echo is not taken for a drag), arms `PendingPosition`, and cascades off other viewers. While maximized /
+  fullscreen / minimized the switch is deferred (`KindState::pending()`): `AspectLock` is unlocked
+  (`AspectState::unlock`, the area stays — it still belongs to the old slot) and `set_aspect_lock` refuses a ratio, so the OS restoring the old slot's rect is not "corrected"; the
   frontend retries in `onResizeSettled` and on focus (`catchUpWindowKind*`), and `fit_window_to_image`
   calls `apply_window_kind` first. Saving is **immediate**: `onResized` / `onMoved` arm
   `scheduleWindowSave` (`WINDOW_SAVE_DELAY_MS`, waits while `mouse_button_down`) →
@@ -59,15 +66,16 @@ paths:
 - In `"image"` mode only the **aspect ratio** comes from the image; the size does not.
   `sized_to_aspect` turns an area (logical px²) plus the aspect into a size, so paging between
   portrait and landscape keeps the window equally big. That area lives in `AspectLock` on the
-  Rust side and is rewritten **only** by a real resize, never recomputed from the live window —
-  otherwise the one clamp that does exist would shrink the window for good.
-- The "fit on screen" clamp (`screen_limit`, `SCREEN_RATIO` = 95% of the work area) runs **once
-  per launch and once per kind switch**: `FirstFitDone` is consumed by the first `fit_window_to_image`
-  (and re-armed by `place_kind_geometry`), so a restored window still lands on screen when the
-  monitor setup changed, and nothing fights the user's own size afterwards. That first fit also writes its (possibly clamped) area into `AspectLock` —
-  otherwise the second image would jump back to the unclamped area and the window would grow
-  once (easy to hit on small logical screens such as MacBooks, with a portrait image). A drag (`keep_aspect_on_resize`) is never clamped, so a tall image can end up
-  sized past the bottom of the screen — that is deliberate.
+  Rust side and is rewritten **only** by a real resize (or a slot placement), never recomputed from the
+  live window — otherwise the screen clamp would shrink the window for good. So `set_aspect_lock(null)`
+  (free mode, nothing shown, media still loading) only `unlock()`s, `fit_window_to_image` never writes
+  its clamped size into the area, and `keep_aspect_on_resize` treats a size within 1 px of `last` as our
+  own echo (macOS / DPI rounding), not as a drag.
+- The "fit on screen" clamp (`screen_limit`, `SCREEN_RATIO` = 95% of the current monitor's work area)
+  runs on **every** `fit_window_to_image` (the user asked for a hard limit; it used to run only once per
+  launch / kind switch, and portrait images then ran off the screen). It limits the window, not the
+  area, so the next landscape image is back at the full area. A drag (`keep_aspect_on_resize`,
+  `win_sizing`, `mac_sizing`) is deliberately never clamped (user's decision); the next fit clamps it.
 - The aspect lock is enforced in `WindowEvent::Resized` (`keep_aspect_on_resize`), which also
   arrives mid-drag, so the window can only be dragged along the image's ratio. Tauri exposes no
   native aspect hint, so on Windows `win_sizing` subclasses the main window and rewrites the

@@ -45,7 +45,7 @@ paths:
   right after launch), otherwise in a **new** viewer window (`create_viewer_window`: label `viewer-N`, built
   from `main`'s config, placed at the opened file's kind geometry and moved `CASCADE_OFFSET` off any viewer
   sitting at the same spot). Every per-window Rust state
-  (`AspectLock`, `WindowKind`, `PendingPosition`, `FirstFitDone`, `FolderWatcher`, `StartupFile`) is a
+  (`AspectLock`, `WindowKind`, `PendingPosition`, `FolderWatcher`, `StartupFile`, `StartupListing`) is a
   `PerWindow<T>` map keyed by window label and dropped in `forget_window` on close; closing the last viewer
   (`is_viewer`) exits. Window-targeted events (`folder-changed`, `pointer-*`, `open-file`) go out with
   `emit_to(label)` and `main.js` must receive them with `appWindow.listen`, since the global `listen` also
