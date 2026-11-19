@@ -56,7 +56,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 - テストは Rust 側（`src-tauri/src/lib.rs` の `#[cfg(test)] mod tests`）だけです。フロントエンドの自動テストはありません
 - `cargo test` も Tauri をリンクするため、OS ごとの前提条件（上記）が必要です。CI と同じく Linux で走らせる場合は `libgtk-3-dev` `libwebkit2gtk-4.1-dev` `libsoup-3.0-dev` `pkg-config` を入れてください（Linux は配布対象外で、テストのためにビルドできる状態だけを保っています）
-- 対応拡張子の一覧は `lib.rs`・`src/main.js`・`tauri.conf.json` の 3 か所にあり、ずれるとテスト（`supported_extensions_stay_in_sync`）が失敗します。Windows だけで扱う動画（mkv）は `WINDOWS_VIDEO_EXTS`（`lib.rs`）・`WINDOWS_VIDEO_EXT_FILTER`（`main.js`）・`tauri.windows.conf.json` の `fileAssociations` に分けてあります。`tauri.windows.conf.json` は Windows でのビルド時に `tauri.conf.json` へ JSON Merge Patch で重ねられ、配列は丸ごと置き換わるため、`fileAssociations` は画像・音楽も含めた全体を書きます
+- 対応拡張子の一覧は `lib.rs`・`src/main.js`・`tauri.conf.json` の 3 か所にあり、ずれるとテスト（`supported_extensions_stay_in_sync`）が失敗します
 
 ## CI（GitHub Actions）
 

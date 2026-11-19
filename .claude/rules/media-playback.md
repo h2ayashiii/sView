@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/main.js"
+  - "src/mkv-player.js"
   - "src/index.html"
   - "src/style.css"
   - "src-tauri/src/lib.rs"
@@ -9,9 +10,9 @@ paths:
 # Video, audio and book mode
 
 - Videos play in a `<video>` element with whatever decoder the OS WebView has (WebView2 / WKWebView). **No codec is bundled** — that keeps codec patent licensing out of the
-  app — so `VIDEO_EXTS` is limited to containers most WebViews handle (`mp4` / `m4v` / `webm` /
-  `mov`; plus `mkv` on Windows only via `WINDOWS_VIDEO_EXTS` / `PLATFORM_VIDEO_EXTS` — WKWebView
-  can't play MKV, so macOS never lists, offers or associates it); anything the WebView can't decode just shows an error. Videos are listed only from
+  app — so `VIDEO_EXTS` is limited to containers the WebViews handle (`mp4` / `m4v` / `webm` /
+  `mov` / `mkv` — WebView2 plays MKV natively, WKWebView doesn't, see the MKV remux note below);
+  anything the WebView can't decode just shows an error. Videos are listed only from
   folders / single files (`is_media`), never from archives (`read_archive_entry` loads a whole entry into memory).
   They load through the asset protocol, so the CSP needs `media-src` alongside `img-src`.
   `unloadVideo()` (pause + drop `src` + `load()`) runs before every `show()` and before
@@ -46,8 +47,30 @@ paths:
   menu opens; `selectAudioTrack` enables just the chosen one) — there is deliberately no control on the card.
   WebView2 exposes `audioTracks` only behind the experimental Blink feature `AudioVideoTracks`, switched on
   through `WEBVIEW2_BROWSER_ARGS` (see `platform.md`); where it is absent the item is greyed out.
-  MKV text subtitles: Chromium never exposes in-band MKV subtitles, so `video_subtitles` (Rust, async, MKV only
-  and only where `is_video` accepts mkv) returns SRT / ASS tracks with their cues. Track info and
+  MKV on macOS (`usesMkvPlayer`: `IS_MAC` + `.mkv`): WKWebView can't demux MKV, so `MkvPlayer`
+  (`src/mkv-player.js`) plays it through MSE. Rust (`MkvStream`, commands `mkv_open` / `mkv_init` /
+  `mkv_seek` / `mkv_read` / `mkv_close`, one stream per window in `MkvStreams`, dropped in `forget_window`)
+  remuxes to fragmented MP4 without re-encoding: video H.264 / HEVC (CodecPrivate used as avcC / hvcC; HEVC
+  as `hvc1`, `hev1` fails in WebKit), audio AAC / Opus (one track per stream; switching audio re-opens at
+  the current time via `switchMkvAudio`). Bytes go back as `tauri::ipc::Response` (raw, never JSON arrays).
+  `matroska-demuxer` only reads track info; Cluster blocks are walked by our own `MkvWalker` (lacing,
+  BlockGroup keyframes via ReferenceBlock) and Cues by `read_mkv_layout` (the crate keeps Cues private and its
+  `seek` stops at any frame, not a keyframe); without Cues, `scan_cluster_index` builds a cluster index on
+  the first seek. Fragments are cut only at video keyframes (≥ `REMUX_FRAGMENT_SECONDS`), because DTS is
+  derived per fragment: MKV has PTS only, so `video_decode_times` assigns the fragment's sorted PTS to the
+  frames in decode order minus the reorder depth (`reorder`, probed from the first GOPs at open) so DTS ≤
+  PTS; at the file start the negative DTS are squeezed into [0, first positive DTS). `trun` is version 1
+  (signed cts) in case a later GOP reorders deeper than probed. Audio timestamps subtract CodecDelay, frames
+  before 0 are dropped, and `audio_next` keeps fragment boundaries gapless (an overlap makes WebKit drop a
+  frame). The JS side runs one loop (`run`) so `mkv_read` / `mkv_seek` never overlap: it keeps
+  `MKV_AHEAD_S` buffered ahead, `remove()`s everything older than `MKV_BEHIND_S`, and on `seeking` outside
+  the last buffered range clears the buffer and calls `mkv_seek` (previous keyframe). `nudgeGap` jumps small
+  gaps at the start of a range (WebKit stalls when currentTime sits just before the first frame).
+  `MediaSource.isTypeSupported` decides the audio: unsupported tracks are `disabled` in the 「音声」 menu, and
+  an unplayable default track falls back to another one or to no audio with a notice. CSP `media-src` needs
+  `blob:` for the MediaSource URL.
+  MKV text subtitles: Chromium never exposes in-band MKV subtitles (and the macOS remux drops them), so
+  `video_subtitles` (Rust, async, MKV only) returns SRT / ASS tracks with their cues. Track info and
   ContentEncoding (zlib / header stripping; encrypted tracks are skipped) come from `matroska-demuxer`, but the
   blocks are walked by our own `scan_subtitle_blocks` from the first Cluster: the crate's `next_frame` reads every
   video / audio frame, i.e. the whole file, while the scan `seek_relative`s past other tracks' blocks. ASS is

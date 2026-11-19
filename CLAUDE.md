@@ -80,12 +80,11 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - Supported extensions are duplicated in three places — update all of them: `IMAGE_EXTS` /
   `VIDEO_EXTS` / `AUDIO_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` / `VIDEO_EXT_FILTER` /
   `AUDIO_EXT_FILTER` (`src/main.js`), `fileAssociations` (`tauri.conf.json`, one entry per kind).
-  The `supported_extensions_stay_in_sync` test fails when they drift. Windows-only video (`mkv`)
-  lives in `WINDOWS_VIDEO_EXTS` (`lib.rs`), `WINDOWS_VIDEO_EXT_FILTER` (`main.js`) and
-  `tauri.windows.conf.json` (merge patch: its `fileAssociations` array replaces the whole list). Archives (`ARCHIVE_EXTS`)
+  The `supported_extensions_stay_in_sync` test fails when they drift. Archives (`ARCHIVE_EXTS`)
   are deliberately **not** file-associated.
 - No codec is bundled (codec patent licensing): videos and audio play with the OS WebView's
-  decoders only, so don't add formats the WebViews can't handle.
+  decoders only, so don't add formats the WebViews can't handle. MKV on macOS is the one container
+  we unpack ourselves (remuxed to fragmented MP4, never re-encoded; see `media-playback.md`).
 
 ## Detailed implementation notes
 

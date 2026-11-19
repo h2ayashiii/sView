@@ -152,7 +152,7 @@ const SETTINGS_SECTIONS = [
         label: "動画を開いたらすぐ再生する",
         hint:
           "オフのときは最初のコマで止まった状態で開きます。Space キーで再生 / 一時停止します。" +
-          "再生できる形式は OS の再生機能によります（mp4 / m4v / webm / mov。Windows では mkv も）",
+          "再生できる形式は OS の再生機能によります（mp4 / m4v / webm / mov / mkv）",
         type: "toggle",
         default: true,
       },
