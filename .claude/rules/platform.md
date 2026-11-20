@@ -59,6 +59,13 @@ paths:
   file associations). It used to be per-user (`%LOCALAPPDATA%`), so `installer-hooks.nsh` silently
   uninstalls a leftover per-user install in `NSIS_HOOK_PREINSTALL` — otherwise the HKCU file
   associations would keep winning over the new HKLM ones. NSIS files must be UTF-8 **with BOM**.
+- Installer artwork lives in `src-tauri/installer/` and is wired up in `tauri.conf.json`:
+  `bundle.windows.nsis.installerIcon` / `sidebarImage` (164×314, Welcome / Finish pages) /
+  `headerImage` (150×57, other pages) — NSIS needs 24-bit **BMP**, not PNG/JPEG — and
+  `bundle.macOS.dmg.background` (660×400 = `windowSize`). `appPosition` / `applicationFolderPosition`
+  are icon centres (icon size 128) placed on either side of the arrow drawn in the background, so
+  move them together with the artwork. `dmg-background@2x.png` is kept as the Retina source but is not
+  used: Tauri passes a single background file to `bundle_dmg`, and a multi-resolution TIFF has not been tried.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a
   parent-directory path under `_up_/` in the bundle, because `resource_relpath()` rewrites `..`.
 - Prerelease suffixes are no longer used, but the tooling still handles them (`0.1.0-beta.1`

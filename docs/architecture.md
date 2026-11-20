@@ -30,6 +30,7 @@ sView/
 │   ├── testdata/            # テストで読むファイル（字幕入りの小さな MKV）
 │   ├── capabilities/        # ウィンドウごとにフロントエンドへ許可する API の定義
 │   ├── installer-hooks.nsh  # Windows インストーラ（NSIS）のフック。旧ユーザー単位インストールの後始末
+│   ├── installer/           # インストーラの見た目（Windows のインストーラのアイコン・画像、macOS の dmg の背景）
 │   └── icons/               # アプリのアイコン
 ├── docs/                    # 仕様（specs/）・全体構成・開発手順
 ├── scripts/                 # ビルドスクリプト、リリース時にタグのバージョンを反映する set-version.mjs、
