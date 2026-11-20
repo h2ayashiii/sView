@@ -60,8 +60,12 @@ paths:
   uninstalls a leftover per-user install in `NSIS_HOOK_PREINSTALL` — otherwise the HKCU file
   associations would keep winning over the new HKLM ones. NSIS files must be UTF-8 **with BOM**.
 - Installer artwork lives in `src-tauri/installer/` and is wired up in `tauri.conf.json`:
-  `bundle.windows.nsis.installerIcon` / `sidebarImage` (164×314, Welcome / Finish pages) /
-  `headerImage` (150×57, other pages) — NSIS needs 24-bit **BMP**, not PNG/JPEG — and
+  `bundle.windows.nsis.sidebarImage` (164×314, Welcome / Finish pages) /
+  `headerImage` (150×57, other pages) — NSIS needs 24-bit **BMP**, not PNG/JPEG. `installerIcon` and
+  `uninstallerIcon` both point at the app's `icons/icon.ico`: a badged installer icon would collide with
+  the UAC shield Windows overlays on the bottom-right of the elevated (`perMachine`) setup exe, and without
+  `uninstallerIcon` `uninstall.exe` gets NSIS's stock icon. The uninstaller has only the Confirm /
+  Uninstalling pages, so it shows no sidebar, and its header falls back to `headerImage`. And
   `bundle.macOS.dmg.background` (660×400 = `windowSize`). `appPosition` / `applicationFolderPosition`
   are icon centres (icon size 128) placed on either side of the arrow drawn in the background, so
   move them together with the artwork. `dmg-background@2x.png` is kept as the Retina source but is not

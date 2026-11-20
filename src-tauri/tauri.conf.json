@@ -120,7 +120,8 @@
       "nsis": {
         "installMode": "perMachine",
         "installerHooks": "./installer-hooks.nsh",
-        "installerIcon": "installer/installer.ico",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "sidebarImage": "installer/nsis-sidebar.bmp",
         "headerImage": "installer/nsis-header.bmp"
       }
