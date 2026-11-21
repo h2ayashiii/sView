@@ -109,8 +109,8 @@
       "dmg": {
         "background": "installer/dmg-background.png",
         "windowSize": { "width": 660, "height": 400 },
-        "appPosition": { "x": 140, "y": 215 },
-        "applicationFolderPosition": { "x": 408, "y": 215 }
+        "appPosition": { "x": 196, "y": 220 },
+        "applicationFolderPosition": { "x": 464, "y": 220 }
       }
     },
     "windows": {

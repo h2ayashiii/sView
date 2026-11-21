@@ -68,7 +68,11 @@ paths:
   Uninstalling pages, so it shows no sidebar, and its header falls back to `headerImage`. And
   `bundle.macOS.dmg.background` (660×400 = `windowSize`). `appPosition` / `applicationFolderPosition`
   are icon centres (icon size 128) placed on either side of the arrow drawn in the background, so
-  move them together with the artwork. `dmg-background@2x.png` is kept as the Retina source but is not
+  move them together with the artwork (the arrow is centred in the panel; icons sit at x 196 / 464).
+  All of this is applied by a Finder AppleScript inside Tauri's `bundle_dmg`, which Tauri skips
+  (`--skip-jenkins`) when `CI=true` — the dmg then opens with no background and default icon layout.
+  `build.yml` sets `TAURI_BUNDLER_DMG_IGNORE_CI=true` on the Build step to run it anyway. Icon size is
+  fixed at 128 by `bundle_dmg`; Tauri has no setting for it. `dmg-background@2x.png` is kept as the Retina source but is not
   used: Tauri passes a single background file to `bundle_dmg`, and a multi-resolution TIFF has not been tried.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a
   parent-directory path under `_up_/` in the bundle, because `resource_relpath()` rewrites `..`.
