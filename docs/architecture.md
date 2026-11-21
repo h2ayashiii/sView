@@ -10,9 +10,18 @@
 
 ```
 sView/
-├── src/                     # フロントエンド（素の HTML/CSS/JS、ビルド不要。<script src> で読み込む）
-│   ├── index.html           # 本体ウィンドウ
-│   ├── main.js              # 画像・動画・音楽の表示、前後移動、ズーム、再生操作、本モード、入力処理、右クリックメニュー
+├── src/                     # フロントエンド（素の HTML/CSS/JS、ビルド不要。ネイティブ ES Modules で読み込む）
+│   ├── index.html           # 本体ウィンドウ（<script type="module" src="main.js">）
+│   ├── main.js              # 本体ウィンドウのエントリーポイント（表示制御、ナビゲーション、再生、ウィンドウ制御、入力処理）
+│   ├── viewer/              # 本体ウィンドウの責務別 ES モジュール
+│   │   ├── media-types.js   # 対応拡張子・MIME・パス/時間/色のユーティリティ
+│   │   ├── archive-cache.js # 書庫内画像の遅延ロード・LRU blob キャッシュ
+│   │   ├── audio-tracks.js  # 音声トラックの一覧・選択・ラベル生成
+│   │   ├── subtitles.js     # MKV 字幕の読み込み・VTTCue 表示・メニュー項目生成
+│   │   ├── tooltips.js      # スライダーの塗り分け・吹き出し位置計算
+│   │   ├── wheel.js         # ホイール操作の軸固定・感度しきい値・音量調整
+│   │   ├── delete-confirm.js # 削除確認ダイアログ
+│   │   └── context-menu.js  # 右クリックメニュー・サブメニューの表示と操作
 │   ├── mkv-player.js        # macOS で MKV を MSE で再生する（Rust が詰め直した fragmented MP4 を流す）
 │   ├── style.css            # オーバーレイ UI（自動表示・自動非表示）・再生操作カード・コンテキストメニュー
 │   ├── settings.html        # 設定ウィンドウ
@@ -24,8 +33,22 @@ sView/
 │   ├── theme.js             # 設定ウィンドウとショートカット一覧の配色を設定から作る
 │   └── audio-artwork.svg    # アートワークの無い音楽ファイルに出す既定の絵
 ├── src-tauri/
-│   ├── src/main.rs          # sview_lib::run() を呼ぶだけ
-│   ├── src/lib.rs           # バックエンドの処理すべて（下記）とテスト
+│   ├── src/
+│   │   ├── main.rs          # sview_lib::run() を呼ぶだけ
+│   │   ├── lib.rs           # Tauri アプリ起動（run()）・コマンド登録・ウィンドウ生成/終了ライフサイクル
+│   │   ├── media.rs         # 対応拡張子・MediaKind / WindowKindKey・自然順ソート
+│   │   ├── state.rs         # ウィンドウごとの管理状態（PerWindow・AspectLock・FolderWatcher 等）
+│   │   ├── archive.rs       # zip / cbz 書庫のキャッシュ・一覧・画像取り出し
+│   │   ├── listing.rs       # フォルダ/書庫の一覧作成・ゴミ箱への移動（trash）
+│   │   ├── audio.rs         # 音楽のタグとアートワークの読み取り（lofty）
+│   │   ├── watcher.rs       # フォルダの変更監視（notify）
+│   │   ├── window.rs        # ウィンドウの大きさ・位置の保存（window.json）・縦横比維持・ドラッグ制御
+│   │   ├── settings.rs      # 設定（settings.json）の読み書き・設定/ショートカットウィンドウの表示
+│   │   ├── logging.rs       # ログ初期化・パニックフック・ファイルマネージャーで表示
+│   │   ├── assoc.rs         # OS への拡張子関連付けの共通インターフェースとコマンド
+│   │   ├── mkv/             # MKV 字幕抽出（subtitles.rs）・macOS 向けリマックス（remux.rs）・fMP4 書き出し（fmp4.rs）
+│   │   ├── platform/        # OS 固有実装（windows.rs: レジストリ関連付け・WM_SIZING / macos.rs: LaunchServices・NSTrackingArea 等）
+│   │   └── tests.rs         # ユニットテスト
 │   ├── tauri.conf.json      # ウィンドウ設定（フレームレス等）・CSP・バンドル設定・関連付け
 │   ├── testdata/            # テストで読むファイル（字幕入りの小さな MKV、詰め直しを確かめる MKV）
 │   ├── capabilities/        # ウィンドウごとにフロントエンドへ許可する API の定義
@@ -47,16 +70,14 @@ sView/
 └── THIRD-PARTY-NOTICES      # 配布バイナリに含まれる第三者ソフトウェアのライセンス表示
 ```
 
-`lib.rs` が受け持つのは次の処理です。
+バックエンド（`src-tauri/src/`）が受け持つのは次の処理です。
 
-- ファイル一覧の作成（フォルダ・圧縮フォルダの探索、種類の判定、自然順ソート）と、圧縮フォルダからの画像の取り出し
-- フォルダの変更の監視（`notify`）、ゴミ箱への移動（`trash`）
-- 音楽のタグとアートワークの読み取り（`lofty`）
-- MKV のテキスト字幕（SRT / ASS）の取り出し（トラック情報は `matroska-demuxer`、字幕のブロックは自前で走査）
-- macOS での MKV の再生のための、MKV から fragmented MP4 への詰め直し（リマックス。再エンコードはしない）
-- 設定（`settings.json`）とウィンドウの大きさ・位置（`window.json`）の保存
-- 「メディアに合わせる」の縦横比の維持と、ウィンドウの大きさ・位置の制御
-- 起動時に渡されたファイルの受け取り、OS への関連付け、ログ
+- ファイル一覧の作成（`listing.rs` / `media.rs`）と、圧縮フォルダからの画像の取り出し（`archive.rs`）
+- フォルダの変更の監視（`watcher.rs` / `notify`）、ゴミ箱への移動（`listing.rs` / `trash`）
+- 音楽のタグとアートワークの読み取り（`audio.rs` / `lofty`）
+- MKV のテキスト字幕（SRT / ASS）の取り出し（`mkv/subtitles.rs`）と、macOS での MKV 再生のための fragmented MP4 リマックス（`mkv/remux.rs` / `mkv/fmp4.rs`）
+- 設定（`settings.rs` / `settings.json`）とウィンドウの大きさ・位置（`window.rs` / `window.json`）の保存・縦横比維持
+- 起動時に渡されたファイルの受け取り（`lib.rs`）、OS への関連付け（`assoc.rs` / `platform/`）、ログ（`logging.rs`）
 
 ## ウィンドウ
 

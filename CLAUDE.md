@@ -3,10 +3,13 @@
 sView is a minimal, frameless media viewer (images, videos, audio, zip/cbz archives) built with
 **Tauri v2**. Targets: Windows 10/11 and macOS 10.15+.
 
-- **Backend**: Rust 2021. **All** backend logic and its tests live in `src-tauri/src/lib.rs`.
-- **Frontend**: plain HTML/CSS/JS in `src/`, served as-is. **No framework, no bundler, no
-  TypeScript, no ES `import` / `export`** — scripts load via `<script src>` into the global scope
-  and Tauri APIs come from `window.__TAURI__`.
+- **Backend**: Rust 2021. `src-tauri/src/lib.rs` is the entry point (`run()` and window lifecycle),
+  and domain logic is split into submodules (`media.rs`, `state.rs`, `archive.rs`, `listing.rs`,
+  `audio.rs`, `watcher.rs`, `window.rs`, `settings.rs`, `logging.rs`, `assoc.rs`, `mkv/`,
+  `platform/`, `tests.rs`).
+- **Frontend**: plain HTML/CSS/JS in `src/`, served as-is with **native ES Modules
+  (`<script type="module">`)**. **No framework, no bundler, no TypeScript** — modules use standard
+  `import` / `export`, and Tauri APIs come from `window.__TAURI__`.
 - **Linux is not a target.** It only has to build, because CI and cloud containers run
   `cargo test` there. The `#[cfg(not(any(target_os = "windows", target_os = "macos")))]` branches
   are stubs; don't add Linux-only features or docs.
