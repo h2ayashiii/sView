@@ -105,7 +105,13 @@
     ],
     "macOS": {
       "minimumSystemVersion": "10.15",
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "dmg": {
+        "background": "installer/dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 196, "y": 220 },
+        "applicationFolderPosition": { "x": 464, "y": 220 }
+      }
     },
     "windows": {
       "webviewInstallMode": {
@@ -113,7 +119,11 @@
       },
       "nsis": {
         "installMode": "perMachine",
-        "installerHooks": "./installer-hooks.nsh"
+        "installerHooks": "./installer-hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "sidebarImage": "installer/nsis-sidebar.bmp",
+        "headerImage": "installer/nsis-header.bmp"
       }
     }
   }

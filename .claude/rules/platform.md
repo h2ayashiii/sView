@@ -59,6 +59,21 @@ paths:
   file associations). It used to be per-user (`%LOCALAPPDATA%`), so `installer-hooks.nsh` silently
   uninstalls a leftover per-user install in `NSIS_HOOK_PREINSTALL` — otherwise the HKCU file
   associations would keep winning over the new HKLM ones. NSIS files must be UTF-8 **with BOM**.
+- Installer artwork lives in `src-tauri/installer/` and is wired up in `tauri.conf.json`:
+  `bundle.windows.nsis.sidebarImage` (164×314, Welcome / Finish pages) /
+  `headerImage` (150×57, other pages) — NSIS needs 24-bit **BMP**, not PNG/JPEG. `installerIcon` and
+  `uninstallerIcon` both point at the app's `icons/icon.ico`: a badged installer icon would collide with
+  the UAC shield Windows overlays on the bottom-right of the elevated (`perMachine`) setup exe, and without
+  `uninstallerIcon` `uninstall.exe` gets NSIS's stock icon. The uninstaller has only the Confirm /
+  Uninstalling pages, so it shows no sidebar, and its header falls back to `headerImage`. And
+  `bundle.macOS.dmg.background` (660×400 = `windowSize`). `appPosition` / `applicationFolderPosition`
+  are icon centres (icon size 128) placed on either side of the arrow drawn in the background, so
+  move them together with the artwork (the arrow is centred in the panel; icons sit at x 196 / 464).
+  All of this is applied by a Finder AppleScript inside Tauri's `bundle_dmg`, which Tauri skips
+  (`--skip-jenkins`) when `CI=true` — the dmg then opens with no background and default icon layout.
+  `build.yml` sets `TAURI_BUNDLER_DMG_IGNORE_CI=true` on the Build step to run it anyway. Icon size is
+  fixed at 128 by `bundle_dmg`; Tauri has no setting for it. `dmg-background@2x.png` is kept as the Retina source but is not
+  used: Tauri passes a single background file to `bundle_dmg`, and a multi-resolution TIFF has not been tried.
 - `bundle.resources` uses the map form (`"../LICENSE": "LICENSE"`). The list form would place a
   parent-directory path under `_up_/` in the bundle, because `resource_relpath()` rewrites `..`.
 - Prerelease suffixes are no longer used, but the tooling still handles them (`0.1.0-beta.1`

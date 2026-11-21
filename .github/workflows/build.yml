@@ -105,6 +105,10 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          # Tauri は CI=true のとき dmg の見た目を整える AppleScript を飛ばす（--skip-jenkins）。
+          # 飛ばすと dmg の背景・アイコンの位置と大きさが反映されないため、CI でも実行させる
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
 
       # 配布するファイルだけを dist/ に平らに集める。
       # ここで集めたものがそのまま Artifacts の zip の中身になるので、
