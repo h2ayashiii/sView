@@ -64,14 +64,9 @@ const IMAGE_EXT_FILTER = [
   "png", "svg", "tif", "tiff", "webp",
 ];
 // 動画は OS の WebView が再生できるものだけ（コーデックは同梱しない）。
-// 書庫の中の動画は一覧に出さない
-const VIDEO_EXT_FILTER = ["mp4", "m4v", "webm", "mov"];
-// Windows だけで扱う動画（WebView2 は MKV を再生できるが、macOS の WKWebView はできない）
-const WINDOWS_VIDEO_EXT_FILTER = ["mkv"];
-// この OS で開ける動画の拡張子
-const OPENABLE_VIDEO_EXTS = IS_WINDOWS
-  ? [...VIDEO_EXT_FILTER, ...WINDOWS_VIDEO_EXT_FILTER]
-  : VIDEO_EXT_FILTER;
+// 書庫の中の動画は一覧に出さない。MKV は WebView2（Windows）ならそのまま再生でき、
+// macOS では Rust 側で fragmented MP4 に詰め直して MSE で再生する（mkv-player.js）
+const VIDEO_EXT_FILTER = ["mp4", "m4v", "webm", "mov", "mkv"];
 // 音楽も同じく OS の WebView 任せ。書庫の中の音楽は一覧に出さない
 const AUDIO_EXT_FILTER = ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus"];
 const ARCHIVE_EXT_FILTER = ["zip", "cbz"];
@@ -135,7 +130,7 @@ function extOf(name) {
 }
 
 function isVideoPath(name) {
-  return OPENABLE_VIDEO_EXTS.includes(extOf(name));
+  return VIDEO_EXT_FILTER.includes(extOf(name));
 }
 
 function isAudioPath(name) {
@@ -390,13 +385,17 @@ function zoomTo(target) {
 }
 
 // ---- display ----
-// エラーと案内（端に到達したなど）を同じ場所に出す。kind で色だけ変える
-function showToast(message, kind) {
+// エラーと案内（端に到達したなど）を同じ場所に出す。kind で色だけ変える。
+// ms を省くと、案内は 1.5 秒、エラーは 4 秒で消える
+function showToast(message, kind, ms) {
   errorBox.textContent = String(message);
   errorBox.classList.toggle("notice", kind === "notice");
   errorBox.hidden = false;
   clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => (errorBox.hidden = true), kind === "notice" ? 1500 : 4000);
+  showToast.timer = setTimeout(
+    () => (errorBox.hidden = true),
+    ms ?? (kind === "notice" ? 1500 : 4000)
+  );
 }
 
 function showError(message) {
@@ -633,7 +632,7 @@ async function show() {
     img.removeAttribute("src");
     releaseBookPages();
     const autoplay = continuing || (showingAudio ? settings.audioAutoplay : settings.videoAutoplay);
-    loadVideo(convertFileSrc(images[index]), autoplay);
+    loadVideo(images[index], autoplay);
     if (showingAudio) {
       loadAudioInfo(images[index], token);
     } else {
@@ -749,12 +748,57 @@ let seekDragging = false;
 // 自動再生の制限で音を消したことは 1 回だけ知らせる（動画ごとに出すとうるさい）
 let autoplayMuteNoticed = false;
 
-function loadVideo(src, autoplay) {
+function loadVideo(path, autoplay) {
   video.loop = mediaLoop();
   setVolume(mediaVolume());
-  video.src = src;
+  if (usesMkvPlayer(path)) {
+    startMkvPlayer(path, { autoplay });
+    syncVideoBar();
+    return;
+  }
+  video.src = convertFileSrc(path);
   syncVideoBar();
   if (autoplay) playVideo();
+}
+
+// ---- MKV（macOS） ----
+// macOS の WKWebView は MKV を再生できないので、Rust 側で fragmented MP4 に詰め直して
+// MSE で再生する（mkv-player.js）。Windows の WebView2 はそのまま再生できる
+let mkvPlayer = null;
+// MKV の音声の知らせ・エラーを出しておく長さ（文が長いので、ふつうの案内より長く出す）
+const MKV_NOTICE_MS = 4000;
+
+function usesMkvPlayer(path) {
+  return IS_MAC && extOf(path) === "mkv";
+}
+
+// options: autoplay（読み込んだら再生する）、audio（鳴らす音声の番号）、startTime（始める位置・秒）
+function startMkvPlayer(path, { autoplay = false, audio, startTime } = {}) {
+  const player = new MkvPlayer(video, path, {
+    audio,
+    startTime,
+    play: autoplay ? playVideo : null,
+    onError: (e) => {
+      if (mkvPlayer !== player) return;
+      showError(`${e?.message ?? e}: ${baseName(path)}`);
+    },
+    onNotice: (message) => {
+      if (mkvPlayer === player) showToast(message, "notice", MKV_NOTICE_MS);
+    },
+  });
+  mkvPlayer = player;
+  player.start();
+}
+
+// MKV の音声を選び直す。音声は 1 本だけ詰め直しているので、今の位置から開き直す
+function switchMkvAudio(n) {
+  const old = mkvPlayer;
+  const track = old?.audioTracks[n];
+  if (!track || track.enabled || track.disabled) return;
+  const startTime = video.currentTime;
+  const autoplay = !video.paused && !video.ended;
+  old.destroy();
+  startMkvPlayer(old.path, { autoplay, audio: n, startTime });
 }
 
 // 設定「動画が終わったら」「曲が終わったら」（"next" / "repeat" / "stop"）
@@ -771,6 +815,10 @@ function mediaLoop() {
 // （Windows では再生中のファイルをゴミ箱へ送れないことがあるため）
 function unloadVideo() {
   if (subtitleTracks.length || subtitleLoading) clearSubtitles();
+  if (mkvPlayer) {
+    mkvPlayer.destroy();
+    mkvPlayer = null;
+  }
   if (!video.getAttribute("src")) return;
   video.pause();
   video.removeAttribute("src");
@@ -917,9 +965,12 @@ video.addEventListener("error", () => {
 // ---- 音声の切り替え（副音声） ----
 // MKV などに音声が 2 つ以上入っているとき、右クリックメニューの「音声」から切り替える。
 // audioTracks は WebView2 では実験的機能で、起動引数（lib.rs の WEBVIEW2_BROWSER_ARGS）で
-// 有効にしている。使えない WebView では audioTracks が無いので、「音声」はグレーアウトする
+// 有効にしている。使えない WebView では audioTracks が無いので、「音声」はグレーアウトする。
+// macOS の MKV は音声を 1 本だけ詰め直して流すので、一覧は MkvPlayer が持っている
 function audioTrackList() {
-  return showingVideo ? video.audioTracks ?? null : null;
+  if (!showingVideo) return null;
+  if (mkvPlayer) return mkvPlayer.audioTracks;
+  return video.audioTracks ?? null;
 }
 
 // 音声・字幕のトラックの表示名（番号 + 名前・言語のうちあるもの。どちらも無ければ「音声 n」など）
@@ -944,13 +995,17 @@ function selectedAudioTrack() {
 
 // 選んだ 1 つだけを有効にする（複数を有効にすると重ねて鳴る WebView がある）
 function selectAudioTrack(n) {
+  if (mkvPlayer) {
+    switchMkvAudio(n);
+    return;
+  }
   const tracks = audioTrackList();
   if (!tracks || n < 0 || n >= tracks.length) return;
   for (let i = 0; i < tracks.length; i++) tracks[i].enabled = i === n;
 }
 
 // ---- 字幕 ----
-// WebView（Chromium）は MKV の中の字幕を出さないので、Rust 側（video_subtitles）で
+// WebView は MKV の中の字幕を出さない（macOS の MKV は字幕を詰め直さない）ので、Rust 側（video_subtitles）で
 // テキスト字幕（SRT / ASS）を取り出し、自前の TextTrack に VTTCue として入れて表示する。
 // addTextTrack で足したトラックは <video> から外せないので、1 本だけ作って使い回し、
 // 字幕を切り替えるときは中身（cue）を入れ替える
@@ -1605,11 +1660,11 @@ async function openDialog() {
         {
           name: "画像・動画・音楽・圧縮フォルダ",
           extensions: [
-            ...IMAGE_EXT_FILTER, ...OPENABLE_VIDEO_EXTS, ...AUDIO_EXT_FILTER, ...ARCHIVE_EXT_FILTER,
+            ...IMAGE_EXT_FILTER, ...VIDEO_EXT_FILTER, ...AUDIO_EXT_FILTER, ...ARCHIVE_EXT_FILTER,
           ],
         },
         { name: "画像", extensions: IMAGE_EXT_FILTER },
-        { name: "動画", extensions: OPENABLE_VIDEO_EXTS },
+        { name: "動画", extensions: VIDEO_EXT_FILTER },
         { name: "音楽", extensions: AUDIO_EXT_FILTER },
         { name: "圧縮フォルダ (zip / cbz)", extensions: ARCHIVE_EXT_FILTER },
       ],
@@ -2378,10 +2433,13 @@ function audioMenuItem() {
   const selected = selectedAudioTrack();
   const items = [];
   for (let i = 0; i < count; i++) {
+    // 再生できない音声（macOS の MKV で非対応のコーデック）はグレーアウトしてコーデック名を添える
+    const disabled = !!tracks[i].disabled;
     items.push({
-      label: audioTrackLabel(tracks[i], i),
+      label: audioTrackLabel(tracks[i], i) + (disabled ? `（${tracks[i].codec}・再生できません）` : ""),
       radio: true,
       checked: selected === i,
+      disabled,
       action: () => selectAudioTrack(i),
     });
   }

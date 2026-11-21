@@ -19,22 +19,12 @@ const IMAGE_EXTS: &[&str] = &[
     "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp",
 ];
 
-/// 対応する動画拡張子（小文字で比較。全 OS 共通）。
+/// 対応する動画拡張子（小文字で比較）。
 /// デコードは OS の WebView に任せる（コーデックは同梱しない）ので、
-/// どの OS の WebView でもおおむね再生できるコンテナだけに絞っている
-const VIDEO_EXTS: &[&str] = &["m4v", "mov", "mp4", "webm"];
-
-/// Windows だけで扱う動画拡張子（小文字で比較）。
-/// WebView2（Chromium）は MKV をそのまま再生できるが、macOS の WKWebView はできないので、
-/// macOS では一覧・ファイル選択・関連付けのどれにも出さない
-const WINDOWS_VIDEO_EXTS: &[&str] = &["mkv"];
-
-/// この OS で VIDEO_EXTS に加えて扱う動画拡張子
-const PLATFORM_VIDEO_EXTS: &[&str] = if cfg!(target_os = "windows") {
-    WINDOWS_VIDEO_EXTS
-} else {
-    &[]
-};
+/// どの OS の WebView でもおおむね再生できるコンテナだけに絞っている。
+/// MKV は WebView2（Windows）ならそのまま再生できる。macOS の WKWebView は MKV を
+/// 再生できないので、MKV のリマックス（mkv_open など）で fragmented MP4 に詰め直して流す
+const VIDEO_EXTS: &[&str] = &["m4v", "mkv", "mov", "mp4", "webm"];
 
 /// 対応する音楽拡張子（小文字で比較）。
 /// 動画と同じく再生は OS の WebView に任せる（コーデックは同梱しない）
@@ -295,7 +285,7 @@ fn is_image(path: &Path) -> bool {
 }
 
 fn is_video(path: &Path) -> bool {
-    has_ext(path, VIDEO_EXTS) || has_ext(path, PLATFORM_VIDEO_EXTS)
+    has_ext(path, VIDEO_EXTS)
 }
 
 fn is_audio(path: &Path) -> bool {
@@ -1026,11 +1016,7 @@ mod tests {
         assert!(is_video(Path::new("/x/clip.MP4")));
         assert!(is_video(Path::new("/x/clip.webm")));
         assert!(!is_video(Path::new("/x/clip.avi")));
-        // MKV は Windows でだけ動画として扱う
-        assert_eq!(
-            is_video(Path::new("/x/clip.MKV")),
-            cfg!(target_os = "windows")
-        );
+        assert!(is_video(Path::new("/x/clip.MKV")));
         assert!(!is_video(Path::new("/x/photo.png")));
         assert!(is_media(Path::new("/x/clip.mov")));
         assert!(is_media(Path::new("/x/photo.png")));
@@ -1353,8 +1339,7 @@ mod tests {
         assert!(!text.contains('\n'));
     }
 
-    /// 対応拡張子の一覧は lib.rs / main.js / tauri.conf.json（Windows だけの分は
-    /// tauri.windows.conf.json）にあり、手で揃えるしかない。ずれたらここで落として気付けるようにする
+    /// 対応拡張子の一覧は lib.rs / main.js / tauri.conf.json にあり、手で揃えるしかない。ずれたらここで落として気付けるようにする
     #[test]
     fn supported_extensions_stay_in_sync() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1369,12 +1354,9 @@ mod tests {
             .unwrap_or_else(|_| panic!("{name} が JSON として壊れています"))
         };
         let conf = read_conf("tauri.conf.json");
-        // Windows でのビルドでは tauri.conf.json に JSON Merge Patch で重ねられる。
-        // 配列は丸ごと置き換わるので、fileAssociations は全種類を書いてある
-        let win_conf = read_conf("tauri.windows.conf.json");
 
         // fileAssociations から、指定した name の ext を取り出す
-        let association_in = |conf: &serde_json::Value, name: &str| -> Vec<String> {
+        let association = |name: &str| -> Vec<String> {
             conf["bundle"]["fileAssociations"]
                 .as_array()
                 .expect("fileAssociations がありません")
@@ -1387,7 +1369,6 @@ mod tests {
                 .map(|e| e.as_str().expect("ext が文字列ではありません").to_string())
                 .collect()
         };
-        let association = |name: &str| association_in(&conf, name);
 
         let images = sorted(IMAGE_EXTS.to_vec());
         assert_eq!(
@@ -1416,35 +1397,6 @@ mod tests {
             sorted(association("Video")),
             videos,
             "tauri.conf.json の fileAssociations が VIDEO_EXTS とずれています"
-        );
-        assert_eq!(
-            sorted(quoted_items(
-                &main_js,
-                "const WINDOWS_VIDEO_EXT_FILTER = [",
-                ']'
-            )),
-            sorted(WINDOWS_VIDEO_EXTS.to_vec()),
-            "main.js の WINDOWS_VIDEO_EXT_FILTER が WINDOWS_VIDEO_EXTS とずれています"
-        );
-        assert_eq!(
-            sorted(association_in(&win_conf, "Video")),
-            sorted([VIDEO_EXTS, WINDOWS_VIDEO_EXTS].concat()),
-            "tauri.windows.conf.json の動画の fileAssociations が VIDEO_EXTS + WINDOWS_VIDEO_EXTS とずれています"
-        );
-        // 動画以外は tauri.conf.json と同じにする（Windows だけ関連付けがずれないように）
-        for name in ["Image", "Audio"] {
-            assert_eq!(
-                association_in(&win_conf, name),
-                association(name),
-                "tauri.windows.conf.json の {name} の fileAssociations が tauri.conf.json とずれています"
-            );
-        }
-        assert_eq!(
-            win_conf["bundle"]["fileAssociations"]
-                .as_array()
-                .map(|a| a.len()),
-            Some(3),
-            "tauri.windows.conf.json の fileAssociations は画像・動画・音楽の 3 件だけにします"
         );
         let audios = sorted(AUDIO_EXTS.to_vec());
         assert_eq!(
@@ -1475,6 +1427,327 @@ mod tests {
         );
     }
 
+    /// MP4 の箱を (種類, 中身) に分ける（テストで書き出した fMP4 を確かめる）
+    fn mp4_boxes(data: &[u8]) -> Vec<([u8; 4], &[u8])> {
+        let mut out = Vec::new();
+        let mut p = 0;
+        while p < data.len() {
+            let size = u32::from_be_bytes(data[p..p + 4].try_into().unwrap()) as usize;
+            assert!(
+                size >= 8 && p + size <= data.len(),
+                "箱の大きさが壊れています"
+            );
+            out.push((
+                data[p + 4..p + 8].try_into().unwrap(),
+                &data[p + 8..p + size],
+            ));
+            p += size;
+        }
+        out
+    }
+
+    fn mp4_child<'a>(data: &'a [u8], kind: &[u8; 4]) -> &'a [u8] {
+        mp4_boxes(data)
+            .into_iter()
+            .find(|(k, _)| k == kind)
+            .unwrap_or_else(|| panic!("{} がありません", String::from_utf8_lossy(kind)))
+            .1
+    }
+
+    fn be32(data: &[u8], at: usize) -> u32 {
+        u32::from_be_bytes(data[at..at + 4].try_into().unwrap())
+    }
+
+    /// テスト用のサンプル（DTS, PTS, キーフレームか, 大きさ。時刻はトラックの単位）
+    #[derive(Debug)]
+    struct ParsedSample {
+        dts: i64,
+        pts: i64,
+        keyframe: bool,
+    }
+
+    /// 断片（moof + mdat）をトラック番号ごとのサンプルに分ける。data_offset と mdat も確かめる
+    fn parse_fragment(fragment: &[u8]) -> BTreeMap<u32, Vec<ParsedSample>> {
+        let boxes = mp4_boxes(fragment);
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(&boxes[0].0, b"moof");
+        assert_eq!(&boxes[1].0, b"mdat");
+        let moof_size = boxes[0].1.len() + 8;
+        let mut out = BTreeMap::new();
+        let mut expected_offset = moof_size + 8;
+        for (kind, traf) in mp4_boxes(boxes[0].1) {
+            if &kind != b"traf" {
+                continue;
+            }
+            let track = be32(mp4_child(traf, b"tfhd"), 4);
+            let tfdt = mp4_child(traf, b"tfdt");
+            let mut dts = u64::from_be_bytes(tfdt[4..12].try_into().unwrap()) as i64;
+            let trun = mp4_child(traf, b"trun");
+            let flags = be32(trun, 0) & 0xFF_FFFF;
+            let count = be32(trun, 4) as usize;
+            assert_eq!(
+                be32(trun, 8) as usize,
+                expected_offset,
+                "data_offset がずれています"
+            );
+            let has_cts = flags & 0x800 != 0;
+            let stride = if has_cts { 16 } else { 12 };
+            let mut samples = Vec::new();
+            for i in 0..count {
+                let at = 12 + i * stride;
+                let duration = be32(trun, at) as i64;
+                expected_offset += be32(trun, at + 4) as usize;
+                let cts = if has_cts {
+                    be32(trun, at + 12) as i32 as i64
+                } else {
+                    0
+                };
+                samples.push(ParsedSample {
+                    dts,
+                    pts: dts + cts,
+                    keyframe: be32(trun, at + 8) & 0x0001_0000 == 0,
+                });
+                dts += duration;
+            }
+            out.insert(track, samples);
+        }
+        assert_eq!(
+            expected_offset,
+            fragment.len(),
+            "mdat の大きさがサンプルの合計と違います"
+        );
+        out
+    }
+
+    fn remux_testdata(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata")
+            .join(name)
+    }
+
+    #[test]
+    fn mkv_is_remuxed_to_fragmented_mp4() {
+        // ffmpeg で作った 3 秒の動画（H.264・B フレームあり・24 fps・1 秒ごとのキーフレーム）。
+        // 音声は AC-3（既定）と AAC（日本語）の 2 本
+        let (mut stream, info) = MkvStream::open(&remux_testdata("remux.mkv"), None).unwrap();
+        assert!(
+            info.video_codec.starts_with("avc1.64"),
+            "{}",
+            info.video_codec
+        );
+        assert!((info.duration.unwrap() - 3.0).abs() < 0.1);
+        assert_eq!(info.audio_tracks.len(), 2);
+        assert_eq!(info.audio_tracks[0].codec, "AC-3");
+        assert!(info.audio_tracks[0].default);
+        assert_eq!(info.audio_tracks[0].codec_string, None);
+        assert_eq!(info.audio_tracks[1].language.as_deref(), Some("jpn"));
+        // 既定の AC-3 は詰め直せないので、詰め直せる AAC を鳴らす
+        assert_eq!(info.audio, Some(1));
+        assert_eq!(info.audio_codec.as_deref(), Some("mp4a.40.2"));
+
+        let init = stream.init_segment();
+        let top = mp4_boxes(&init);
+        assert_eq!(&top[0].0, b"ftyp");
+        assert_eq!(&top[1].0, b"moov");
+        let moov = mp4_boxes(top[1].1);
+        assert_eq!(moov.iter().filter(|(k, _)| k == b"trak").count(), 2);
+        assert!(moov.iter().any(|(k, _)| k == b"mvex"));
+        let has = |needle: &[u8]| init.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"avc1") && has(b"avcC") && has(b"mp4a") && has(b"esds"));
+
+        let mut video = Vec::new();
+        let mut audio_end: Option<i64> = None;
+        loop {
+            let fragment = stream.read_fragment().unwrap();
+            if fragment.is_empty() {
+                break;
+            }
+            let tracks = parse_fragment(&fragment);
+            let v = &tracks[&1];
+            assert!(v[0].keyframe, "断片はキーフレームから始めます");
+            video.extend(tracks[&1].iter().map(|s| (s.dts, s.pts, s.keyframe)));
+            // 音声は断片の継ぎ目で途切れも重なりもしない
+            let a = &tracks[&2];
+            if let Some(end) = audio_end {
+                assert_eq!(a[0].dts, end);
+            } else {
+                assert_eq!(a[0].dts, 0);
+            }
+            audio_end = Some(a.last().unwrap().dts + 1024);
+        }
+        assert_eq!(video.len(), 72);
+        assert_eq!(video.iter().filter(|v| v.2).count(), 3);
+        assert_eq!(video[0].0, 0);
+        for pair in video.windows(2) {
+            assert!(pair[0].0 < pair[1].0, "DTS が増えていません: {pair:?}");
+        }
+        for v in &video {
+            assert!(v.0 <= v.1, "DTS が PTS より後ろです: {v:?}");
+        }
+        // 表示時刻はそのまま（並べ替えると 1/24 秒おき。MKV はミリ秒単位なので ±1 ms）
+        let mut pts: Vec<i64> = video.iter().map(|v| v.1).collect();
+        pts.sort_unstable();
+        for (i, p) in pts.iter().enumerate() {
+            let exact = i as i64 * 90_000 / 24;
+            assert!((p - exact).abs() <= 90, "{i}: {p} != {exact}");
+        }
+        // 音声は 3 秒ぶん（48 kHz）
+        let audio_seconds = audio_end.unwrap() as f64 / 48_000.0;
+        assert!((audio_seconds - 3.0).abs() < 0.05, "{audio_seconds}");
+    }
+
+    #[test]
+    fn mkv_seek_starts_at_previous_keyframe() {
+        let (mut stream, _) = MkvStream::open(&remux_testdata("remux.mkv"), Some(1)).unwrap();
+        for (target, keyframe) in [(1.5, 1.0), (0.2, 0.0), (2.0, 2.0), (10.0, 2.0)] {
+            let found = stream.seek(target).unwrap();
+            assert!((found - keyframe).abs() < 0.001, "{target}: {found}");
+            let tracks = parse_fragment(&stream.read_fragment().unwrap());
+            let first = &tracks[&1][0];
+            assert!(first.keyframe);
+            assert_eq!(first.pts, (keyframe * 90_000.0) as i64);
+            // 音声もシーク先あたりから始まる（ファイルではキーフレームの少し前の音声が後ろに並ぶ）
+            let audio = tracks[&2][0].dts as f64 / 48_000.0;
+            assert!(audio > keyframe - 0.2 && audio < keyframe + 0.05, "{audio}");
+        }
+    }
+
+    #[test]
+    fn mkv_audio_can_be_chosen_or_left_out() {
+        let path = remux_testdata("remux.mkv");
+        // 音声なし
+        let (mut stream, info) = MkvStream::open(&path, Some(-1)).unwrap();
+        assert_eq!(info.audio, None);
+        assert_eq!(info.audio_codec, None);
+        assert_eq!(
+            mp4_boxes(&stream.init_segment())[1]
+                .1
+                .windows(4)
+                .filter(|w| w == b"trak")
+                .count(),
+            1
+        );
+        assert!(!parse_fragment(&stream.read_fragment().unwrap()).contains_key(&2));
+        // 詰め直せない音声（AC-3）を選んだら音声なし
+        let (_, info) = MkvStream::open(&path, Some(0)).unwrap();
+        assert_eq!(info.audio, None);
+        // 音声の無い MKV
+        let (_, info) = MkvStream::open(&remux_testdata("subtitles.mkv"), None).unwrap();
+        assert!(info.audio_tracks.is_empty());
+        assert_eq!(info.audio, None);
+    }
+
+    #[test]
+    fn mkv_with_unsupported_video_is_rejected() {
+        let err = MkvStream::open(&remux_testdata("unsupported.mkv"), None)
+            .err()
+            .unwrap();
+        assert_eq!(err, "この MKV の映像（MPEG-4 Visual）には対応していません");
+    }
+
+    #[test]
+    fn decode_times_stay_before_presentation_times() {
+        // デコード順 I P B B（24 fps、90 kHz）。並べ替えの深さは 1 フレーム
+        let f = 3750;
+        let t = video_decode_times(&[0, 3 * f, f, 2 * f], f, None, f);
+        // 頭の負の DTS は 0 から詰める
+        assert_eq!(t.dts, vec![0, f / 2, f, 2 * f]);
+        assert_eq!(t.durations, vec![f / 2, f / 2, f, f]);
+        // ファイルの途中（負にならない）なら、昇順の PTS を深さだけ前へずらす。最後の長さは次の DTS まで
+        let t = video_decode_times(&[40 * f, 43 * f, 41 * f, 42 * f], f, Some(43 * f), f);
+        assert_eq!(t.dts, vec![39 * f, 40 * f, 41 * f, 42 * f]);
+        assert_eq!(t.durations, vec![f, f, f, f]);
+        assert_eq!(reorder_depth(&[0, 3 * f, f, 2 * f]), f);
+        assert_eq!(reorder_depth(&[0, f, 2 * f]), 0);
+    }
+
+    #[test]
+    fn laced_frames_are_split() {
+        // Xiph: 3 フレーム（2, 256, 1 バイト）
+        let mut xiph = vec![2, 2, 255, 1];
+        xiph.extend([1, 1]);
+        xiph.extend(vec![2; 256]);
+        xiph.push(3);
+        let frames = split_laced_frames(&xiph, 1).unwrap();
+        assert_eq!(
+            frames.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![2, 256, 1]
+        );
+        assert_eq!(frames[2], vec![3]);
+        // 固定長: 2 フレーム × 3 バイト
+        let frames = split_laced_frames(&[1, 1, 2, 3, 4, 5, 6], 2).unwrap();
+        assert_eq!(frames, vec![vec![1, 2, 3], vec![4, 5, 6]]);
+        // EBML: 3 フレーム（4, 2, 1 バイト）。2 つ目は 1 つ目との差 -2（1 バイトの符号付き = 0x80 | (63 - 2)）
+        let mut ebml = vec![2, 0x84, 0x80 | 61];
+        ebml.extend([9; 7]);
+        let frames = split_laced_frames(&ebml, 3).unwrap();
+        assert_eq!(
+            frames.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![4, 2, 1]
+        );
+        // 足りないものは壊れているとみなす
+        assert_eq!(split_laced_frames(&[1, 200, 1], 1), None);
+    }
+
+    #[test]
+    fn codec_strings_follow_the_mp4_rules() {
+        assert_eq!(
+            avc_codec_string(&[1, 0x64, 0x00, 0x1F, 0xFF, 0xE1, 0]).as_deref(),
+            Some("avc1.64001F")
+        );
+        let mut hvcc = vec![0u8; 23];
+        hvcc[0] = 1;
+        hvcc[1] = 0x01; // Main
+        hvcc[2] = 0x60;
+        hvcc[6] = 0x90;
+        hvcc[12] = 93;
+        assert_eq!(hevc_codec_string(&hvcc).as_deref(), Some("hvc1.1.6.L93.90"));
+        hvcc[1] = 0x22; // High tier、Main 10
+        hvcc[2] = 0x20;
+        hvcc[6] = 0xB0;
+        hvcc[12] = 120;
+        assert_eq!(
+            hevc_codec_string(&hvcc).as_deref(),
+            Some("hvc1.2.4.H120.B0")
+        );
+        assert_eq!(hevc_codec_string(&[1, 2, 3]), None);
+
+        // AAC-LC 48 kHz ステレオ / 960 サンプルのフレーム / HE-AAC
+        assert_eq!(parse_aac_config(&[0x11, 0x90]), Some((2, 48000, 1024)));
+        assert_eq!(parse_aac_config(&[0x11, 0x94]), Some((2, 48000, 960)));
+        assert_eq!(
+            parse_aac_config(&[0x2B, 0x92, 0x08, 0x00]),
+            Some((5, 22050, 1024))
+        );
+        assert_eq!(
+            legacy_aac_config("A_AAC/MPEG4/LC", 48000, 2),
+            Some(vec![0x11, 0x90])
+        );
+        assert_eq!(
+            legacy_aac_config("A_AAC/MPEG2/LC/SBR", 44100, 2),
+            Some(vec![0x13, 0x90])
+        );
+
+        // Opus: 20 ms（CELT）1 フレーム / 10 ms × 2 / コード 3 で 60 ms ずつ 2 フレーム
+        assert_eq!(opus_packet_samples(&[0xF8]), Some(960));
+        assert_eq!(opus_packet_samples(&[(14 << 3) | 1]), Some(960));
+        assert_eq!(opus_packet_samples(&[(3 << 3) | 3, 2]), Some(5760));
+        let mut head = b"OpusHead".to_vec();
+        head.extend([1, 2, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            opus_dops(&head),
+            Some(vec![0, 2, 0x01, 0x38, 0, 0, 0xBB, 0x80, 0, 0, 0])
+        );
+    }
+
+    #[test]
+    fn mp4_descriptor_lengths_use_seven_bit_groups() {
+        assert_eq!(mp4_descriptor(5, &[1, 2]), vec![5, 2, 1, 2]);
+        let long = mp4_descriptor(5, &[0; 200]);
+        assert_eq!(&long[..3], &[5, 0x81, 0x48]);
+        assert_eq!(long.len(), 203);
+    }
+
     #[test]
     fn mkv_subtitles_are_read_from_srt_and_ass_tracks() {
         // ffmpeg で作った 2 秒の動画。字幕は SRT（日本語・既定）と ASS（英語）の 2 本
@@ -1503,14 +1776,15 @@ mod tests {
 
     #[test]
     fn subtitles_are_only_read_from_mkv() {
-        // MKV 以外（と、MKV を扱わない OS の MKV）は読まずに空を返す
+        // MKV 以外は読まずに空を返す
         assert!(video_subtitles("/x/clip.mp4".into()).unwrap().is_empty());
-        if !cfg!(target_os = "windows") {
-            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/subtitles.mkv");
-            assert!(video_subtitles(path.to_string_lossy().into_owned())
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/subtitles.mkv");
+        assert_eq!(
+            video_subtitles(path.to_string_lossy().into_owned())
                 .unwrap()
-                .is_empty());
-        }
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -1532,16 +1806,16 @@ mod tests {
         z.write_all(b"hello").unwrap();
         let zipped = z.finish().unwrap();
         assert_eq!(
-            decode_subtitle_block(zipped, &[SubtitleDecode::Zlib]).as_deref(),
+            decode_subtitle_block(zipped, &[BlockDecode::Zlib]).as_deref(),
             Some(&b"hello"[..])
         );
         assert_eq!(
-            decode_subtitle_block(b"llo".to_vec(), &[SubtitleDecode::Strip(b"he".to_vec())])
+            decode_subtitle_block(b"llo".to_vec(), &[BlockDecode::Strip(b"he".to_vec())])
                 .as_deref(),
             Some(&b"hello"[..])
         );
         assert_eq!(
-            decode_subtitle_block(b"bad".to_vec(), &[SubtitleDecode::Zlib]),
+            decode_subtitle_block(b"bad".to_vec(), &[BlockDecode::Zlib]),
             None
         );
     }
@@ -3705,9 +3979,9 @@ fn subtitle_format(codec_id: &str) -> Option<SubtitleFormat> {
     }
 }
 
-/// ブロックの中身に掛かっている符号化（ContentEncoding）を戻す手順
+/// ブロックの中身に掛かっている符号化（ContentEncoding）を戻す手順（字幕と MKV のリマックスで使う）
 #[derive(Clone, Debug, PartialEq)]
-enum SubtitleDecode {
+enum BlockDecode {
     Zlib,
     /// 各フレームの先頭から取り除かれているバイト列（header stripping）
     Strip(Vec<u8>),
@@ -3717,7 +3991,7 @@ enum SubtitleDecode {
 const MAX_SUBTITLE_BLOCK_BYTES: u64 = 1024 * 1024;
 
 /// 符号化の手順（戻す順）。暗号化・未対応の圧縮なら None（そのトラックは読まない）
-fn subtitle_decoders(track: &matroska_demuxer::TrackEntry) -> Option<Vec<SubtitleDecode>> {
+fn block_decoders(track: &matroska_demuxer::TrackEntry) -> Option<Vec<BlockDecode>> {
     use matroska_demuxer::{ContentCompAlgo, ContentEncodingValue};
     let mut encodings: Vec<_> = track.content_encodings().unwrap_or(&[]).iter().collect();
     // 戻すときは order の大きいものから
@@ -3730,9 +4004,9 @@ fn subtitle_decoders(track: &matroska_demuxer::TrackEntry) -> Option<Vec<Subtitl
         }
         match encoding.encoding() {
             ContentEncodingValue::Compression(c) => match c.algo() {
-                ContentCompAlgo::Zlib => out.push(SubtitleDecode::Zlib),
+                ContentCompAlgo::Zlib => out.push(BlockDecode::Zlib),
                 ContentCompAlgo::Stripping => {
-                    out.push(SubtitleDecode::Strip(c.settings().unwrap_or(&[]).to_vec()))
+                    out.push(BlockDecode::Strip(c.settings().unwrap_or(&[]).to_vec()))
                 }
                 _ => return None,
             },
@@ -3742,18 +4016,23 @@ fn subtitle_decoders(track: &matroska_demuxer::TrackEntry) -> Option<Vec<Subtitl
     Some(out)
 }
 
-fn decode_subtitle_block(mut data: Vec<u8>, decoders: &[SubtitleDecode]) -> Option<Vec<u8>> {
+fn decode_subtitle_block(data: Vec<u8>, decoders: &[BlockDecode]) -> Option<Vec<u8>> {
+    decode_block(data, decoders, MAX_SUBTITLE_BLOCK_BYTES)
+}
+
+/// ブロック（フレーム）の符号化を戻す。zlib は展開後 `limit` バイトまでしか読まない
+fn decode_block(mut data: Vec<u8>, decoders: &[BlockDecode], limit: u64) -> Option<Vec<u8>> {
     for decoder in decoders {
         data = match decoder {
-            SubtitleDecode::Zlib => {
+            BlockDecode::Zlib => {
                 let mut out = Vec::new();
                 flate2::read::ZlibDecoder::new(data.as_slice())
-                    .take(MAX_SUBTITLE_BLOCK_BYTES)
+                    .take(limit)
                     .read_to_end(&mut out)
                     .ok()?;
                 out
             }
-            SubtitleDecode::Strip(prefix) => [prefix.as_slice(), &data].concat(),
+            BlockDecode::Strip(prefix) => [prefix.as_slice(), &data].concat(),
         };
     }
     Some(data)
@@ -3991,7 +4270,7 @@ fn read_mkv_subtitles(path: &Path) -> Result<Vec<SubtitleTrack>, String> {
     struct Wanted {
         number: u64,
         format: SubtitleFormat,
-        decoders: Vec<SubtitleDecode>,
+        decoders: Vec<BlockDecode>,
         default_duration: Option<f64>,
         track: SubtitleTrack,
     }
@@ -4003,7 +4282,7 @@ fn read_mkv_subtitles(path: &Path) -> Result<Vec<SubtitleTrack>, String> {
             Some(Wanted {
                 number: t.track_number().get(),
                 format: subtitle_format(t.codec_id())?,
-                decoders: subtitle_decoders(t)?,
+                decoders: block_decoders(t)?,
                 default_duration: t.default_duration().map(|d| d.get() as f64 / 1e9),
                 track: SubtitleTrack {
                     name: t.name().map(str::to_string),
@@ -4066,8 +4345,7 @@ fn read_mkv_subtitles(path: &Path) -> Result<Vec<SubtitleTrack>, String> {
         .collect())
 }
 
-/// 動画に入っているテキスト字幕を返す。MKV を扱う OS（Windows）の MKV だけが対象で、
-/// それ以外の動画では空
+/// 動画に入っているテキスト字幕を返す。MKV だけが対象で、それ以外の動画では空
 #[tauri::command(async)]
 fn video_subtitles(path: String) -> Result<Vec<SubtitleTrack>, String> {
     let path = Path::new(&path);
@@ -4075,6 +4353,1621 @@ fn video_subtitles(path: String) -> Result<Vec<SubtitleTrack>, String> {
         return Ok(Vec::new());
     }
     read_mkv_subtitles(path)
+}
+
+// ---- MKV のリマックス（macOS） ----
+// macOS の WKWebView は MKV コンテナを再生できない。そこで MKV を読み、中身（映像・音声の
+// フレーム）は再エンコードせずに fragmented MP4（初期化セグメント + moof/mdat の断片）へ
+// 詰め直して、フロントエンドの MSE（Media Source Extensions）に流す（mkv-player.js）。
+// デコードは WebView に任せるので、コーデックは同梱しない。一時ファイルは作らず、
+// 断片は要求されるたびにファイルの続きから作る。
+// 対応するのは映像が H.264 / HEVC、音声が AAC / Opus だけ（字幕は video_subtitles で別に読む）。
+// Windows は WebView2 が MKV をそのまま再生できるので、この経路は使わない
+
+/// 映像の時間の単位（1 秒あたり）。MKV の時刻（多くはミリ秒）をそのまま表せる細かさにする
+const REMUX_VIDEO_TIMESCALE: u64 = 90_000;
+
+/// 断片 1 つに入れる映像の長さの目安（Matroska の単位に直して使う）。
+/// 断片はキーフレーム（GOP の頭）でだけ区切るので、実際は GOP の長さぶん延びる
+const REMUX_FRAGMENT_SECONDS: f64 = 1.0;
+
+/// 断片の大きさの目安。超えたら次のキーフレームで区切る
+const REMUX_FRAGMENT_SOFT_BYTES: usize = 16 * 1024 * 1024;
+
+/// 断片の大きさの上限。GOP が極端に長いファイルでも、これを超えたらキーフレームを待たずに区切る
+const REMUX_FRAGMENT_MAX_BYTES: usize = 48 * 1024 * 1024;
+
+/// フレーム 1 つの上限（壊れたファイルで巨大な領域を確保しない）
+const REMUX_MAX_FRAME_BYTES: u64 = 32 * 1024 * 1024;
+
+/// 前の断片の続きとして音声の時刻をつなぐ範囲（秒）。これより離れていたら時刻を付け直す
+const REMUX_AUDIO_RESYNC_SECONDS: f64 = 0.1;
+
+/// B フレームの並べ替えの深さを見積もるのに読む映像のフレーム数の上限
+const REMUX_REORDER_PROBE_FRAMES: usize = 600;
+
+// リマックスで読む Matroska の要素 ID（字幕の走査と共通のものは上で定義している）
+const MKV_EBML: u64 = 0x1A45_DFA3;
+const MKV_SEGMENT: u64 = 0x1853_8067;
+const MKV_SEEK_HEAD: u64 = 0x114D_9B74;
+const MKV_SEEK: u64 = 0x4DBB;
+const MKV_SEEK_ID: u64 = 0x53AB;
+const MKV_SEEK_POSITION: u64 = 0x53AC;
+const MKV_CUES: u64 = 0x1C53_BB6B;
+const MKV_CUE_POINT: u64 = 0xBB;
+const MKV_CUE_TIME: u64 = 0xB3;
+const MKV_CUE_TRACK_POSITIONS: u64 = 0xB7;
+const MKV_CUE_TRACK: u64 = 0xF7;
+const MKV_CUE_CLUSTER_POSITION: u64 = 0xF1;
+const MKV_REFERENCE_BLOCK: u64 = 0xFB;
+
+fn invalid_data(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message.to_string())
+}
+
+/// 要素の頭（ID とサイズ）を読む。サイズが不明（全ビット 1）なら None
+fn read_element_header<R: Read>(r: &mut R) -> std::io::Result<(u64, Option<u64>)> {
+    let (id, _) = read_ebml_vint(r, true)?;
+    let id = id.ok_or_else(|| invalid_data("要素 ID が壊れています"))?;
+    let (size, _) = read_ebml_vint(r, false)?;
+    Ok((id, size))
+}
+
+/// バイト列の中の EBML 可変長整数（レーシングのサイズ）を読む。戻り値は (値, バイト数)
+fn slice_vint(data: &[u8]) -> Option<(u64, usize)> {
+    let first = *data.first()?;
+    let len = first.leading_zeros() as usize + 1;
+    if len > 8 || data.len() < len {
+        return None;
+    }
+    let mut value = (first as u64) & (0xFF >> len);
+    for &b in &data[1..len] {
+        value = (value << 8) | b as u64;
+    }
+    Some((value, len))
+}
+
+/// レーシング（1 ブロックに複数フレーム）を分ける。`lacing` はフラグの 2 ビット
+/// （1: Xiph、2: 固定長、3: EBML）。壊れていれば None
+fn split_laced_frames(data: &[u8], lacing: u8) -> Option<Vec<Vec<u8>>> {
+    let count = *data.first()? as usize + 1;
+    let mut p = 1;
+    let mut sizes = Vec::with_capacity(count);
+    match lacing {
+        1 => {
+            for _ in 0..count - 1 {
+                let mut size = 0usize;
+                loop {
+                    let b = *data.get(p)?;
+                    p += 1;
+                    size += b as usize;
+                    if b != 255 {
+                        break;
+                    }
+                }
+                sizes.push(size);
+            }
+        }
+        2 => {
+            let body = data.len() - 1;
+            if !body.is_multiple_of(count) {
+                return None;
+            }
+            sizes = vec![body / count; count - 1];
+        }
+        3 => {
+            if count > 1 {
+                let (first, len) = slice_vint(&data[p..])?;
+                p += len;
+                let mut size = first as i64;
+                sizes.push(size as usize);
+                for _ in 0..count - 2 {
+                    let (raw, len) = slice_vint(&data[p..])?;
+                    p += len;
+                    // 符号付き: 値から (2^(7*len-1) - 1) を引く
+                    let bias = (1i64 << (7 * len - 1)) - 1;
+                    size += raw as i64 - bias;
+                    if size < 0 {
+                        return None;
+                    }
+                    sizes.push(size as usize);
+                }
+            }
+        }
+        _ => return None,
+    }
+    let used: usize = sizes.iter().sum();
+    let rest = data.len().checked_sub(p)?.checked_sub(used)?;
+    sizes.push(rest);
+    let mut out = Vec::with_capacity(count);
+    for size in sizes {
+        out.push(data.get(p..p + size)?.to_vec());
+        p += size;
+    }
+    Some(out)
+}
+
+/// MKV から取り出したフレーム 1 つ（時刻は Matroska の単位・表示順の時刻）
+#[derive(Clone, Debug)]
+struct MkvFrame {
+    track: u64,
+    timestamp: i64,
+    keyframe: bool,
+    data: Vec<u8>,
+    /// このフレームのブロック（BlockGroup / SimpleBlock）の頭の位置と、その Cluster の時刻。
+    /// シークでここから読み直すのに使う
+    pos: u64,
+    cluster_timestamp: i64,
+}
+
+/// Cluster を頭から順に読み、指定したトラックのフレームを 1 つずつ返す
+struct MkvWalker<R> {
+    r: R,
+    cluster_timestamp: i64,
+    queue: std::collections::VecDeque<MkvFrame>,
+    /// 読むトラックと、レーシングされたフレームどうしの時刻の間隔（Matroska の単位）
+    tracks: Vec<(u64, i64)>,
+}
+
+impl<R: BufRead + Seek> MkvWalker<R> {
+    fn new(r: R, tracks: Vec<(u64, i64)>) -> Self {
+        Self {
+            r,
+            cluster_timestamp: 0,
+            queue: Default::default(),
+            tracks,
+        }
+    }
+
+    /// 要素の頭 `pos` から読み直す（`cluster_timestamp` はその位置が属する Cluster の時刻）
+    fn seek_to(&mut self, pos: u64, cluster_timestamp: i64) -> std::io::Result<()> {
+        self.r.seek(std::io::SeekFrom::Start(pos))?;
+        self.cluster_timestamp = cluster_timestamp;
+        self.queue.clear();
+        Ok(())
+    }
+
+    /// `pos` へ移る。BufReader の seek は読み込み済みの分を捨てるので、近くなら seek_relative で動く
+    fn move_to(&mut self, pos: u64) -> std::io::Result<()> {
+        let here = self.r.stream_position()?;
+        self.r.seek_relative(pos as i64 - here as i64)
+    }
+
+    /// 読み過ぎたフレームを戻す（次の next で最初に返る）
+    fn push_back(&mut self, frame: MkvFrame) {
+        self.queue.push_front(frame);
+    }
+
+    /// 次のフレーム。`with_data` が false なら中身は読まない（時刻とキーフレームかどうかだけ）。
+    /// ファイルの終わり・壊れた所まで来たら None
+    fn next(&mut self, with_data: bool) -> std::io::Result<Option<MkvFrame>> {
+        match self.next_inner(with_data) {
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+            other => other,
+        }
+    }
+
+    fn next_inner(&mut self, with_data: bool) -> std::io::Result<Option<MkvFrame>> {
+        loop {
+            if let Some(frame) = self.queue.pop_front() {
+                return Ok(Some(frame));
+            }
+            let pos = self.r.stream_position()?;
+            let (id, size) = read_element_header(&mut self.r)?;
+            match id {
+                // 中へ入る（長さ不明の Cluster もそのまま続けて読める）
+                MKV_CLUSTER => {}
+                MKV_TIMESTAMP => {
+                    self.cluster_timestamp = read_ebml_uint(&mut self.r, size.unwrap_or(0))? as i64
+                }
+                MKV_SIMPLE_BLOCK => {
+                    let Some(size) = size else { return Ok(None) };
+                    self.read_block(pos, size, None, with_data)?;
+                }
+                MKV_BLOCK_GROUP => {
+                    let Some(size) = size else { return Ok(None) };
+                    let end = self.r.stream_position()? + size;
+                    let mut block = None;
+                    let mut referenced = false;
+                    while self.r.stream_position()? < end {
+                        let (child, child_size) = read_element_header(&mut self.r)?;
+                        let Some(child_size) = child_size else {
+                            return Ok(None);
+                        };
+                        match child {
+                            MKV_BLOCK => block = Some((self.r.stream_position()?, child_size)),
+                            // 別のフレームを参照している = キーフレームではない
+                            MKV_REFERENCE_BLOCK => referenced = true,
+                            _ => {}
+                        }
+                        self.r.seek_relative(child_size as i64)?;
+                    }
+                    if let Some((start, block_size)) = block {
+                        self.move_to(start)?;
+                        self.read_block(pos, block_size, Some(!referenced), with_data)?;
+                    }
+                    self.move_to(end)?;
+                }
+                // ほかの要素（Cues、Tags など）は読み飛ばす
+                _ => match size {
+                    Some(size) => self.r.seek_relative(size as i64)?,
+                    None => return Ok(None),
+                },
+            }
+        }
+    }
+
+    /// Block / SimpleBlock の中身を読んで queue に積む（読まないトラックなら読み飛ばす）
+    fn read_block(
+        &mut self,
+        pos: u64,
+        size: u64,
+        keyframe: Option<bool>,
+        with_data: bool,
+    ) -> std::io::Result<()> {
+        let (track, track_len) = read_ebml_vint(&mut self.r, false)?;
+        let Some(body) = size.checked_sub(track_len + 3) else {
+            return self.r.seek_relative(size.saturating_sub(track_len) as i64);
+        };
+        let mut header = [0u8; 3];
+        self.r.read_exact(&mut header)?;
+        let wanted = track.and_then(|t| self.tracks.iter().find(|(n, _)| *n == t).copied());
+        let Some((track, step)) = wanted.filter(|_| body <= REMUX_MAX_FRAME_BYTES) else {
+            return self.r.seek_relative(body as i64);
+        };
+        let cluster_timestamp = self.cluster_timestamp;
+        let timestamp = cluster_timestamp + i16::from_be_bytes([header[0], header[1]]) as i64;
+        let keyframe = keyframe.unwrap_or(header[2] & 0x80 != 0);
+        let lacing = (header[2] >> 1) & 3;
+        let frame = |data: Vec<u8>, i: usize| MkvFrame {
+            track,
+            timestamp: timestamp + step * i as i64,
+            keyframe,
+            data,
+            pos,
+            cluster_timestamp,
+        };
+        if lacing == 0 {
+            let data = if with_data {
+                let mut data = vec![0u8; body as usize];
+                self.r.read_exact(&mut data)?;
+                data
+            } else {
+                self.r.seek_relative(body as i64)?;
+                Vec::new()
+            };
+            self.queue.push_back(frame(data, 0));
+            return Ok(());
+        }
+        // レーシングは中身を読まないと分けられない（音声で使われ、1 ブロックは小さい）
+        let mut data = vec![0u8; body as usize];
+        self.r.read_exact(&mut data)?;
+        let frames: Vec<MkvFrame> = split_laced_frames(&data, lacing)
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(i, data)| frame(if with_data { data } else { Vec::new() }, i))
+            .collect();
+        self.queue.extend(frames);
+        Ok(())
+    }
+}
+
+/// Segment の中の配置（最初の Cluster の位置と、映像トラックの Cues）
+struct MkvLayout {
+    first_cluster: u64,
+    /// 映像のキーフレームの (時刻, Cluster の位置)。時刻順
+    cues: Vec<(i64, u64)>,
+}
+
+/// EBML ヘッダと Segment の頭を読み、SeekHead から Cues を探して読む
+fn read_mkv_layout<R: Read + Seek>(r: &mut R, video_track: u64) -> std::io::Result<MkvLayout> {
+    use std::io::SeekFrom;
+    r.seek(SeekFrom::Start(0))?;
+    let (id, size) = read_element_header(r)?;
+    if id != MKV_EBML {
+        return Err(invalid_data("MKV ではありません"));
+    }
+    r.seek_relative(size.ok_or_else(|| invalid_data("EBML ヘッダが壊れています"))? as i64)?;
+    let segment_start = loop {
+        let (id, size) = read_element_header(r)?;
+        if id == MKV_SEGMENT {
+            break r.stream_position()?;
+        }
+        r.seek_relative(size.ok_or_else(|| invalid_data("Segment がありません"))? as i64)?;
+    };
+    let mut cues_pos = None;
+    let first_cluster = loop {
+        let pos = r.stream_position()?;
+        let (id, size) = read_element_header(r)?;
+        let body = r.stream_position()?;
+        match id {
+            MKV_CLUSTER => break pos,
+            MKV_CUES => cues_pos = Some(pos),
+            MKV_SEEK_HEAD => {
+                let end = body + size.ok_or_else(|| invalid_data("SeekHead が壊れています"))?;
+                while r.stream_position()? < end {
+                    let (id, size) = read_element_header(r)?;
+                    let size = size.ok_or_else(|| invalid_data("SeekHead が壊れています"))?;
+                    if id != MKV_SEEK {
+                        r.seek_relative(size as i64)?;
+                        continue;
+                    }
+                    let seek_end = r.stream_position()? + size;
+                    let (mut target, mut position) = (None, None);
+                    while r.stream_position()? < seek_end {
+                        let (id, size) = read_element_header(r)?;
+                        let size = size.unwrap_or(0);
+                        match id {
+                            MKV_SEEK_ID | MKV_SEEK_POSITION => {
+                                let value = read_ebml_uint(r, size)?;
+                                if id == MKV_SEEK_ID {
+                                    target = Some(value);
+                                } else {
+                                    position = Some(value);
+                                }
+                            }
+                            _ => r.seek_relative(size as i64)?,
+                        }
+                    }
+                    if target == Some(MKV_CUES) {
+                        cues_pos = cues_pos.or(position.map(|p| segment_start + p));
+                    }
+                    r.seek(SeekFrom::Start(seek_end))?;
+                }
+            }
+            _ => {}
+        }
+        let size = size.ok_or_else(|| invalid_data("Cluster が見つかりません"))?;
+        r.seek(SeekFrom::Start(body + size))?;
+    };
+    // Cues が壊れていても再生はできる（シークが遅くなるだけ）ので、読めた分だけ使う
+    let mut cues = Vec::new();
+    if let Some(pos) = cues_pos {
+        let _ = read_cues(r, pos, segment_start, video_track, &mut cues);
+    }
+    cues.sort_unstable();
+    cues.dedup_by_key(|c| c.0);
+    Ok(MkvLayout {
+        first_cluster,
+        cues,
+    })
+}
+
+fn read_cues<R: Read + Seek>(
+    r: &mut R,
+    pos: u64,
+    segment_start: u64,
+    video_track: u64,
+    out: &mut Vec<(i64, u64)>,
+) -> std::io::Result<()> {
+    r.seek(std::io::SeekFrom::Start(pos))?;
+    let (id, size) = read_element_header(r)?;
+    if id != MKV_CUES {
+        return Err(invalid_data("Cues ではありません"));
+    }
+    let end = r.stream_position()? + size.ok_or_else(|| invalid_data("Cues が壊れています"))?;
+    while r.stream_position()? < end {
+        let (id, size) = read_element_header(r)?;
+        let size = size.ok_or_else(|| invalid_data("Cues が壊れています"))?;
+        if id != MKV_CUE_POINT {
+            r.seek_relative(size as i64)?;
+            continue;
+        }
+        let point_end = r.stream_position()? + size;
+        let mut time = None;
+        let mut clusters = Vec::new();
+        while r.stream_position()? < point_end {
+            let (id, size) = read_element_header(r)?;
+            let size = size.ok_or_else(|| invalid_data("Cues が壊れています"))?;
+            match id {
+                MKV_CUE_TIME => time = Some(read_ebml_uint(r, size)?),
+                MKV_CUE_TRACK_POSITIONS => {
+                    let positions_end = r.stream_position()? + size;
+                    let (mut track, mut cluster) = (None, None);
+                    while r.stream_position()? < positions_end {
+                        let (id, size) = read_element_header(r)?;
+                        let size = size.unwrap_or(0);
+                        match id {
+                            MKV_CUE_TRACK => track = Some(read_ebml_uint(r, size)?),
+                            MKV_CUE_CLUSTER_POSITION => cluster = Some(read_ebml_uint(r, size)?),
+                            _ => r.seek_relative(size as i64)?,
+                        }
+                    }
+                    if let (Some(track), Some(cluster)) = (track, cluster) {
+                        if track == video_track {
+                            clusters.push(segment_start + cluster);
+                        }
+                    }
+                }
+                _ => r.seek_relative(size as i64)?,
+            }
+        }
+        if let (Some(time), Some(&cluster)) = (time, clusters.first()) {
+            out.push((time as i64, cluster));
+        }
+        r.seek(std::io::SeekFrom::Start(point_end))?;
+    }
+    Ok(())
+}
+
+/// Cues の無いファイル用に、各 Cluster の (時刻, 位置) を集める（中身は読み飛ばす）。
+/// 長さ不明の Cluster があればそこで打ち切る
+fn scan_cluster_index<R: Read + Seek>(r: &mut R, first_cluster: u64) -> Vec<(i64, u64)> {
+    let mut out = Vec::new();
+    let _ = (|| -> std::io::Result<()> {
+        r.seek(std::io::SeekFrom::Start(first_cluster))?;
+        loop {
+            let pos = r.stream_position()?;
+            let (id, size) = read_element_header(r)?;
+            let Some(size) = size else { return Ok(()) };
+            let body = r.stream_position()?;
+            if id == MKV_CLUSTER {
+                // Timestamp は Cluster の最初の方にある
+                while r.stream_position()? < body + size {
+                    let (child, child_size) = read_element_header(r)?;
+                    let child_size = child_size.unwrap_or(0);
+                    if child == MKV_TIMESTAMP {
+                        out.push((read_ebml_uint(r, child_size)? as i64, pos));
+                        break;
+                    }
+                    if child == MKV_SIMPLE_BLOCK || child == MKV_BLOCK_GROUP {
+                        break;
+                    }
+                    r.seek_relative(child_size as i64)?;
+                }
+            }
+            r.seek(std::io::SeekFrom::Start(body + size))?;
+        }
+    })();
+    out
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RemuxVideoCodec {
+    Avc,
+    Hevc,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RemuxAudioCodec {
+    Aac,
+    Opus,
+}
+
+/// リマックスする映像トラック
+#[derive(Clone, Debug)]
+struct RemuxVideo {
+    number: u64,
+    codec: RemuxVideoCodec,
+    /// avcC / hvcC の中身（MKV の CodecPrivate をそのまま使う）
+    config: Vec<u8>,
+    codec_string: String,
+    width: u32,
+    height: u32,
+    /// 表示する大きさ（画素の縦横比が 1:1 でない動画は pasp で伝える）
+    display: (u32, u32),
+    decoders: Vec<BlockDecode>,
+    /// 1 フレームの長さ（Matroska の単位。分からなければ 0）
+    frame_ticks: i64,
+}
+
+/// リマックスする音声トラック
+#[derive(Clone, Debug)]
+struct RemuxAudio {
+    number: u64,
+    codec: RemuxAudioCodec,
+    /// AAC は AudioSpecificConfig、Opus は dOps の中身
+    config: Vec<u8>,
+    codec_string: String,
+    channels: u16,
+    /// 音声の時間の単位（サンプリング周波数）
+    timescale: u32,
+    /// 1 フレームのサンプル数（AAC。Opus はフレームごとに TOC から求める）
+    frame_samples: u32,
+    /// デコーダの遅れ（CodecDelay、Matroska の単位）。ブロックの時刻からこれを引いた時刻に鳴らす
+    delay_ticks: i64,
+    decoders: Vec<BlockDecode>,
+}
+
+/// フロントエンドに渡す音声トラックの情報（MKV に入っている順）
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct RemuxAudioTrack {
+    name: Option<String>,
+    language: Option<String>,
+    /// コーデックの名前（AAC、AC-3 など）
+    codec: String,
+    /// MP4 の codecs 文字列（mp4a.40.2 など）。リマックスできないコーデックなら None
+    codec_string: Option<String>,
+    default: bool,
+}
+
+/// MKV を開いた結果
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MkvOpened {
+    id: u64,
+    /// 映像の MP4 の codecs 文字列
+    video_codec: String,
+    /// 鳴らす音声の MP4 の codecs 文字列（音声なしなら None）
+    audio_codec: Option<String>,
+    /// 長さ（秒）。分からなければ None
+    duration: Option<f64>,
+    audio_tracks: Vec<RemuxAudioTrack>,
+    /// 鳴らす音声（audio_tracks の番号）
+    audio: Option<usize>,
+}
+
+/// コーデック ID を人が読む名前にする（非対応の知らせに出す）
+fn mkv_codec_name(codec_id: &str) -> String {
+    let name = match codec_id {
+        "V_MPEG4/ISO/AVC" => "H.264",
+        "V_MPEGH/ISO/HEVC" => "HEVC",
+        "V_VP8" => "VP8",
+        "V_VP9" => "VP9",
+        "V_AV1" => "AV1",
+        "V_MPEG2" => "MPEG-2",
+        "V_MPEG4/ISO/ASP" | "V_MPEG4/ISO/SP" | "V_MPEG4/ISO/AP" => "MPEG-4 Visual",
+        "V_MS/VFW/FOURCC" => "VfW",
+        "A_OPUS" => "Opus",
+        "A_AC3" => "AC-3",
+        "A_EAC3" => "E-AC-3",
+        "A_TRUEHD" => "TrueHD",
+        "A_FLAC" => "FLAC",
+        "A_VORBIS" => "Vorbis",
+        "A_MPEG/L3" => "MP3",
+        "A_MPEG/L2" => "MP2",
+        id if id.starts_with("A_AAC") => "AAC",
+        id if id.starts_with("A_DTS") => "DTS",
+        id if id.starts_with("A_PCM") => "PCM",
+        id => id,
+    };
+    name.to_string()
+}
+
+/// avcC から codecs 文字列（avc1.PPCCLL）を作る
+fn avc_codec_string(avcc: &[u8]) -> Option<String> {
+    if avcc.len() < 7 || avcc[0] != 1 {
+        return None;
+    }
+    Some(format!(
+        "avc1.{:02X}{:02X}{:02X}",
+        avcc[1], avcc[2], avcc[3]
+    ))
+}
+
+/// hvcC から codecs 文字列（hvc1.1.6.L93.B0 など。ISO/IEC 14496-15 の付属書 E）を作る
+fn hevc_codec_string(hvcc: &[u8]) -> Option<String> {
+    if hvcc.len() < 23 || hvcc[0] != 1 {
+        return None;
+    }
+    let space = ["", "A", "B", "C"][(hvcc[1] >> 6) as usize];
+    let tier = if hvcc[1] & 0x20 != 0 { "H" } else { "L" };
+    let profile = hvcc[1] & 0x1F;
+    let compat = u32::from_be_bytes([hvcc[2], hvcc[3], hvcc[4], hvcc[5]]).reverse_bits();
+    let mut out = format!("hvc1.{space}{profile}.{compat:X}.{tier}{}", hvcc[12]);
+    // 制約フラグ（6 バイト）。末尾の 0 のバイトは省く
+    let constraints = &hvcc[6..12];
+    let used = constraints
+        .iter()
+        .rposition(|&b| b != 0)
+        .map_or(0, |i| i + 1);
+    for b in &constraints[..used] {
+        out.push_str(&format!(".{b:X}"));
+    }
+    Some(out)
+}
+
+/// AAC のサンプリング周波数の表（AudioSpecificConfig の samplingFrequencyIndex）
+const AAC_SAMPLE_RATES: [u32; 13] = [
+    96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
+];
+
+/// AudioSpecificConfig から (オブジェクトタイプ, サンプリング周波数, 1 フレームのサンプル数) を読む
+fn parse_aac_config(asc: &[u8]) -> Option<(u8, u32, u32)> {
+    if asc.len() < 2 {
+        return None;
+    }
+    let object = asc[0] >> 3;
+    if object == 0 || object == 31 {
+        return None;
+    }
+    let index = ((asc[0] & 7) << 1) | (asc[1] >> 7);
+    let (rate, rest_bit) = if index == 15 {
+        // 24 ビットで直接書かれている
+        if asc.len() < 5 {
+            return None;
+        }
+        let bits = u64::from_be_bytes([0, 0, 0, asc[1], asc[2], asc[3], asc[4], 0]);
+        (((bits >> 15) & 0xFF_FFFF) as u32, None)
+    } else {
+        (*AAC_SAMPLE_RATES.get(index as usize)?, Some(asc[1]))
+    };
+    // GASpecificConfig の frameLengthFlag（立っていれば 960 サンプル）
+    let short =
+        matches!(object, 1..=4 | 6 | 7 | 17 | 19..=23) && rest_bit.is_some_and(|b| b & 0x04 != 0);
+    Some((object, rate, if short { 960 } else { 1024 }))
+}
+
+/// CodecPrivate の無い古い AAC のコーデック ID（A_AAC/MPEG4/LC など）から AudioSpecificConfig を作る
+fn legacy_aac_config(codec_id: &str, rate: u32, channels: u16) -> Option<Vec<u8>> {
+    let profile = codec_id.rsplit('/').next()?;
+    let (object, rate) = match profile {
+        "MAIN" => (1u8, rate),
+        "LC" => (2, rate),
+        "SSR" => (3, rate),
+        "LTP" => (4, rate),
+        // SBR は中核の LC を半分の周波数で鳴らし、デコーダが倍に戻す
+        "SBR" => (2, rate / 2),
+        _ => return None,
+    };
+    let index = AAC_SAMPLE_RATES.iter().position(|&r| r == rate)? as u8;
+    let channels = channels.min(7) as u8;
+    Some(vec![
+        (object << 3) | (index >> 1),
+        ((index & 1) << 7) | (channels << 3),
+    ])
+}
+
+/// OpusHead（MKV の CodecPrivate、リトルエンディアン）を dOps の中身（ビッグエンディアン）にする
+fn opus_dops(head: &[u8]) -> Option<Vec<u8>> {
+    if head.len() < 19 || &head[..8] != b"OpusHead" {
+        return None;
+    }
+    let channels = head[9];
+    let family = head[18];
+    let mut out = vec![0, channels];
+    out.extend_from_slice(&u16::from_le_bytes([head[10], head[11]]).to_be_bytes());
+    out.extend_from_slice(
+        &u32::from_le_bytes([head[12], head[13], head[14], head[15]]).to_be_bytes(),
+    );
+    out.extend_from_slice(&i16::from_le_bytes([head[16], head[17]]).to_be_bytes());
+    out.push(family);
+    if family != 0 {
+        // StreamCount, CoupledCount, ChannelMapping[channels]
+        out.extend_from_slice(head.get(19..21 + channels as usize)?);
+    }
+    Some(out)
+}
+
+/// Opus のパケット 1 つの長さ（48 kHz のサンプル数。RFC 6716 の TOC）
+fn opus_packet_samples(packet: &[u8]) -> Option<u32> {
+    let toc = *packet.first()?;
+    let config = toc >> 3;
+    // 1 フレームの長さ（48 kHz で 2.5 ms = 120 サンプル）
+    let frame = match config {
+        0..=11 => [480, 960, 1920, 2880][(config % 4) as usize],
+        12..=15 => [480, 960][(config % 2) as usize],
+        _ => [120, 240, 480, 960][(config % 4) as usize],
+    };
+    let count = match toc & 3 {
+        0 => 1,
+        1 | 2 => 2,
+        _ => (*packet.get(1)? & 0x3F) as u32,
+    };
+    Some(frame * count)
+}
+
+/// 映像トラックをリマックスできる形に読む。できなければ理由（コーデック名）を返す
+fn remux_video_track(track: &matroska_demuxer::TrackEntry) -> Result<RemuxVideo, String> {
+    let name = mkv_codec_name(track.codec_id());
+    let unsupported = || format!("この MKV の映像（{name}）には対応していません");
+    let codec = match track.codec_id() {
+        "V_MPEG4/ISO/AVC" => RemuxVideoCodec::Avc,
+        "V_MPEGH/ISO/HEVC" => RemuxVideoCodec::Hevc,
+        _ => return Err(unsupported()),
+    };
+    let config = track.codec_private().ok_or_else(unsupported)?.to_vec();
+    let codec_string = match codec {
+        RemuxVideoCodec::Avc => avc_codec_string(&config),
+        RemuxVideoCodec::Hevc => hevc_codec_string(&config),
+    }
+    .ok_or_else(unsupported)?;
+    let decoders = block_decoders(track).ok_or_else(unsupported)?;
+    let video = track.video().ok_or_else(unsupported)?;
+    let width = video.pixel_width().get().min(u16::MAX as u64) as u32;
+    let height = video.pixel_height().get().min(u16::MAX as u64) as u32;
+    // DisplayUnit が画素（0）か未指定のときだけ表示の大きさとして使う
+    // DisplayUnit が画素（0）か未指定ならそのまま、縦横比（3）なら高さを保って幅を合わせる
+    use matroska_demuxer::DisplayUnit;
+    let clamp = |v: u64| v.clamp(1, u16::MAX as u64) as u32;
+    let display = match (
+        video.display_width(),
+        video.display_height(),
+        video.display_unit(),
+    ) {
+        (Some(w), Some(h), None | Some(DisplayUnit::Pixels)) => (clamp(w.get()), clamp(h.get())),
+        (Some(w), Some(h), Some(DisplayUnit::DisplayAspectRatio)) => (
+            clamp((height as u64 * w.get() + h.get() / 2) / h.get()),
+            height,
+        ),
+        _ => (width, height),
+    };
+    Ok(RemuxVideo {
+        number: track.track_number().get(),
+        codec,
+        config,
+        codec_string,
+        width,
+        height,
+        display,
+        decoders,
+        frame_ticks: 0,
+    })
+}
+
+/// 音声トラックをリマックスできる形に読む。できなければ None
+fn remux_audio_track(track: &matroska_demuxer::TrackEntry) -> Option<RemuxAudio> {
+    let audio = track.audio()?;
+    let channels = audio.channels().get().min(255) as u16;
+    let rate = audio.sampling_frequency().round() as u32;
+    let decoders = block_decoders(track)?;
+    let number = track.track_number().get();
+    let codec_id = track.codec_id();
+    if codec_id == "A_OPUS" {
+        let config = opus_dops(track.codec_private()?)?;
+        return Some(RemuxAudio {
+            number,
+            codec: RemuxAudioCodec::Opus,
+            channels: config[1] as u16,
+            config,
+            codec_string: "opus".into(),
+            timescale: 48000,
+            frame_samples: 960,
+            delay_ticks: 0,
+            decoders,
+        });
+    }
+    if !codec_id.starts_with("A_AAC") {
+        return None;
+    }
+    let config = match track.codec_private() {
+        Some(asc) if !asc.is_empty() => asc.to_vec(),
+        _ => legacy_aac_config(codec_id, rate, channels)?,
+    };
+    let (object, core_rate, frame_samples) = parse_aac_config(&config)?;
+    Some(RemuxAudio {
+        number,
+        codec: RemuxAudioCodec::Aac,
+        config,
+        codec_string: format!("mp4a.40.{object}"),
+        channels,
+        timescale: core_rate,
+        frame_samples,
+        delay_ticks: 0,
+        decoders,
+    })
+}
+
+/// 開いている MKV 1 本（再生中の動画 1 本ぶんの読み取りの状態）
+struct MkvStream {
+    walker: MkvWalker<BufReader<File>>,
+    video: RemuxVideo,
+    audio: Option<RemuxAudio>,
+    /// Matroska の 1 単位あたりのナノ秒
+    scale_ns: u64,
+    first_cluster: u64,
+    cues: Vec<(i64, u64)>,
+    /// Cues が無いときに作る Cluster の索引（最初のシークで作る）
+    clusters: Option<Vec<(i64, u64)>>,
+    /// B フレームの並べ替えの深さ（Matroska の単位）。DTS = 表示時刻の昇順 − これ
+    reorder: i64,
+    /// 前の断片の続きの音声の時刻（音声の単位）。シークしたら付け直す
+    audio_next: Option<u64>,
+    sequence: u32,
+}
+
+impl MkvStream {
+    /// MKV を開く。`audio` は鳴らす音声（MKV に入っている音声トラックの番号）。
+    /// None なら既定の音声、Some(-1) など範囲外なら音声なし
+    fn open(path: &Path, audio: Option<i64>) -> Result<(Self, MkvOpened), String> {
+        let file = File::open(path).map_err(|e| format!("動画を開けません: {e}"))?;
+        let mut reader = BufReader::with_capacity(256 * 1024, file);
+        let mkv = matroska_demuxer::MatroskaFile::open(&mut reader)
+            .map_err(|e| format!("MKV を読めません: {e}"))?;
+        let scale_ns = mkv.info().timestamp_scale().get();
+        let duration = mkv
+            .info()
+            .duration()
+            .map(|d| d * scale_ns as f64 / 1e9)
+            .filter(|d| d.is_finite() && *d > 0.0);
+        let video_track = mkv
+            .tracks()
+            .iter()
+            .find(|t| t.track_type() == matroska_demuxer::TrackType::Video)
+            .ok_or("この MKV には映像がありません")?;
+        let mut video = remux_video_track(video_track)?;
+        let ns_to_ticks = |ns: u64| (ns / scale_ns) as i64;
+        video.frame_ticks = video_track
+            .default_duration()
+            .map_or(0, |d| ns_to_ticks(d.get()));
+        let audio_entries: Vec<_> = mkv
+            .tracks()
+            .iter()
+            .filter(|t| t.track_type() == matroska_demuxer::TrackType::Audio)
+            .collect();
+        let remuxable: Vec<Option<RemuxAudio>> =
+            audio_entries.iter().map(|t| remux_audio_track(t)).collect();
+        let audio_tracks: Vec<RemuxAudioTrack> = audio_entries
+            .iter()
+            .zip(&remuxable)
+            .map(|(t, r)| RemuxAudioTrack {
+                name: t.name().map(str::to_string),
+                language: t
+                    .language_bcp47()
+                    .or(t.language())
+                    .filter(|l| *l != "und")
+                    .map(str::to_string),
+                codec: mkv_codec_name(t.codec_id()),
+                codec_string: r.as_ref().map(|r| r.codec_string.clone()),
+                default: t.flag_default(),
+            })
+            .collect();
+        let chosen = match audio {
+            Some(i) => usize::try_from(i).ok().filter(|&i| i < audio_tracks.len()),
+            // 既定の音声のうちリマックスできるもの、無ければリマックスできる最初のもの
+            None => (0..audio_tracks.len())
+                .find(|&i| audio_tracks[i].default && remuxable[i].is_some())
+                .or_else(|| (0..audio_tracks.len()).find(|&i| remuxable[i].is_some())),
+        };
+        let audio_track = chosen.and_then(|i| {
+            let mut track = remuxable[i].clone()?;
+            track.delay_ticks = audio_entries[i]
+                .codec_delay()
+                .map_or(0, ns_to_ticks);
+            Some(track)
+        });
+        // 1 ブロックにまとめられた音声フレームどうしの間隔
+        let lace_step = audio_track.as_ref().map_or(0, |a| {
+            let samples = if a.codec == RemuxAudioCodec::Opus {
+                960
+            } else {
+                a.frame_samples
+            };
+            ns_to_ticks(samples as u64 * 1_000_000_000 / a.timescale as u64)
+        });
+        drop(mkv);
+
+        let layout = read_mkv_layout(&mut reader, video.number)
+            .map_err(|e| format!("MKV を読めません: {e}"))?;
+        let mut tracks = vec![(video.number, video.frame_ticks)];
+        if let Some(a) = &audio_track {
+            tracks.push((a.number, lace_step));
+        }
+        let opened = MkvOpened {
+            id: 0,
+            video_codec: video.codec_string.clone(),
+            audio_codec: audio_track.as_ref().map(|a| a.codec_string.clone()),
+            duration,
+            audio_tracks,
+            audio: chosen.filter(|_| audio_track.is_some()),
+        };
+        let mut stream = MkvStream {
+            walker: MkvWalker::new(reader, tracks),
+            video,
+            audio: audio_track,
+            scale_ns,
+            first_cluster: layout.first_cluster,
+            cues: layout.cues,
+            clusters: None,
+            reorder: 0,
+            audio_next: None,
+            sequence: 0,
+        };
+        stream.reorder = stream
+            .probe_reorder()
+            .map_err(|e| format!("MKV を読めません: {e}"))?;
+        stream
+            .seek(0.0)
+            .map_err(|e| format!("MKV を読めません: {e}"))?;
+        Ok((stream, opened))
+    }
+
+    fn ticks_to_seconds(&self, ticks: i64) -> f64 {
+        ticks as f64 * self.scale_ns as f64 / 1e9
+    }
+
+    /// Matroska の時刻を、時間の単位 `timescale` の値にする
+    fn ticks_to_units(&self, ticks: i64, timescale: u64) -> i64 {
+        ((ticks as i128 * self.scale_ns as i128 * timescale as i128 + 500_000_000) / 1_000_000_000)
+            as i64
+    }
+
+    /// 先頭の数 GOP を読み、B フレームの並べ替えの深さ（表示時刻の昇順に並べた時刻と、
+    /// 実際の表示時刻の差の最大）を見積もる
+    fn probe_reorder(&mut self) -> std::io::Result<i64> {
+        self.walker.seek_to(self.first_cluster, 0)?;
+        let mut gops: Vec<Vec<i64>> = Vec::new();
+        let mut frames = 0;
+        while let Some(frame) = self.walker.next(false)? {
+            if frame.track != self.video.number {
+                continue;
+            }
+            if frame.keyframe || gops.is_empty() {
+                // 最後の GOP は途中で終わっているかもしれないので、4 つ目の頭で止める
+                if gops.len() == 4 {
+                    break;
+                }
+                gops.push(Vec::new());
+            }
+            gops.last_mut().unwrap().push(frame.timestamp);
+            frames += 1;
+            if frames >= REMUX_REORDER_PROBE_FRAMES {
+                break;
+            }
+        }
+        Ok(gops.iter().map(|gop| reorder_depth(gop)).max().unwrap_or(0))
+    }
+
+    /// `seconds` の直前のキーフレームから読むようにする。戻り値はそのキーフレームの時刻（秒）
+    fn seek(&mut self, seconds: f64) -> std::io::Result<f64> {
+        let target = (seconds.max(0.0) * 1e9 / self.scale_ns as f64) as i64;
+        self.audio_next = None;
+        // 探し始める位置の候補（後ろから順に試す）
+        let starts: Vec<u64> = if !self.cues.is_empty() {
+            let i = self
+                .cues
+                .partition_point(|c| c.0 <= target)
+                .saturating_sub(1);
+            // Cues の指す Cluster で見つからなければ（Cues が不正確）、最初の Cluster から探す
+            vec![self.cues[i].1, self.first_cluster]
+        } else {
+            if self.clusters.is_none() {
+                let index = scan_cluster_index(&mut self.walker.r, self.first_cluster);
+                self.clusters = Some(index);
+            }
+            let clusters = self.clusters.as_deref().unwrap_or(&[]);
+            let i = clusters.partition_point(|c| c.0 <= target);
+            // キーフレームが手前の Cluster にあることもあるので、少しずつ遡る
+            let mut starts = Vec::new();
+            let mut back = 1;
+            while back <= i {
+                starts.push(clusters[i - back].1);
+                back *= 2;
+            }
+            starts.push(self.first_cluster);
+            starts.dedup();
+            starts
+        };
+        let mut fallback = None;
+        for start in starts {
+            self.walker.seek_to(start, 0)?;
+            let mut best: Option<(u64, i64, i64)> = None;
+            while let Some(frame) = self.walker.next(false)? {
+                if frame.track != self.video.number {
+                    continue;
+                }
+                if frame.keyframe && frame.timestamp <= target {
+                    best = Some((frame.pos, frame.cluster_timestamp, frame.timestamp));
+                } else if frame.timestamp > target {
+                    if best.is_none() && frame.keyframe && fallback.is_none() {
+                        // 目標より前にキーフレームが無い（ファイルの頭より前など）
+                        fallback = Some((frame.pos, frame.cluster_timestamp, frame.timestamp));
+                    }
+                    if best.is_some() || fallback.is_some() {
+                        break;
+                    }
+                }
+            }
+            if let Some(found) = best {
+                return self.start_at(found);
+            }
+        }
+        match fallback {
+            Some(found) => self.start_at(found),
+            None => {
+                // キーフレームが 1 つも無い。終わりまで来たことにする
+                self.walker.r.seek(std::io::SeekFrom::End(0))?;
+                self.walker.queue.clear();
+                Ok(seconds)
+            }
+        }
+    }
+
+    fn start_at(
+        &mut self,
+        (pos, cluster_timestamp, timestamp): (u64, i64, i64),
+    ) -> std::io::Result<f64> {
+        self.walker.seek_to(pos, cluster_timestamp)?;
+        // 同じブロックより前にある音声は読まない。キーフレームの前後の音声が少し欠けても、
+        // フロントエンドが映像と音声のそろった所から再生する
+        Ok(self.ticks_to_seconds(timestamp))
+    }
+
+    /// 初期化セグメント（ftyp + moov）
+    fn init_segment(&self) -> Vec<u8> {
+        build_init_segment(&self.video, self.audio.as_ref())
+    }
+
+    /// 次の断片（moof + mdat）。終わりまで読んだら空
+    fn read_fragment(&mut self) -> std::io::Result<Vec<u8>> {
+        let min_span = (REMUX_FRAGMENT_SECONDS * 1e9 / self.scale_ns as f64) as i64;
+        let mut video: Vec<MkvFrame> = Vec::new();
+        let mut audio: Vec<MkvFrame> = Vec::new();
+        let mut bytes = 0usize;
+        let mut next_keyframe = None;
+        while let Some(frame) = self.walker.next(true)? {
+            if frame.track == self.video.number {
+                if frame.keyframe && !video.is_empty() {
+                    let first = video[0].timestamp;
+                    let last = video.iter().map(|f| f.timestamp).max().unwrap_or(first);
+                    if last - first >= min_span || bytes >= REMUX_FRAGMENT_SOFT_BYTES {
+                        next_keyframe = Some(frame.timestamp);
+                        self.walker.push_back(frame);
+                        break;
+                    }
+                }
+                bytes += frame.data.len();
+                video.push(frame);
+            } else {
+                bytes += frame.data.len();
+                audio.push(frame);
+            }
+            if bytes >= REMUX_FRAGMENT_MAX_BYTES {
+                break;
+            }
+        }
+        if video.is_empty() && audio.is_empty() {
+            return Ok(Vec::new());
+        }
+        let video_samples = self.video_samples(video, next_keyframe);
+        let audio_samples = self.audio_samples(audio);
+        self.sequence += 1;
+        Ok(build_fragment(
+            self.sequence,
+            video_samples.as_ref(),
+            audio_samples.as_ref(),
+        ))
+    }
+
+    /// 映像のフレームを MP4 のサンプルにする（DTS を作る）
+    fn video_samples(&self, frames: Vec<MkvFrame>, next_keyframe: Option<i64>) -> Option<TrackRun> {
+        if frames.is_empty() {
+            return None;
+        }
+        let units = |t: i64| self.ticks_to_units(t, REMUX_VIDEO_TIMESCALE);
+        let pts: Vec<i64> = frames.iter().map(|f| units(f.timestamp.max(0))).collect();
+        let reorder = units(self.reorder);
+        let next_dts = next_keyframe.map(|t| units(t.max(0)) - reorder);
+        let fallback = units(self.video.frame_ticks).max(1);
+        let timing = video_decode_times(&pts, reorder, next_dts, fallback);
+        let samples = frames
+            .into_iter()
+            .zip(timing.durations)
+            .zip(pts.iter().zip(&timing.dts))
+            .map(|((frame, duration), (pts, dts))| Sample {
+                data: decode_block(frame.data, &self.video.decoders, REMUX_MAX_FRAME_BYTES)
+                    .unwrap_or_default(),
+                duration: duration as u32,
+                composition_offset: (pts - dts).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                keyframe: frame.keyframe,
+            })
+            .collect();
+        Some(TrackRun {
+            track_id: 1,
+            base_decode_time: timing.dts[0] as u64,
+            samples,
+            has_composition_offsets: true,
+        })
+    }
+
+    /// 音声のフレームを MP4 のサンプルにする。前の断片から続くときは時刻をつなげ、
+    /// 継ぎ目に隙間・重なりを作らない（重なると WebView がフレームを捨てて音が途切れる）
+    fn audio_samples(&mut self, mut frames: Vec<MkvFrame>) -> Option<TrackRun> {
+        let audio = self.audio.clone()?;
+        // CodecDelay を引いて 0 秒より前になるフレーム（AAC のプライミングなど）は捨てる。
+        // 0 に寄せると音声全体が遅れる
+        for frame in &mut frames {
+            frame.timestamp -= audio.delay_ticks;
+        }
+        frames.retain(|f| f.timestamp >= 0);
+        let first = frames.first()?;
+        let timescale = audio.timescale as u64;
+        let actual = self.ticks_to_units(first.timestamp, timescale).max(0) as u64;
+        let tolerance = (REMUX_AUDIO_RESYNC_SECONDS * timescale as f64) as u64;
+        let base = match self.audio_next {
+            Some(next) if next.abs_diff(actual) <= tolerance => next,
+            _ => actual,
+        };
+        let samples: Vec<Sample> = frames
+            .into_iter()
+            .map(|frame| {
+                let data = decode_block(frame.data, &audio.decoders, REMUX_MAX_FRAME_BYTES)
+                    .unwrap_or_default();
+                let duration = match audio.codec {
+                    RemuxAudioCodec::Aac => audio.frame_samples,
+                    RemuxAudioCodec::Opus => opus_packet_samples(&data).unwrap_or(960),
+                };
+                Sample {
+                    data,
+                    duration,
+                    composition_offset: 0,
+                    keyframe: true,
+                }
+            })
+            .collect();
+        self.audio_next = Some(base + samples.iter().map(|s| s.duration as u64).sum::<u64>());
+        Some(TrackRun {
+            track_id: 2,
+            base_decode_time: base,
+            samples,
+            has_composition_offsets: false,
+        })
+    }
+}
+
+/// GOP 1 つ（デコード順の表示時刻）の並べ替えの深さ: 昇順に並べた時刻 − 表示時刻 の最大
+fn reorder_depth(pts: &[i64]) -> i64 {
+    let mut sorted = pts.to_vec();
+    sorted.sort_unstable();
+    sorted
+        .iter()
+        .zip(pts)
+        .map(|(s, p)| s - p)
+        .max()
+        .unwrap_or(0)
+        .max(0)
+}
+
+struct DecodeTimes {
+    dts: Vec<i64>,
+    durations: Vec<i64>,
+}
+
+/// 映像の DTS を作る。MKV は表示時刻（PTS）しか持たないので、断片（GOP 単位）の PTS を
+/// 昇順に並べてデコード順のフレームに割り当て、並べ替えの深さ `reorder` だけ全体を前へずらす
+/// （DTS ≤ PTS になる）。ファイルの頭ではずらすと負になるので、最初の正の DTS までを
+/// 0 から詰めて割り振る。`next_dts` は次の断片の最初の DTS（最後のフレームの長さに使う）
+fn video_decode_times(
+    pts: &[i64],
+    reorder: i64,
+    next_dts: Option<i64>,
+    fallback: i64,
+) -> DecodeTimes {
+    let n = pts.len();
+    let mut sorted = pts.to_vec();
+    sorted.sort_unstable();
+    let mut dts: Vec<i64> = sorted.iter().map(|s| s - reorder).collect();
+    if dts[0] < 0 {
+        // 頭から k 個が負。k 番目（最初の正の DTS）と、その間のフレームの PTS を超えないように詰める
+        let k = dts.iter().position(|&d| d > 0).unwrap_or(n);
+        let mut limit = if k < n { dts[k] } else { i64::MAX };
+        for &p in &pts[1..k] {
+            limit = limit.min(p);
+        }
+        if limit == i64::MAX {
+            limit = 0;
+        }
+        for (i, d) in dts.iter_mut().take(k).enumerate() {
+            *d = limit * i as i64 / k as i64;
+        }
+    }
+    // 必ず増えていくようにする（時刻の重なったフレームがあっても壊れないように）
+    for i in 1..n {
+        if dts[i] <= dts[i - 1] {
+            dts[i] = dts[i - 1] + 1;
+        }
+    }
+    let mut durations: Vec<i64> = dts.windows(2).map(|w| w[1] - w[0]).collect();
+    let last = next_dts
+        .map(|next| next - dts[n - 1])
+        .filter(|d| *d > 0)
+        .or_else(|| durations.last().copied())
+        .unwrap_or(fallback);
+    durations.push(last.max(1));
+    DecodeTimes { dts, durations }
+}
+
+// ---- fragmented MP4 の書き出し ----
+
+struct Sample {
+    data: Vec<u8>,
+    duration: u32,
+    composition_offset: i32,
+    keyframe: bool,
+}
+
+/// 断片の中のトラック 1 本ぶんのサンプル
+struct TrackRun {
+    track_id: u32,
+    base_decode_time: u64,
+    samples: Vec<Sample>,
+    has_composition_offsets: bool,
+}
+
+fn mp4_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len() + 8);
+    out.extend_from_slice(&(body.len() as u32 + 8).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(body);
+    out
+}
+
+fn mp4_full_box(kind: &[u8; 4], version: u8, flags: u32, body: &[u8]) -> Vec<u8> {
+    let mut full = Vec::with_capacity(body.len() + 4);
+    full.extend_from_slice(&((version as u32) << 24 | (flags & 0xFF_FFFF)).to_be_bytes());
+    full.extend_from_slice(body);
+    mp4_box(kind, &full)
+}
+
+/// 単位行列（tkhd / mvhd）
+const MP4_MATRIX: [u32; 9] = [0x0001_0000, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000];
+
+fn mp4_matrix() -> Vec<u8> {
+    MP4_MATRIX.iter().flat_map(|v| v.to_be_bytes()).collect()
+}
+
+/// MPEG-4 の記述子（esds の中身）。長さは 1 バイトずつ 7 ビットで書く
+fn mp4_descriptor(tag: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = vec![tag];
+    let len = body.len();
+    let mut bytes = Vec::new();
+    let mut rest = len;
+    loop {
+        bytes.push((rest & 0x7F) as u8);
+        rest >>= 7;
+        if rest == 0 {
+            break;
+        }
+    }
+    for (i, b) in bytes.iter().rev().enumerate() {
+        out.push(if i + 1 < bytes.len() { b | 0x80 } else { *b });
+    }
+    out.extend_from_slice(body);
+    out
+}
+
+fn mp4_esds(asc: &[u8]) -> Vec<u8> {
+    let mut config = vec![0x40, 0x15, 0, 0, 0];
+    config.extend_from_slice(&[0; 8]); // maxBitrate / avgBitrate
+    config.extend(mp4_descriptor(0x05, asc));
+    let mut es = vec![0, 2, 0]; // ES_ID / flags
+    es.extend(mp4_descriptor(0x04, &config));
+    es.extend(mp4_descriptor(0x06, &[0x02]));
+    mp4_full_box(b"esds", 0, 0, &mp4_descriptor(0x03, &es))
+}
+
+fn video_sample_entry(video: &RemuxVideo) -> Vec<u8> {
+    let mut body = vec![0u8; 6];
+    body.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+    body.extend_from_slice(&[0; 16]);
+    body.extend_from_slice(&(video.width as u16).to_be_bytes());
+    body.extend_from_slice(&(video.height as u16).to_be_bytes());
+    body.extend_from_slice(&0x0048_0000u32.to_be_bytes());
+    body.extend_from_slice(&0x0048_0000u32.to_be_bytes());
+    body.extend_from_slice(&[0; 4]);
+    body.extend_from_slice(&1u16.to_be_bytes()); // frame_count
+    body.extend_from_slice(&[0; 32]); // compressorname
+    body.extend_from_slice(&0x0018u16.to_be_bytes());
+    body.extend_from_slice(&(-1i16).to_be_bytes());
+    let (kind, config) = match video.codec {
+        RemuxVideoCodec::Avc => (b"avc1", b"avcC"),
+        // hev1 では再生できない WebKit があるので hvc1 にする
+        RemuxVideoCodec::Hevc => (b"hvc1", b"hvcC"),
+    };
+    body.extend(mp4_box(config, &video.config));
+    let (dw, dh) = video.display;
+    if (dw, dh) != (video.width, video.height) && dw > 0 && dh > 0 {
+        // 画素の縦横比 = 表示の縦横比 / 画素数の縦横比
+        let h = dw as u64 * video.height as u64;
+        let v = dh as u64 * video.width as u64;
+        let g = gcd(h, v).max(1);
+        let mut pasp = Vec::new();
+        pasp.extend_from_slice(&((h / g).min(u32::MAX as u64) as u32).to_be_bytes());
+        pasp.extend_from_slice(&((v / g).min(u32::MAX as u64) as u32).to_be_bytes());
+        body.extend(mp4_box(b"pasp", &pasp));
+    }
+    mp4_box(kind, &body)
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+fn audio_sample_entry(audio: &RemuxAudio) -> Vec<u8> {
+    let mut body = vec![0u8; 6];
+    body.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+    body.extend_from_slice(&[0; 8]);
+    body.extend_from_slice(&audio.channels.to_be_bytes());
+    body.extend_from_slice(&16u16.to_be_bytes()); // samplesize
+    body.extend_from_slice(&[0; 4]);
+    // 16.16 の固定小数点（65535 Hz を超える周波数は書けないので 0 にする。実際の値は中の設定にある）
+    let rate = if audio.timescale <= u16::MAX as u32 {
+        audio.timescale << 16
+    } else {
+        0
+    };
+    body.extend_from_slice(&rate.to_be_bytes());
+    match audio.codec {
+        RemuxAudioCodec::Aac => {
+            body.extend(mp4_esds(&audio.config));
+            mp4_box(b"mp4a", &body)
+        }
+        RemuxAudioCodec::Opus => {
+            body.extend(mp4_box(b"dOps", &audio.config));
+            mp4_box(b"Opus", &body)
+        }
+    }
+}
+
+fn mp4_trak(track_id: u32, timescale: u32, video: Option<(u32, u32)>, entry: Vec<u8>) -> Vec<u8> {
+    let mut tkhd = vec![0u8; 8]; // creation / modification
+    tkhd.extend_from_slice(&track_id.to_be_bytes());
+    tkhd.extend_from_slice(&[0; 4]);
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // duration
+    tkhd.extend_from_slice(&[0; 8]);
+    tkhd.extend_from_slice(&0u16.to_be_bytes()); // layer
+    tkhd.extend_from_slice(&0u16.to_be_bytes()); // alternate_group
+    tkhd.extend_from_slice(&(if video.is_some() { 0u16 } else { 0x0100 }).to_be_bytes());
+    tkhd.extend_from_slice(&[0; 2]);
+    tkhd.extend(mp4_matrix());
+    let (w, h) = video.unwrap_or((0, 0));
+    tkhd.extend_from_slice(&(w << 16).to_be_bytes());
+    tkhd.extend_from_slice(&(h << 16).to_be_bytes());
+
+    let mut mdhd = vec![0u8; 8];
+    mdhd.extend_from_slice(&timescale.to_be_bytes());
+    mdhd.extend_from_slice(&0u32.to_be_bytes());
+    mdhd.extend_from_slice(&0x55C4u16.to_be_bytes()); // "und"
+    mdhd.extend_from_slice(&[0; 2]);
+
+    let (handler, name, media_header) = if video.is_some() {
+        (
+            b"vide",
+            &b"VideoHandler\0"[..],
+            mp4_full_box(b"vmhd", 0, 1, &[0; 8]),
+        )
+    } else {
+        (
+            b"soun",
+            &b"SoundHandler\0"[..],
+            mp4_full_box(b"smhd", 0, 0, &[0; 4]),
+        )
+    };
+    let mut hdlr = vec![0u8; 4];
+    hdlr.extend_from_slice(handler);
+    hdlr.extend_from_slice(&[0; 12]);
+    hdlr.extend_from_slice(name);
+
+    let dref = mp4_full_box(
+        b"dref",
+        0,
+        0,
+        &[
+            1u32.to_be_bytes().to_vec(),
+            mp4_full_box(b"url ", 0, 1, &[]),
+        ]
+        .concat(),
+    );
+    let stsd = mp4_full_box(
+        b"stsd",
+        0,
+        0,
+        &[1u32.to_be_bytes().to_vec(), entry].concat(),
+    );
+    let stbl = mp4_box(
+        b"stbl",
+        &[
+            stsd,
+            mp4_full_box(b"stts", 0, 0, &[0; 4]),
+            mp4_full_box(b"stsc", 0, 0, &[0; 4]),
+            mp4_full_box(b"stsz", 0, 0, &[0; 8]),
+            mp4_full_box(b"stco", 0, 0, &[0; 4]),
+        ]
+        .concat(),
+    );
+    let minf = mp4_box(
+        b"minf",
+        &[media_header, mp4_box(b"dinf", &dref), stbl].concat(),
+    );
+    let mdia = mp4_box(
+        b"mdia",
+        &[
+            mp4_full_box(b"mdhd", 0, 0, &mdhd),
+            mp4_full_box(b"hdlr", 0, 0, &hdlr),
+            minf,
+        ]
+        .concat(),
+    );
+    mp4_box(
+        b"trak",
+        &[mp4_full_box(b"tkhd", 0, 3, &tkhd), mdia].concat(),
+    )
+}
+
+fn build_init_segment(video: &RemuxVideo, audio: Option<&RemuxAudio>) -> Vec<u8> {
+    let ftyp = mp4_box(b"ftyp", b"isom\0\0\x02\0isomiso6mp41");
+    let mut mvhd = vec![0u8; 8];
+    mvhd.extend_from_slice(&1000u32.to_be_bytes());
+    // 長さは書かない（フロントエンドが MediaSource.duration に入れる）
+    mvhd.extend_from_slice(&0u32.to_be_bytes());
+    mvhd.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // rate
+    mvhd.extend_from_slice(&0x0100u16.to_be_bytes()); // volume
+    mvhd.extend_from_slice(&[0; 10]);
+    mvhd.extend(mp4_matrix());
+    mvhd.extend_from_slice(&[0; 24]);
+    mvhd.extend_from_slice(&3u32.to_be_bytes()); // next_track_ID
+    let mut moov = mp4_full_box(b"mvhd", 0, 0, &mvhd);
+    moov.extend(mp4_trak(
+        1,
+        REMUX_VIDEO_TIMESCALE as u32,
+        Some(video.display),
+        video_sample_entry(video),
+    ));
+    let mut mvex = mp4_trex(1);
+    if let Some(audio) = audio {
+        moov.extend(mp4_trak(
+            2,
+            audio.timescale,
+            None,
+            audio_sample_entry(audio),
+        ));
+        mvex.extend(mp4_trex(2));
+    }
+    moov.extend(mp4_box(b"mvex", &mvex));
+    [ftyp, mp4_box(b"moov", &moov)].concat()
+}
+
+fn mp4_trex(track_id: u32) -> Vec<u8> {
+    let mut body = track_id.to_be_bytes().to_vec();
+    body.extend_from_slice(&1u32.to_be_bytes()); // default_sample_description_index
+    body.extend_from_slice(&[0; 12]);
+    mp4_full_box(b"trex", 0, 0, &body)
+}
+
+/// サンプルの flags（ISO/IEC 14496-12 8.8.3.1）。キーフレームは他に依存しない、
+/// それ以外は依存する・同期サンプルではない
+fn sample_flags(keyframe: bool) -> u32 {
+    if keyframe {
+        0x0200_0000
+    } else {
+        0x0101_0000
+    }
+}
+
+fn mp4_traf(run: &TrackRun, data_offset: u32) -> Vec<u8> {
+    // default-base-is-moof: data_offset は moof の頭から数える
+    let tfhd = mp4_full_box(b"tfhd", 0, 0x02_0000, &run.track_id.to_be_bytes());
+    let tfdt = mp4_full_box(b"tfdt", 1, 0, &run.base_decode_time.to_be_bytes());
+    // data-offset, sample-duration, sample-size, sample-flags（, composition-time-offset）
+    let mut flags = 0x0001 | 0x0100 | 0x0200 | 0x0400;
+    if run.has_composition_offsets {
+        flags |= 0x0800;
+    }
+    let mut body = (run.samples.len() as u32).to_be_bytes().to_vec();
+    body.extend_from_slice(&data_offset.to_be_bytes());
+    for s in &run.samples {
+        body.extend_from_slice(&s.duration.to_be_bytes());
+        body.extend_from_slice(&(s.data.len() as u32).to_be_bytes());
+        body.extend_from_slice(&sample_flags(s.keyframe).to_be_bytes());
+        if run.has_composition_offsets {
+            body.extend_from_slice(&s.composition_offset.to_be_bytes());
+        }
+    }
+    // version 1: composition offset を符号付きで書く（並べ替えが見積もりより深いときに負になりうる）
+    let trun = mp4_full_box(b"trun", 1, flags, &body);
+    mp4_box(b"traf", &[tfhd, tfdt, trun].concat())
+}
+
+fn build_fragment(sequence: u32, video: Option<&TrackRun>, audio: Option<&TrackRun>) -> Vec<u8> {
+    let runs: Vec<&TrackRun> = [video, audio].into_iter().flatten().collect();
+    let moof = |offsets: &[u32]| {
+        let mut body = mp4_full_box(b"mfhd", 0, 0, &sequence.to_be_bytes());
+        for (run, offset) in runs.iter().zip(offsets) {
+            body.extend(mp4_traf(run, *offset));
+        }
+        mp4_box(b"moof", &body)
+    };
+    // data_offset の値で moof の大きさは変わらないので、一度作って大きさを測る
+    let moof_size = moof(&vec![0; runs.len()]).len() as u32;
+    let mut offsets = Vec::new();
+    let mut offset = moof_size + 8;
+    for run in &runs {
+        offsets.push(offset);
+        offset += run.samples.iter().map(|s| s.data.len() as u32).sum::<u32>();
+    }
+    let mut out = moof(&offsets);
+    let mdat_size = offset - moof_size;
+    out.extend_from_slice(&mdat_size.to_be_bytes());
+    out.extend_from_slice(b"mdat");
+    for run in &runs {
+        for s in &run.samples {
+            out.extend_from_slice(&s.data);
+        }
+    }
+    out
+}
+
+// ---- MKV のリマックスのコマンド ----
+
+/// ウィンドウごとに開いている MKV（1 ウィンドウ 1 本。開き直したら前のものは閉じる）
+struct MkvStreams(PerWindow<Option<(u64, std::sync::Arc<Mutex<MkvStream>>)>>);
+
+static NEXT_MKV_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl MkvStreams {
+    fn get(&self, label: &str, id: u64) -> Result<std::sync::Arc<Mutex<MkvStream>>, String> {
+        self.0
+            .with(label, |s| {
+                s.as_ref().filter(|(i, _)| *i == id).map(|(_, s)| s.clone())
+            })
+            .flatten()
+            .ok_or_else(|| "動画はもう閉じています".to_string())
+    }
+}
+
+/// MKV を開いて fMP4 へのリマックスを始める。`audio` は鳴らす音声の番号
+/// （None なら既定の音声、負なら音声なし）
+#[tauri::command(async)]
+fn mkv_open(
+    window: tauri::Window,
+    streams: State<MkvStreams>,
+    path: String,
+    audio: Option<i64>,
+) -> Result<MkvOpened, String> {
+    let (stream, mut opened) = MkvStream::open(Path::new(&path), audio)?;
+    opened.id = NEXT_MKV_ID.fetch_add(1, AtomicOrdering::Relaxed);
+    let entry = (opened.id, std::sync::Arc::new(Mutex::new(stream)));
+    streams.0.with(window.label(), |s| *s = Some(entry));
+    Ok(opened)
+}
+
+/// 初期化セグメント（ftyp + moov）
+#[tauri::command(async)]
+fn mkv_init(
+    window: tauri::Window,
+    streams: State<MkvStreams>,
+    id: u64,
+) -> Result<Response, String> {
+    let stream = streams.get(window.label(), id)?;
+    let stream = stream.lock().map_err(|_| "動画を読めません".to_string())?;
+    Ok(Response::new(stream.init_segment()))
+}
+
+/// `time` 秒の直前のキーフレームから読むようにする。戻り値はそのキーフレームの時刻（秒）。
+/// フロントエンド（mkv-player.js）は mkv_read / mkv_seek を同時に 1 つしか出さない
+#[tauri::command(async)]
+fn mkv_seek(
+    window: tauri::Window,
+    streams: State<MkvStreams>,
+    id: u64,
+    time: f64,
+) -> Result<f64, String> {
+    let stream = streams.get(window.label(), id)?;
+    let mut stream = stream.lock().map_err(|_| "動画を読めません".to_string())?;
+    stream
+        .seek(time)
+        .map_err(|e| format!("動画を読めません: {e}"))
+}
+
+/// 次の断片（moof + mdat）。終わりまで読んだら空
+#[tauri::command(async)]
+fn mkv_read(
+    window: tauri::Window,
+    streams: State<MkvStreams>,
+    id: u64,
+) -> Result<Response, String> {
+    let stream = streams.get(window.label(), id)?;
+    let mut stream = stream.lock().map_err(|_| "動画を読めません".to_string())?;
+    stream
+        .read_fragment()
+        .map(Response::new)
+        .map_err(|e| format!("動画を読めません: {e}"))
+}
+
+/// MKV を閉じる（ファイルを手放す）
+#[tauri::command]
+fn mkv_close(window: tauri::Window, streams: State<MkvStreams>, id: u64) {
+    streams.0.with(window.label(), |s| {
+        if s.as_ref().is_some_and(|(i, _)| *i == id) {
+            *s = None;
+        }
+    });
 }
 
 // ---- 拡張子の関連付け ----
@@ -4088,7 +5981,7 @@ fn video_subtitles(path: String) -> Result<Vec<SubtitleTrack>, String> {
 /// 関連付けの対象にできる拡張子（画像・動画・音楽すべて。この OS だけの動画拡張子も含む）。
 /// 書庫（zip / cbz）はここでは扱わない
 fn associable_exts() -> Vec<&'static str> {
-    [IMAGE_EXTS, VIDEO_EXTS, PLATFORM_VIDEO_EXTS, AUDIO_EXTS].concat()
+    [IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS].concat()
 }
 
 #[derive(serde::Serialize)]
@@ -5232,6 +7125,7 @@ fn forget_window(window: &tauri::Window) {
     app.state::<WindowKind>().remove(label);
     app.state::<AspectLock>().remove(label);
     app.state::<FolderWatcher>().remove(label);
+    app.state::<MkvStreams>().0.remove(label);
     #[cfg(target_os = "macos")]
     mac_sizing::uninstall(window);
 }
@@ -5326,6 +7220,7 @@ pub fn run() {
         .manage(WindowKind::new())
         .manage(AspectLock::new())
         .manage(FolderWatcher::new())
+        .manage(MkvStreams(PerWindow::new()))
         .invoke_handler(tauri::generate_handler![
             set_window_kind,
             save_window_geometry,
@@ -5347,6 +7242,11 @@ pub fn run() {
             audio_info,
             audio_artwork,
             video_subtitles,
+            mkv_open,
+            mkv_init,
+            mkv_seek,
+            mkv_read,
+            mkv_close,
             watch_folder,
             file_association_status,
             apply_file_associations

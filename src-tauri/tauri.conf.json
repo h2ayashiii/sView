@@ -60,7 +60,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https://asset.localhost blob: data:; media-src 'self' asset: http://asset.localhost https://asset.localhost; style-src 'self' 'unsafe-inline'",
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https://asset.localhost blob: data:; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; style-src 'self' 'unsafe-inline'",
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]
@@ -91,7 +91,7 @@
         "role": "Viewer"
       },
       {
-        "ext": ["m4v", "mov", "mp4", "webm"],
+        "ext": ["m4v", "mkv", "mov", "mp4", "webm"],
         "name": "Video",
         "description": "Video file",
         "role": "Viewer"

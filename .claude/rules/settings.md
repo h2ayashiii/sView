@@ -30,5 +30,5 @@ paths:
   `OpenWithProgids`) and opens `ms-settings:defaultapps?registeredAppUser=sView` for the user to
   confirm. macOS sets it directly via `LSSetDefaultRoleHandlerForContentType` (raw FFI in
   `mac_assoc`); there is no API to unset. The selectable list is
-  `associable_exts()` = `IMAGE_EXTS` + `VIDEO_EXTS` + `PLATFORM_VIDEO_EXTS` + `AUDIO_EXTS` (archives are deliberately
+  `associable_exts()` = `IMAGE_EXTS` + `VIDEO_EXTS` + `AUDIO_EXTS` (archives are deliberately
   excluded); the settings window groups them by `kind`.
