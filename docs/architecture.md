@@ -13,6 +13,7 @@ sView/
 ├── src/                     # フロントエンド（素の HTML/CSS/JS、ビルド不要。<script src> で読み込む）
 │   ├── index.html           # 本体ウィンドウ
 │   ├── main.js              # 画像・動画・音楽の表示、前後移動、ズーム、再生操作、本モード、入力処理、右クリックメニュー
+│   ├── mkv-player.js        # macOS で MKV を MSE で再生する（Rust が詰め直した fragmented MP4 を流す）
 │   ├── style.css            # オーバーレイ UI（自動表示・自動非表示）・再生操作カード・コンテキストメニュー
 │   ├── settings.html        # 設定ウィンドウ
 │   ├── settings.js          # 設定ウィンドウの UI 生成・保存
@@ -26,8 +27,7 @@ sView/
 │   ├── src/main.rs          # sview_lib::run() を呼ぶだけ
 │   ├── src/lib.rs           # バックエンドの処理すべて（下記）とテスト
 │   ├── tauri.conf.json      # ウィンドウ設定（フレームレス等）・CSP・バンドル設定・関連付け
-│   ├── tauri.windows.conf.json # Windows だけの上書き（mkv を含む関連付け）
-│   ├── testdata/            # テストで読むファイル（字幕入りの小さな MKV）
+│   ├── testdata/            # テストで読むファイル（字幕入りの小さな MKV、詰め直しを確かめる MKV）
 │   ├── capabilities/        # ウィンドウごとにフロントエンドへ許可する API の定義
 │   ├── installer-hooks.nsh  # Windows インストーラ（NSIS）のフック。旧ユーザー単位インストールの後始末
 │   ├── installer/           # インストーラの見た目（Windows のインストーラの画像、macOS の dmg の背景）
@@ -53,6 +53,7 @@ sView/
 - フォルダの変更の監視（`notify`）、ゴミ箱への移動（`trash`）
 - 音楽のタグとアートワークの読み取り（`lofty`）
 - MKV のテキスト字幕（SRT / ASS）の取り出し（トラック情報は `matroska-demuxer`、字幕のブロックは自前で走査）
+- macOS での MKV の再生のための、MKV から fragmented MP4 への詰め直し（リマックス。再エンコードはしない）
 - 設定（`settings.json`）とウィンドウの大きさ・位置（`window.json`）の保存
 - 「メディアに合わせる」の縦横比の維持と、ウィンドウの大きさ・位置の制御
 - 起動時に渡されたファイルの受け取り、OS への関連付け、ログ
