@@ -1,6 +1,5 @@
-use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek};
+use std::io::{BufRead, BufReader, Read, Seek};
 use std::path::Path;
 
 use super::fmp4::{build_fragment, build_init_segment, Sample, TrackRun};

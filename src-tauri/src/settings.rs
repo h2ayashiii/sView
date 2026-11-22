@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 

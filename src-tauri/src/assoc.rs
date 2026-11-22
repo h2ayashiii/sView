@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use tauri::AppHandle;
 
 use crate::media::{media_kind, MediaKind, AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS};

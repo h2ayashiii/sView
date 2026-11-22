@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use notify::RecommendedWatcher;
+use tauri::{LogicalSize, PhysicalSize};
 
 use crate::media::{ImageList, WindowKindKey};
 

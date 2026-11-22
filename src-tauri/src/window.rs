@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,8 +12,7 @@ use crate::media::WindowKindKey;
 use crate::platform::macos::{mac_drag, mac_sizing};
 use crate::settings::{config_dir, fits_window_to_image, temp_path};
 use crate::state::{
-    AspectLock, AspectState, KindState, LiveResize, PendingPosition, RestoredPosition, WindowKind,
-    WindowSlot,
+    AspectLock, AspectState, PendingPosition, RestoredPosition, WindowKind, WindowSlot,
 };
 use crate::{is_viewer, CASCADE_OFFSET, MAIN_LABEL};
 

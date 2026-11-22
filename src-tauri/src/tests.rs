@@ -1,6 +1,9 @@
-use std::fs;
+use std::collections::BTreeMap;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+use tauri::{LogicalSize, PhysicalPosition, PhysicalSize};
 
 use crate::archive::*;
 use crate::assoc::*;

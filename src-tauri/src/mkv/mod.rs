@@ -3,14 +3,19 @@ pub(crate) mod remux;
 pub(crate) mod subtitles;
 
 use std::path::Path;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Mutex;
 
 use tauri::ipc::Response;
 use tauri::State;
 
 use crate::state::PerWindow;
+#[cfg(test)]
 pub(crate) use fmp4::*;
+#[cfg(test)]
 pub(crate) use remux::*;
+pub(crate) use remux::{MkvOpened, MkvStream};
+#[cfg(test)]
 pub(crate) use subtitles::*;
 
 // ---- MKV のリマックスのコマンド ----
