@@ -1,10 +1,6 @@
 ---
-paths:
-  - "src-tauri/src/lib.rs"
-  - "src/main.js"
-  - "src-tauri/tauri.conf.json"
-  - "src-tauri/installer-hooks.nsh"
-  - "src-tauri/capabilities/*.json"
+trigger: glob
+globs: "src-tauri/src/lib.rs, src/main.js, src-tauri/tauri.conf.json, src-tauri/installer-hooks.nsh, src-tauri/capabilities/*.json"
 ---
 
 # Platform specifics (macOS / Windows), windows, bundling

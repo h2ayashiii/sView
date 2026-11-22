@@ -1,7 +1,6 @@
 ---
-paths:
-  - "src-tauri/src/lib.rs"
-  - "src/main.js"
+trigger: glob
+globs: "src-tauri/src/lib.rs, src/main.js"
 ---
 
 # Window size, position and aspect lock

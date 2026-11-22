@@ -1,8 +1,6 @@
 ---
-paths:
-  - "src/settings*.js"
-  - "src/main.js"
-  - "src-tauri/src/lib.rs"
+trigger: glob
+globs: "src/settings*.js, src/main.js, src-tauri/src/lib.rs"
 ---
 
 # Settings and file associations

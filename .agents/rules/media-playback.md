@@ -1,10 +1,6 @@
 ---
-paths:
-  - "src/main.js"
-  - "src/mkv-player.js"
-  - "src/index.html"
-  - "src/style.css"
-  - "src-tauri/src/lib.rs"
+trigger: glob
+globs: "src/main.js, src/mkv-player.js, src/index.html, src/style.css, src-tauri/src/lib.rs"
 ---
 
 # Video, audio and book mode

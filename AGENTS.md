@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 sView is a minimal, frameless media viewer (images, videos, audio, zip/cbz archives) built with
 **Tauri v2**. Targets: Windows 10/11 and macOS 10.15+.
@@ -52,7 +52,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - `src/shortcuts.js` — `SHORTCUT_SECTIONS` is a hand-written copy of the key handling in
   `main.js`; update it when a key changes.
 - `README.md` is an entry point only; detailed behaviour goes in `docs/`.
-- `.claude/rules/*.md` — fix the note there when the code it describes changes.
+- `.agents/rules/*.md` — fix the note there when the code it describes changes.
 
 ## Making common changes
 
@@ -88,7 +88,7 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 
 ## Detailed implementation notes
 
-Design decisions and pitfalls per area are in `.claude/rules/`. They load automatically when a
+Design decisions and pitfalls per area are in `.agents/rules/`. They load automatically when a
 matching file is read or edited; read the relevant one before planning a change in that area.
 
 | File | Covers |
