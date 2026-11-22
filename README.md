@@ -83,7 +83,7 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 | [docs/architecture.md](docs/architecture.md) | 全体構成・設計方針・プラットフォーム別の注意点 |
 | [docs/development.md](docs/development.md) | 開発環境・ビルド・CI・リリース手順 |
 | [CHANGELOG.md](CHANGELOG.md) | 変更履歴 |
-| [CLAUDE.md](CLAUDE.md) | AI エージェント向けの指示 |
+| [AGENTS.md](AGENTS.md) | AI エージェント向けの指示 |
 
 ## 開発
 
