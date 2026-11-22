@@ -42,7 +42,7 @@ use crate::window::{
 
 /// 起動引数（関連付け起動など）やこのウィンドウに割り当てたファイルを一度だけ返す
 #[tauri::command]
-pub(crate) fn get_startup_file(window: WebviewWindow, state: State<StartupFile>) -> Option<String> {
+fn get_startup_file(window: WebviewWindow, state: State<StartupFile>) -> Option<String> {
     state.with(window.label(), Option::take).flatten()
 }
 

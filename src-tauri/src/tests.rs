@@ -16,7 +16,6 @@ use crate::settings::*;
 use crate::state::*;
 use crate::watcher::*;
 use crate::window::*;
-use crate::*;
 
 #[test]
 fn association_exts_are_validated_and_normalized() {
@@ -34,8 +33,6 @@ fn association_exts_are_validated_and_normalized() {
     assert!(normalize_association_exts(&["cbz".into()]).is_err());
     assert!(normalize_association_exts(&["exe".into()]).is_err());
 }
-
-use super::*;
 
 #[test]
 fn clamp_to_area_keeps_window_inside_the_area() {

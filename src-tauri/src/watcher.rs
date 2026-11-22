@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use notify::{RecursiveMode, Watcher};
-use tauri::{Emitter, State, WebviewWindow};
+use tauri::{Emitter, Manager, State, WebviewWindow};
 
 use crate::media::{is_media, MAX_DEPTH};
 use crate::state::{FolderWatcher, Watching};
