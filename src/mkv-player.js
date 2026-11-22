@@ -19,7 +19,7 @@ const MKV_CONTINUE_S = 3;
 // 何も起きなくても読み込みの要否を見直す間隔（ミリ秒）
 const MKV_IDLE_MS = 500;
 
-class MkvPlayer {
+export class MkvPlayer {
   // video: 再生する <video>。path: MKV のパス。
   // options: audio（鳴らす音声の番号。省略で既定）、startTime（始める位置・秒）、
   //   play（再生を始める関数。src を入れた後に呼ぶ）、onError（読めないとき）、onNotice（知らせ）

@@ -1,6 +1,6 @@
 ---
 trigger: glob
-globs: "src-tauri/src/lib.rs, src/main.js"
+globs: "src-tauri/src/window.rs, src-tauri/src/state.rs, src-tauri/src/platform/*.rs, src-tauri/src/lib.rs, src/main.js"
 ---
 
 # Window size, position and aspect lock

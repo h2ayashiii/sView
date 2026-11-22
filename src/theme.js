@@ -24,7 +24,7 @@ function isDark(c) {
   return (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255 < 0.5;
 }
 
-function applyTheme(settings) {
+export function applyTheme(settings) {
   const base = hexToRgb(settings.backgroundColor);
   const opacity = Number(settings.backgroundOpacity);
   const alpha = Math.min(1, Math.max(0.2, (Number.isFinite(opacity) ? opacity : 97) / 100));

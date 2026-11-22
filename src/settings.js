@@ -1,3 +1,11 @@
+import {
+  SETTINGS_TABS,
+  SETTINGS_SECTIONS,
+  SETTINGS_DEFAULTS,
+  normalizeSettings,
+} from "./settings-defs.js";
+import { applyTheme } from "./theme.js";
+
 // 設定ウィンドウ。SETTINGS_SECTIONS から UI を組み立て、変更のたびに
 // 保存 → 本体ウィンドウへ通知する（適用ボタンは置かない）。
 // Tauri API が取れなくても、閉じる操作だけは必ず効くようにここから先に用意する。

@@ -1,6 +1,6 @@
 ---
 trigger: glob
-globs: "src/settings*.js, src/main.js, src-tauri/src/lib.rs"
+globs: "src/settings*.js, src/main.js, src-tauri/src/settings.rs, src-tauri/src/assoc.rs, src-tauri/src/platform/*.rs, src-tauri/src/lib.rs"
 ---
 
 # Settings and file associations

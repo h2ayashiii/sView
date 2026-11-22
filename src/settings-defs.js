@@ -2,7 +2,7 @@
 // ここに 1 項目足すだけで設定ウィンドウに項目が増える。
 
 // 設定ウィンドウのタブ。各分類は tab でどれか 1 つに入る
-const SETTINGS_TABS = [
+export const SETTINGS_TABS = [
   { id: "general", label: "全般" },
   { id: "image", label: "画像" },
   { id: "video", label: "動画" },
@@ -40,7 +40,7 @@ function associationSection(kind) {
   };
 }
 
-const SETTINGS_SECTIONS = [
+export const SETTINGS_SECTIONS = [
   {
     id: "appearance",
     tab: "general",
@@ -280,7 +280,7 @@ const HIDDEN_DEFAULTS = {
 
 // type: "action" の行はボタンだけで、保存する値を持たない（default がない）。
 // フィルタを外すと undefined が settings.json に書き込まれてしまう
-const SETTINGS_DEFAULTS = {
+export const SETTINGS_DEFAULTS = {
   ...Object.fromEntries(
     SETTINGS_SECTIONS.flatMap((s) =>
       s.items.filter((i) => "default" in i).map((i) => [i.key, i.default])
@@ -308,7 +308,7 @@ const LEGACY_VALUES = {
 };
 
 // 保存値に既定値を補い、欠けたキーのない設定オブジェクトを作る
-function normalizeSettings(raw) {
+export function normalizeSettings(raw) {
   const saved = raw && typeof raw === "object" ? raw : {};
   const settings = { ...SETTINGS_DEFAULTS, ...saved };
   for (const key of OBSOLETE_KEYS) delete settings[key];

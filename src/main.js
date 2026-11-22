@@ -1,3 +1,30 @@
+import { SETTINGS_DEFAULTS, normalizeSettings } from "./settings-defs.js";
+import { MkvPlayer } from "./mkv-player.js";
+import {
+  IMAGE_EXT_FILTER,
+  VIDEO_EXT_FILTER,
+  AUDIO_EXT_FILTER,
+  ARCHIVE_EXT_FILTER,
+  extOf,
+  isVideoPath,
+  isAudioPath,
+  baseName,
+  toBytes,
+  formatTime,
+  hexToRgba,
+} from "./viewer/media-types.js";
+import { createArchiveCache } from "./viewer/archive-cache.js";
+import {
+  audioTrackLabel,
+  audioTrackList,
+  selectedAudioTrack,
+} from "./viewer/audio-tracks.js";
+import { createSubtitleController } from "./viewer/subtitles.js";
+import { RANGE_THUMB_PX, syncRangeFill, showBarTip, rangeRatioAt } from "./viewer/tooltips.js";
+import { WHEEL_SEEK_S, createWheelController } from "./viewer/wheel.js";
+import { createDeleteConfirm } from "./viewer/delete-confirm.js";
+import { createContextMenu } from "./viewer/context-menu.js";
+
 // sView - minimal frameless image viewer
 // withGlobalTauri: true のため window.__TAURI__ からAPIを利用（バンドラ不要）
 const { invoke, convertFileSrc } = window.__TAURI__.core;
@@ -59,26 +86,6 @@ const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 app.classList.toggle("mac", IS_MAC);
 const IS_WINDOWS = /Win/.test(navigator.platform || navigator.userAgent);
 
-const IMAGE_EXT_FILTER = [
-  "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg",
-  "png", "svg", "tif", "tiff", "webp",
-];
-// 動画は OS の WebView が再生できるものだけ（コーデックは同梱しない）。
-// 書庫の中の動画は一覧に出さない。MKV は WebView2（Windows）ならそのまま再生でき、
-// macOS では Rust 側で fragmented MP4 に詰め直して MSE で再生する（mkv-player.js）
-const VIDEO_EXT_FILTER = ["mp4", "m4v", "webm", "mov", "mkv"];
-// 音楽も同じく OS の WebView 任せ。書庫の中の音楽は一覧に出さない
-const AUDIO_EXT_FILTER = ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus"];
-const ARCHIVE_EXT_FILTER = ["zip", "cbz"];
-
-// blob URL に必要な MIME（拡張子から判定）
-const MIME = {
-  avif: "image/avif", bmp: "image/bmp", gif: "image/gif", ico: "image/x-icon",
-  jfif: "image/jpeg", jpe: "image/jpeg", jpeg: "image/jpeg", jpg: "image/jpeg",
-  png: "image/png", svg: "image/svg+xml", tif: "image/tiff", tiff: "image/tiff",
-  webp: "image/webp",
-};
-
 // フォルダの場合は画像のフルパス、書庫の場合は書庫内のエントリ名（自然順ソート済み）
 let images = [];
 let index = -1;
@@ -111,96 +118,19 @@ let bookMode = false;
 // 見開きは images[index]（前のページ）と images[index + 1]（後のページ。最後の 1 枚なら無し）
 let showingBook = false;
 
-// ---- 書庫内画像の遅延ロード ----
-// 書庫は一括展開せず、表示するエントリだけを Rust 側から取り出して
-// blob URL 化する。前後の先読み分を含め数枚だけ保持する
-// （本モードでは見開きの 2 枚と、前後の見開き 2 枚ずつ）
-const BLOB_CACHE_MAX = 6;
-const blobCache = new Map(); // entry -> blob URL（挿入順 = LRU 順）
-// 取り出し中のエントリ（entry -> blob URL の Promise）。先読み中のページへ移ったときなどに、
-// 同じエントリを 2 回取り出さない（2 回目の blob URL が解放されずに残る）
-const blobLoading = new Map();
-// 書庫を開き直すたびに増やす。取り出している間に書庫が変わったら、その結果は使わない
-// （同じエントリ名の別の書庫の画像を出さない）
-let blobGeneration = 0;
-
-function extOf(name) {
-  const m = /\.([^.\\/]+)$/.exec(name);
-  return m ? m[1].toLowerCase() : "";
-}
-
-function isVideoPath(name) {
-  return VIDEO_EXT_FILTER.includes(extOf(name));
-}
-
-function isAudioPath(name) {
-  return AUDIO_EXT_FILTER.includes(extOf(name));
-}
-
-function clearBlobCache() {
-  for (const url of blobCache.values()) URL.revokeObjectURL(url);
-  blobCache.clear();
-  blobLoading.clear();
-  blobGeneration++;
-}
-
-function trimBlobCache() {
-  const shown = shownEntries();
-  for (const [entry, url] of blobCache) {
-    if (blobCache.size <= BLOB_CACHE_MAX) break;
-    if (shown.includes(entry)) continue; // 表示中のものは残す
-    URL.revokeObjectURL(url);
-    blobCache.delete(entry);
-  }
-}
-
 // 表示中のエントリ（本モードでは見開きの 1〜2 枚）
 function shownEntries() {
   if (index < 0 || index >= images.length) return [];
   return showingBook ? images.slice(index, index + 2) : [images[index]];
 }
 
-// Rust から返る生バイト列の受け取り方は IPC の経路によって変わる
-// （カスタムプロトコルなら ArrayBuffer、postMessage 経由なら数値の配列）。
-// そのまま Blob に渡すと配列が文字列化されて画像が壊れるので、必ずここで揃える
-function toBytes(data) {
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (ArrayBuffer.isView(data)) {
-    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  }
-  if (Array.isArray(data)) return Uint8Array.from(data);
-  throw new Error("画像データを取得できませんでした");
-}
-
-function archiveBlobUrl(entry) {
-  const cached = blobCache.get(entry);
-  if (cached) {
-    // LRU 更新
-    blobCache.delete(entry);
-    blobCache.set(entry, cached);
-    return Promise.resolve(cached);
-  }
-  // 取り出し中なら、その結果を待つ
-  const loading = blobLoading.get(entry);
-  if (loading) return loading;
-  const generation = blobGeneration;
-  const promise = invoke("read_archive_image", { archive: archivePath, entry })
-    .then((data) => {
-      if (generation !== blobGeneration) {
-        throw new Error("書庫が切り替わったため読み込みを取りやめました");
-      }
-      const bytes = toBytes(data);
-      const url = URL.createObjectURL(new Blob([bytes], { type: MIME[extOf(entry)] ?? "" }));
-      blobCache.set(entry, url);
-      trimBlobCache();
-      return url;
-    })
-    .finally(() => {
-      if (blobLoading.get(entry) === promise) blobLoading.delete(entry);
-    });
-  blobLoading.set(entry, promise);
-  return promise;
-}
+// ---- 書庫内画像の遅延ロード ----
+const { clearBlobCache, archiveBlobUrl, entrySrc } = createArchiveCache({
+  invoke,
+  convertFileSrc,
+  getArchivePath: () => archivePath,
+  getShownEntries: shownEntries,
+});
 
 // ---- zoom / pan state ----
 // mode "fit": ウィンドウにフィット（このときステージはウィンドウドラッグ領域になる）
@@ -400,10 +330,6 @@ function showToast(message, kind, ms) {
 
 function showError(message) {
   showToast(message, "error");
-}
-
-function baseName(path) {
-  return path.split(/[\\/]/).pop();
 }
 
 function updateChrome() {
@@ -674,10 +600,6 @@ img.addEventListener("error", () => {
 });
 
 // 画像の表示に使う URL（書庫の中なら取り出して blob URL にする）
-async function entrySrc(entry) {
-  return archivePath ? archiveBlobUrl(entry) : convertFileSrc(entry);
-}
-
 // 読み込みが終わる（失敗も含む）のを待つ
 function imageSettled(el) {
   return new Promise((resolve) => {
@@ -814,7 +736,7 @@ function mediaLoop() {
 // src を外して読み込み直すと、WebView はファイルを手放す
 // （Windows では再生中のファイルをゴミ箱へ送れないことがあるため）
 function unloadVideo() {
-  if (subtitleTracks.length || subtitleLoading) clearSubtitles();
+  clearSubtitles();
   if (mkvPlayer) {
     mkvPlayer.destroy();
     mkvPlayer = null;
@@ -904,15 +826,6 @@ function changeVolumeBy(delta) {
   showChrome();
 }
 
-function formatTime(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-  const s = Math.floor(seconds);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const ss = String(s % 60).padStart(2, "0");
-  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
-}
-
 function syncVideoBar() {
   const paused = video.paused || video.ended;
   videobar.classList.toggle("paused", paused);
@@ -931,14 +844,6 @@ function syncVideoBar() {
   if (!seekDragging) vbSeek.value = String(Math.round(ratio * 1000));
   syncRangeFill(vbSeek);
   audioProgressFill.style.width = `${ratio * 100}%`;
-}
-
-// シークバー・音量つまみの済んだ側を塗る割合（style.css の --fill）。
-// WebView ごとの標準の塗り分けには頼らない（macOS では塗り分けられない）
-function syncRangeFill(input) {
-  const min = Number(input.min), max = Number(input.max);
-  const ratio = max > min ? (Number(input.value) - min) / (max - min) : 0;
-  input.style.setProperty("--fill", String(Math.min(1, Math.max(0, ratio))));
 }
 
 for (const input of [vbSeek, vbVolume]) {
@@ -963,34 +868,8 @@ video.addEventListener("error", () => {
 });
 
 // ---- 音声の切り替え（副音声） ----
-// MKV などに音声が 2 つ以上入っているとき、右クリックメニューの「音声」から切り替える。
-// audioTracks は WebView2 では実験的機能で、起動引数（lib.rs の WEBVIEW2_BROWSER_ARGS）で
-// 有効にしている。使えない WebView では audioTracks が無いので、「音声」はグレーアウトする。
-// macOS の MKV は音声を 1 本だけ詰め直して流すので、一覧は MkvPlayer が持っている
-function audioTrackList() {
-  if (!showingVideo) return null;
-  if (mkvPlayer) return mkvPlayer.audioTracks;
-  return video.audioTracks ?? null;
-}
-
-// 音声・字幕のトラックの表示名（番号 + 名前・言語のうちあるもの。どちらも無ければ「音声 n」など）
-function trackLabel(label, language, i, kind) {
-  const name = label && language && !label.includes(language)
-    ? `${label} (${language})`
-    : label || language;
-  return name ? `${i + 1}: ${name}` : `${kind} ${i + 1}`;
-}
-
-function audioTrackLabel(track, i) {
-  return trackLabel(track.label, track.language, i, "音声");
-}
-
-// 表示中の音声トラックの番号（分からなければ -1）
-function selectedAudioTrack() {
-  const tracks = audioTrackList();
-  if (!tracks) return -1;
-  for (let i = 0; i < tracks.length; i++) if (tracks[i].enabled) return i;
-  return -1;
+function currentAudioTrackList() {
+  return audioTrackList(showingVideo, mkvPlayer, video);
 }
 
 // 選んだ 1 つだけを有効にする（複数を有効にすると重ねて鳴る WebView がある）
@@ -999,75 +878,17 @@ function selectAudioTrack(n) {
     switchMkvAudio(n);
     return;
   }
-  const tracks = audioTrackList();
+  const tracks = currentAudioTrackList();
   if (!tracks || n < 0 || n >= tracks.length) return;
   for (let i = 0; i < tracks.length; i++) tracks[i].enabled = i === n;
 }
 
 // ---- 字幕 ----
-// WebView は MKV の中の字幕を出さない（macOS の MKV は字幕を詰め直さない）ので、Rust 側（video_subtitles）で
-// テキスト字幕（SRT / ASS）を取り出し、自前の TextTrack に VTTCue として入れて表示する。
-// addTextTrack で足したトラックは <video> から外せないので、1 本だけ作って使い回し、
-// 字幕を切り替えるときは中身（cue）を入れ替える
-let subtitleTextTrack = null;
-// 表示中の動画の字幕トラック（Rust の SubtitleTrack の配列）
-let subtitleTracks = [];
-// 表示している字幕の番号（-1 = オフ）
-let subtitleIndex = -1;
-// 字幕を読み込んでいる最中か（右クリックメニューで「読み込み中」と出す）
-let subtitleLoading = false;
-// 字幕を出す行（下から数える。-1 が最下行なので -2 で 1 行分上に離す）
-const SUBTITLE_LINE = -2;
-
-function ensureSubtitleTextTrack() {
-  if (!subtitleTextTrack) subtitleTextTrack = video.addTextTrack("subtitles", "sView");
-  return subtitleTextTrack;
-}
-
-// 字幕 n を表示する（-1 で消す）。選んだものは保存しない
-function selectSubtitle(n) {
-  subtitleIndex = n >= 0 && n < subtitleTracks.length ? n : -1;
-  if (!subtitleTextTrack && subtitleIndex < 0) return;
-  const track = ensureSubtitleTextTrack();
-  // disabled のあいだは cues が null なので、いったん hidden にしてから空にする
-  track.mode = "hidden";
-  for (const cue of Array.from(track.cues ?? [])) track.removeCue(cue);
-  if (subtitleIndex < 0) {
-    track.mode = "disabled";
-    return;
-  }
-  for (const { start, end, text } of subtitleTracks[subtitleIndex].cues) {
-    if (end <= start) continue;
-    const cue = new VTTCue(start, end, text);
-    // 既定（line: "auto"）では動画の下端に張り付くので、1 行分だけ上に離す
-    // （負の値は下から数えた行。-1 が最下行）
-    cue.line = SUBTITLE_LINE;
-    track.addCue(cue);
-  }
-  track.mode = "showing";
-}
-
-function clearSubtitles() {
-  subtitleTracks = [];
-  subtitleLoading = false;
-  selectSubtitle(-1);
-}
-
-// 動画の字幕を読み込む。開いたときは常にオフ（動画で既定とされている字幕があっても出さない）
-async function loadSubtitles(path, token) {
-  clearSubtitles();
-  subtitleLoading = true;
-  let tracks = [];
-  try {
-    tracks = await invoke("video_subtitles", { path });
-  } catch (e) {
-    // 字幕が読めなくても動画は再生できるので、知らせずに字幕なしで続ける
-    console.warn("字幕を読み込めませんでした", e);
-  }
-  if (token !== showToken) return; // 既に別のファイルへ移動している
-  subtitleLoading = false;
-  subtitleTracks = tracks.filter((t) => t.cues.length > 0);
-}
+const { clearSubtitles, loadSubtitles, subtitleMenuItem } = createSubtitleController({
+  video,
+  invoke,
+  isCurrentToken: (token) => token === showToken,
+});
 
 // ---- 音楽 ----
 // 再生は動画と同じ #video で行い（映像は出さない）、代わりにアートワークと曲名を出す。
@@ -1171,21 +992,7 @@ vbSeek.addEventListener("change", () => {
 
 // ---- シークバー・音量つまみに乗せたときの吹き出し ----
 // シークバーはカーソル位置の時刻、音量つまみは今の音量を出す。
-// つまみの幅の分だけ端が内側に寄るので、位置の計算から除く（style.css の --thumb と揃える）
-const RANGE_THUMB_PX = 12;
 let volumeHover = false;
-
-// anchor（シークバー / 音量つまみ / 画像の位置のスライダー）のすぐ上、横は clientX に合わせる
-// （吹き出しを入れているカードからははみ出さない）
-function showBarTip(tip, text, clientX, anchor) {
-  tip.textContent = text;
-  tip.hidden = false;
-  const card = tip.parentElement.getBoundingClientRect();
-  const half = tip.offsetWidth / 2;
-  const x = Math.min(card.width - half, Math.max(half, clientX - card.left));
-  tip.style.left = `${x}px`;
-  tip.style.top = `${anchor.getBoundingClientRect().top - card.top - tip.offsetHeight - 4}px`;
-}
 
 function showVideoTip(text, clientX, anchor) {
   showBarTip(vbTip, text, clientX, anchor);
@@ -1193,13 +1000,6 @@ function showVideoTip(text, clientX, anchor) {
 
 function hideVideoTip() {
   vbTip.hidden = true;
-}
-
-function rangeRatioAt(input, clientX) {
-  const r = input.getBoundingClientRect();
-  const track = r.width - RANGE_THUMB_PX;
-  if (track <= 0) return 0;
-  return Math.min(1, Math.max(0, (clientX - r.left - RANGE_THUMB_PX / 2) / track));
 }
 
 function showVolumeTip() {
@@ -1567,38 +1367,13 @@ function canDelete() {
   return !archivePath && !showingBook && index >= 0 && index < images.length;
 }
 
-let confirmResolve = null;
-
-function closeConfirm(answer) {
-  if (!confirmResolve) return;
-  const done = confirmResolve;
-  confirmResolve = null;
-  confirmEl.hidden = true;
-  done(answer);
-}
-
-// OS の確認ダイアログには「今後確認しない」を同居させられないので自前で出す。
-// 開いている間はキー・ホイール・右クリックをこちらで止める
-function askDeleteConfirm(path) {
-  closeConfirm({ ok: false, skip: false }); // 二重に開かない
-  hideContextMenu();
-  confirmNameEl.textContent = baseName(path);
-  confirmNameEl.title = path;
-  confirmSkipEl.checked = false;
-  confirmEl.hidden = false;
-  confirmOkEl.focus();
-  return new Promise((resolve) => (confirmResolve = resolve));
-}
-
-confirmOkEl.addEventListener("click", () =>
-  closeConfirm({ ok: true, skip: confirmSkipEl.checked })
-);
-document
-  .getElementById("confirm-cancel")
-  .addEventListener("click", () => closeConfirm({ ok: false, skip: false }));
-// 外側（暗い部分）を押したらキャンセル扱いにする
-confirmEl.addEventListener("mousedown", (e) => {
-  if (e.target === confirmEl) closeConfirm({ ok: false, skip: false });
+const { askDeleteConfirm, closeConfirm } = createDeleteConfirm({
+  confirmEl,
+  confirmNameEl,
+  confirmSkipEl,
+  confirmOkEl,
+  confirmCancelEl: document.getElementById("confirm-cancel"),
+  hideContextMenu: () => hideContextMenu(),
 });
 
 async function deleteCurrent() {
@@ -2221,11 +1996,6 @@ function openStartupFile() {
 
 // ---- settings ----
 // 設定ウィンドウからの変更は "settings-changed" で届き、その場で反映する
-function hexToRgba(hex, alpha) {
-  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
-  const n = parseInt(m ? m[1] : "0e0e10", 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
-}
 
 function applySettings() {
   app.style.background = hexToRgba(settings.backgroundColor, settings.backgroundOpacity / 100);
@@ -2264,69 +2034,11 @@ async function openSettings() {
 }
 
 // ---- wheel navigation / seek / volume ----
-// ホイール 1 段の量はデバイス差が大きい（細かい量で何度も届くものもある）ので、
-// しきい値までためてから 1 段変える
-let wheelAccum = 0;
-
-// ホイールで動かす秒数（ボタン・キーの SEEK_STEP_S より細かく）
-const WHEEL_SEEK_S = 3;
-
-// 縦横どちらの量を使うか。横（右）は縦の下と同じ向き（次 / 早送り）として扱う。
-// 一続きの操作（イベントが WHEEL_AXIS_GAP_MS 以上途切れるまで。トラックパッドの慣性も含む）の
-// 最初のイベントで量の大きい方に決めて、途中では変えない。トラックパッドの斜めの操作で
-// イベントごとに縦横が入れ替わると、右上・左下のように次と前が 1 回の操作で両方起きるため
-const WHEEL_AXIS_GAP_MS = 150;
-let wheelAxisAt = 0;
-let wheelAxisX = false;
-function wheelDelta(e) {
-  if (!e.deltaX && !e.deltaY) return 0;
-  const now = performance.now();
-  if (now - wheelAxisAt > WHEEL_AXIS_GAP_MS) {
-    wheelAxisX = Math.abs(e.deltaX) > Math.abs(e.deltaY);
-  }
-  wheelAxisAt = now;
-  return wheelAxisX ? e.deltaX : e.deltaY;
-}
-
-// ホイール。下に回すと次の画像（本モードでは見開きごと）/ 早送り。
-// 少し間を空けて回し始めたときは、量によらずすぐ 1 段動かす（1 段の量が小さいマウスでも
-// 1 段で 1 回動くように）。続けて回している間は、しきい値ごとに 1 段動かす。
-// 既定の感度でしきい値は 100（Windows のホイール 1 段の量）
-const WHEEL_GESTURE_GAP_MS = 250;
-let wheelLastAt = 0;
-let wheelDir = 0;
-function wheelStep(deltaY, forward, backward) {
-  const dir = Math.sign(deltaY);
-  if (!dir) return;
-  const act = dir > 0 ? forward : backward;
-  const now = performance.now();
-  const fresh = now - wheelLastAt > WHEEL_GESTURE_GAP_MS || dir !== wheelDir;
-  wheelLastAt = now;
-  if (fresh) {
-    // 次のしきい値は、すぐ動かした 1 段の分を除いてから数える
-    wheelDir = dir;
-    wheelAccum = 0;
-    act();
-    return;
-  }
-  const threshold = 150 - settings.wheelSensitivity * 10;
-  wheelAccum += deltaY;
-  while (Math.abs(wheelAccum) >= threshold) {
-    act();
-    wheelAccum -= dir * threshold;
-  }
-}
-
-// 音量（右ボタンを押したまま / Ctrl + ホイール）。上に回すと大きくなる
-function wheelVolume(deltaY) {
-  const threshold = 220 - settings.wheelSensitivity * 18;
-  if (Math.sign(deltaY) !== Math.sign(wheelAccum)) wheelAccum = 0;
-  wheelAccum += deltaY;
-  while (Math.abs(wheelAccum) >= threshold) {
-    changeVolumeBy(-Math.sign(wheelAccum) * VOLUME_STEP);
-    wheelAccum -= Math.sign(wheelAccum) * threshold;
-  }
-}
+const { wheelDelta, wheelStep, wheelVolume } = createWheelController({
+  getSensitivity: () => settings.wheelSensitivity,
+  changeVolumeBy,
+  volumeStep: VOLUME_STEP,
+});
 
 // ---- context menu ----
 // 設定を開くショートカットの表示（キー処理側と揃える）
@@ -2352,10 +2064,6 @@ async function revealCurrent() {
   } catch (e) {
     showError(e);
   }
-}
-
-function hideContextMenu() {
-  ctxmenu.hidden = true;
 }
 
 function buildContextMenu() {
@@ -2407,30 +2115,11 @@ function buildContextMenu() {
   ];
 }
 
-// 右クリックメニューの「字幕」。合わせると「オフ」と字幕トラックの一覧を出す
-function subtitleMenuItem() {
-  if (subtitleLoading) return { label: "字幕（読み込み中）", disabled: true, submenu: [] };
-  const items = subtitleTracks.map((t, i) => ({
-    label: trackLabel(t.name, t.language, i, "字幕"),
-    radio: true,
-    checked: subtitleIndex === i,
-    action: () => selectSubtitle(i),
-  }));
-  return {
-    label: "字幕",
-    disabled: items.length === 0,
-    submenu: [
-      { label: "オフ", radio: true, checked: subtitleIndex < 0, action: () => selectSubtitle(-1) },
-      ...items,
-    ],
-  };
-}
-
 // 右クリックメニューの「音声」。音声が 2 つ以上あるときだけ選べる
 function audioMenuItem() {
-  const tracks = audioTrackList();
+  const tracks = currentAudioTrackList();
   const count = tracks?.length ?? 0;
-  const selected = selectedAudioTrack();
+  const selected = selectedAudioTrack(tracks);
   const items = [];
   for (let i = 0; i < count; i++) {
     // 再生できない音声（macOS の MKV で非対応のコーデック）はグレーアウトしてコーデック名を添える
@@ -2446,119 +2135,10 @@ function audioMenuItem() {
   return { label: "音声", disabled: count < 2, submenu: items };
 }
 
-// メニューの項目のボタンを作る（サブメニューの中の項目も同じ）
-function menuItemButton(item) {
-  const btn = document.createElement("button");
-  btn.className = "ctx-item";
-  btn.type = "button";
-  // checked を持つ項目はチェック（radio なら丸）を左に出す（style.css の .ctx-item::before）
-  const checkable = item.checked !== undefined;
-  btn.setAttribute(
-    "role",
-    !checkable ? "menuitem" : item.radio ? "menuitemradio" : "menuitemcheckbox"
-  );
-  if (checkable) btn.setAttribute("aria-checked", String(!!item.checked));
-  btn.disabled = !!item.disabled;
-  const label = document.createElement("span");
-  label.className = "ctx-label";
-  label.textContent = item.label;
-  const accel = document.createElement("span");
-  accel.className = "ctx-accel";
-  // サブメニューを持つ項目は右端に「›」を出す
-  accel.textContent = item.submenu ? "\u203a" : item.accel ?? "";
-  if (item.submenu) btn.setAttribute("aria-haspopup", "menu");
-  btn.append(label, accel);
-  if (!item.submenu) {
-    btn.addEventListener("click", () => {
-      hideContextMenu();
-      item.action();
-    });
-  }
-  return btn;
-}
-
-function appendMenuItems(container, items) {
-  for (const item of items) {
-    if (item.separator) {
-      const hr = document.createElement("div");
-      hr.className = "ctx-sep";
-      container.appendChild(hr);
-    } else {
-      container.appendChild(menuItemButton(item));
-    }
-  }
-}
-
-// 開いているサブメニュー（無ければ null）
-let ctxSubmenu = null;
-
-function closeSubmenu() {
-  ctxSubmenu?.remove();
-  ctxSubmenu = null;
-  for (const el of ctxmenu.querySelectorAll(".ctx-item.open")) el.classList.remove("open");
-}
-
-// 親の項目の右（入りきらなければ左）にサブメニューを開く
-function openSubmenu(btn, items) {
-  closeSubmenu();
-  const sub = document.createElement("div");
-  sub.className = "ctx-submenu";
-  sub.setAttribute("role", "menu");
-  appendMenuItems(sub, items);
-  ctxmenu.appendChild(sub);
-  ctxSubmenu = sub;
-  btn.classList.add("open");
-  const menuRect = ctxmenu.getBoundingClientRect();
-  const btnRect = btn.getBoundingClientRect();
-  const subRect = sub.getBoundingClientRect();
-  // 親の項目と少し重ねて、斜めにカーソルを動かしても途切れにくくする
-  let left = btnRect.right - 4;
-  if (left + subRect.width > window.innerWidth - 4) left = btnRect.left - subRect.width + 4;
-  left = Math.max(4, left);
-  // 上端は親の項目にそろえる（項目の余白の分だけ上げる）
-  let top = btnRect.top - 5;
-  top = Math.max(4, Math.min(top, window.innerHeight - subRect.height - 4));
-  // サブメニューは #ctxmenu の中に置くので、#ctxmenu の内側（枠線の内側）からの位置で入れる
-  sub.style.left = `${left - menuRect.left - ctxmenu.clientLeft}px`;
-  sub.style.top = `${top - menuRect.top - ctxmenu.clientTop}px`;
-}
-
-function openContextMenu(x, y) {
-  ctxSubmenu = null;
-  ctxmenu.textContent = "";
-  for (const item of buildContextMenu()) {
-    if (item.separator) {
-      appendMenuItems(ctxmenu, [item]);
-      continue;
-    }
-    const btn = menuItemButton(item);
-    // 項目に合わせたらサブメニューを開き、ほかの項目に移ったら閉じる
-    btn.addEventListener("mouseenter", () => {
-      if (item.submenu && !item.disabled) {
-        if (ctxSubmenu && btn.classList.contains("open")) return;
-        openSubmenu(btn, item.submenu);
-      } else {
-        closeSubmenu();
-      }
-    });
-    if (item.submenu) {
-      btn.addEventListener("click", () => {
-        if (!item.disabled && !btn.classList.contains("open")) openSubmenu(btn, item.submenu);
-      });
-    }
-    ctxmenu.appendChild(btn);
-  }
-
-  // いったん表示してから実寸で画面内に収める
-  ctxmenu.style.left = "0px";
-  ctxmenu.style.top = "0px";
-  ctxmenu.hidden = false;
-  const rect = ctxmenu.getBoundingClientRect();
-  const left = Math.max(4, Math.min(x, window.innerWidth - rect.width - 4));
-  const top = Math.max(4, Math.min(y, window.innerHeight - rect.height - 4));
-  ctxmenu.style.left = `${left}px`;
-  ctxmenu.style.top = `${top}px`;
-}
+const { openContextMenu, hideContextMenu } = createContextMenu({
+  ctxmenu,
+  buildItems: buildContextMenu,
+});
 
 window.addEventListener("mousedown", (e) => {
   pressClosedMenu = !ctxmenu.hidden && !ctxmenu.contains(e.target);

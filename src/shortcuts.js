@@ -1,3 +1,6 @@
+import { SETTINGS_DEFAULTS, normalizeSettings } from "./settings-defs.js";
+import { applyTheme } from "./theme.js";
+
 // ショートカット一覧ウィンドウ。
 // キー操作は main.js の keydown / mouseup / wheel の処理にそのまま書かれていて、
 // 対応表は持っていない。ここはその表示用の写しなので、main.js の操作を変えたら

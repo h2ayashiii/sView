@@ -1,6 +1,6 @@
 ---
 trigger: glob
-globs: "src-tauri/src/lib.rs, src/main.js"
+globs: "src-tauri/src/listing.rs, src-tauri/src/archive.rs, src-tauri/src/watcher.rs, src-tauri/src/media.rs, src-tauri/src/lib.rs, src/main.js, src/viewer/archive-cache.js, src/viewer/delete-confirm.js"
 ---
 
 # File listing, archives, folder watching, deleting

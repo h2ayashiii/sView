@@ -3,10 +3,13 @@
 sView is a minimal, frameless media viewer (images, videos, audio, zip/cbz archives) built with
 **Tauri v2**. Targets: Windows 10/11 and macOS 10.15+.
 
-- **Backend**: Rust 2021. **All** backend logic and its tests live in `src-tauri/src/lib.rs`.
-- **Frontend**: plain HTML/CSS/JS in `src/`, served as-is. **No framework, no bundler, no
-  TypeScript, no ES `import` / `export`** — scripts load via `<script src>` into the global scope
-  and Tauri APIs come from `window.__TAURI__`.
+- **Backend**: Rust 2021. `src-tauri/src/lib.rs` is the entry point (`run()` and window lifecycle),
+  and domain logic is split into submodules (`media.rs`, `state.rs`, `archive.rs`, `listing.rs`,
+  `audio.rs`, `watcher.rs`, `window.rs`, `settings.rs`, `logging.rs`, `assoc.rs`, `mkv/`,
+  `platform/`, `tests.rs`).
+- **Frontend**: plain HTML/CSS/JS in `src/`, served as-is with **native ES Modules
+  (`<script type="module">`)**. **No framework, no bundler, no TypeScript** — modules use standard
+  `import` / `export`, and Tauri APIs come from `window.__TAURI__`.
 - **Linux is not a target.** It only has to build, because CI and cloud containers run
   `cargo test` there. The `#[cfg(not(any(target_os = "windows", target_os = "macos")))]` branches
   are stubs; don't add Linux-only features or docs.
@@ -62,11 +65,13 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - **Add a settings-window button** → add an entry with `type: "action"` and `action: "<name>"`,
   then register the handler in `ACTIONS` in `src/settings.js`. Keep `settings-defs.js` pure data —
   `main.js` loads it too.
-- **Add a Rust command** → define it in `lib.rs` and register it in
-  `tauri::generate_handler![...]` inside `run()`. Custom commands need no permission entry; only
-  core / plugin APIs called from JS do (`src-tauri/capabilities/*.json`).
-- **Add a frontend file** → add a `<script>` / `<link>` tag to `index.html`, `settings.html`
-  and/or `shortcuts.html`. Nothing picks it up automatically.
+- **Add a Rust command** → define it in the appropriate submodule under `src-tauri/src/` (as
+  `pub(crate)`) and register it in `tauri::generate_handler![...]` inside `run()` in `lib.rs`.
+  Custom commands need no permission entry; only core / plugin APIs called from JS do
+  (`src-tauri/capabilities/*.json`).
+- **Add a frontend file** → for CSS, add a `<link>` tag to `index.html`, `settings.html`, and/or
+  `shortcuts.html`. For JS, export from the new ES module and `import` it from `main.js`,
+  `settings.js`, or `shortcuts.js`.
 
 ## Gotchas
 
@@ -75,13 +80,14 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - Capabilities are per-window (`main` / `viewer-*`, `settings`, `shortcuts`). An API missing from
   that window's capability file fails at runtime, not at build time. The files reference a schema
   under the gitignored `src-tauri/gen/`, which does not exist until a build has run.
-- `MIN_WINDOW_SIZE` in `lib.rs` must stay in sync with `minWidth` / `minHeight` in
-  `tauri.conf.json`.
+- `MIN_WINDOW_SIZE` in `src-tauri/src/window.rs` must stay in sync with `minWidth` / `minHeight`
+  in `tauri.conf.json`.
 - Supported extensions are duplicated in three places — update all of them: `IMAGE_EXTS` /
-  `VIDEO_EXTS` / `AUDIO_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` / `VIDEO_EXT_FILTER` /
-  `AUDIO_EXT_FILTER` (`src/main.js`), `fileAssociations` (`tauri.conf.json`, one entry per kind).
-  The `supported_extensions_stay_in_sync` test fails when they drift. Archives (`ARCHIVE_EXTS`)
-  are deliberately **not** file-associated.
+  `VIDEO_EXTS` / `AUDIO_EXTS` (`src-tauri/src/media.rs`), `IMAGE_EXT_FILTER` / `MIME` /
+  `VIDEO_EXT_FILTER` / `AUDIO_EXT_FILTER` (`src/viewer/media-types.js`), `fileAssociations`
+  (`tauri.conf.json`, one entry per kind). The `supported_extensions_stay_in_sync` test in
+  `src-tauri/src/tests.rs` fails when they drift. Archives (`ARCHIVE_EXTS`) are deliberately
+  **not** file-associated.
 - No codec is bundled (codec patent licensing): videos and audio play with the OS WebView's
   decoders only, so don't add formats the WebViews can't handle. MKV on macOS is the one container
   we unpack ourselves (remuxed to fragmented MP4, never re-encoded; see `media-playback.md`).
