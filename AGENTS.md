@@ -65,11 +65,13 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - **Add a settings-window button** → add an entry with `type: "action"` and `action: "<name>"`,
   then register the handler in `ACTIONS` in `src/settings.js`. Keep `settings-defs.js` pure data —
   `main.js` loads it too.
-- **Add a Rust command** → define it in `lib.rs` and register it in
-  `tauri::generate_handler![...]` inside `run()`. Custom commands need no permission entry; only
-  core / plugin APIs called from JS do (`src-tauri/capabilities/*.json`).
-- **Add a frontend file** → add a `<script>` / `<link>` tag to `index.html`, `settings.html`
-  and/or `shortcuts.html`. Nothing picks it up automatically.
+- **Add a Rust command** → define it in the appropriate submodule under `src-tauri/src/` (as
+  `pub(crate)`) and register it in `tauri::generate_handler![...]` inside `run()` in `lib.rs`.
+  Custom commands need no permission entry; only core / plugin APIs called from JS do
+  (`src-tauri/capabilities/*.json`).
+- **Add a frontend file** → for CSS, add a `<link>` tag to `index.html`, `settings.html`, and/or
+  `shortcuts.html`. For JS, export from the new ES module and `import` it from `main.js`,
+  `settings.js`, or `shortcuts.js`.
 
 ## Gotchas
 
@@ -78,13 +80,14 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 - Capabilities are per-window (`main` / `viewer-*`, `settings`, `shortcuts`). An API missing from
   that window's capability file fails at runtime, not at build time. The files reference a schema
   under the gitignored `src-tauri/gen/`, which does not exist until a build has run.
-- `MIN_WINDOW_SIZE` in `lib.rs` must stay in sync with `minWidth` / `minHeight` in
-  `tauri.conf.json`.
+- `MIN_WINDOW_SIZE` in `src-tauri/src/window.rs` must stay in sync with `minWidth` / `minHeight`
+  in `tauri.conf.json`.
 - Supported extensions are duplicated in three places — update all of them: `IMAGE_EXTS` /
-  `VIDEO_EXTS` / `AUDIO_EXTS` (`lib.rs`), `IMAGE_EXT_FILTER` / `MIME` / `VIDEO_EXT_FILTER` /
-  `AUDIO_EXT_FILTER` (`src/main.js`), `fileAssociations` (`tauri.conf.json`, one entry per kind).
-  The `supported_extensions_stay_in_sync` test fails when they drift. Archives (`ARCHIVE_EXTS`)
-  are deliberately **not** file-associated.
+  `VIDEO_EXTS` / `AUDIO_EXTS` (`src-tauri/src/media.rs`), `IMAGE_EXT_FILTER` / `MIME` /
+  `VIDEO_EXT_FILTER` / `AUDIO_EXT_FILTER` (`src/viewer/media-types.js`), `fileAssociations`
+  (`tauri.conf.json`, one entry per kind). The `supported_extensions_stay_in_sync` test in
+  `src-tauri/src/tests.rs` fails when they drift. Archives (`ARCHIVE_EXTS`) are deliberately
+  **not** file-associated.
 - No codec is bundled (codec patent licensing): videos and audio play with the OS WebView's
   decoders only, so don't add formats the WebViews can't handle. MKV on macOS is the one container
   we unpack ourselves (remuxed to fragmented MP4, never re-encoded; see `media-playback.md`).

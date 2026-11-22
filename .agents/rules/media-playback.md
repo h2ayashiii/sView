@@ -1,6 +1,6 @@
 ---
 trigger: glob
-globs: "src/main.js, src/mkv-player.js, src/index.html, src/style.css, src-tauri/src/lib.rs"
+globs: "src/main.js, src/mkv-player.js, src/viewer/*.js, src/index.html, src/style.css, src-tauri/src/audio.rs, src-tauri/src/media.rs, src-tauri/src/mkv/*.rs, src-tauri/src/lib.rs"
 ---
 
 # Video, audio and book mode

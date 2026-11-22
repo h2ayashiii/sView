@@ -1,6 +1,6 @@
 ---
 trigger: glob
-globs: "src-tauri/src/lib.rs, src/main.js, src-tauri/tauri.conf.json, src-tauri/installer-hooks.nsh, src-tauri/capabilities/*.json"
+globs: "src-tauri/src/lib.rs, src-tauri/src/platform/*.rs, src-tauri/src/logging.rs, src-tauri/src/window.rs, src/main.js, src-tauri/tauri.conf.json, src-tauri/installer-hooks.nsh, src-tauri/capabilities/*.json"
 ---
 
 # Platform specifics (macOS / Windows), windows, bundling
