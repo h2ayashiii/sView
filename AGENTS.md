@@ -3,7 +3,7 @@
 sView is a minimal, frameless media viewer (images, videos, audio, zip/cbz archives) built with
 **Tauri v2**. Targets: Windows 10/11 and macOS 10.15+.
 
-- **Backend**: Rust 2021. `src-tauri/src/lib.rs` is the entry point (`run()` and window lifecycle),
+- **Backend**: Rust 2024. `src-tauri/src/lib.rs` is the entry point (`run()` and window lifecycle),
   and domain logic is split into submodules (`media.rs`, `state.rs`, `archive.rs`, `listing.rs`,
   `audio.rs`, `watcher.rs`, `window.rs`, `settings.rs`, `logging.rs`, `assoc.rs`, `mkv/`,
   `platform/`, `tests.rs`).

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use notify::{RecursiveMode, Watcher};
 use tauri::{Emitter, Manager, State, WebviewWindow};
 
-use crate::media::{is_media, MAX_DEPTH};
+use crate::media::{MAX_DEPTH, is_media};
 use crate::state::{FolderWatcher, Watching};
 
 /// `path` が監視中のフォルダ（`roots` のどれか）から数えて何層目か（直下が 1）。

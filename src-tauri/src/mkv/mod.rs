@@ -3,11 +3,11 @@ pub(crate) mod remux;
 pub(crate) mod subtitles;
 
 use std::path::Path;
-use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Mutex;
+use std::sync::atomic::Ordering as AtomicOrdering;
 
-use tauri::ipc::Response;
 use tauri::State;
+use tauri::ipc::Response;
 
 use crate::state::PerWindow;
 #[cfg(test)]

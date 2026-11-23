@@ -1,5 +1,5 @@
 pub(crate) mod mac_assoc {
-    use std::ffi::{c_char, c_void, CStr};
+    use std::ffi::{CStr, c_char, c_void};
 
     type CFStringRef = *const c_void;
     type OSStatus = i32;
@@ -8,7 +8,7 @@ pub(crate) mod mac_assoc {
     const K_LS_ROLES_ALL: u32 = 0xFFFF_FFFF;
 
     #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CFStringCreateWithBytes(
             alloc: *const c_void,
             bytes: *const u8,
@@ -21,7 +21,7 @@ pub(crate) mod mac_assoc {
     }
 
     #[link(name = "CoreServices", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         static kUTTagClassFilenameExtension: CFStringRef;
         fn UTTypeCreatePreferredIdentifierForTag(
             tag_class: CFStringRef,
@@ -134,7 +134,7 @@ pub(crate) mod mac_pointer {
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, NSObject};
     use objc2::{
-        define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
+        AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     };
     use objc2_app_kit::{NSEvent, NSTrackingArea, NSTrackingAreaOptions, NSWindow};
     use objc2_foundation::NSRect;
@@ -261,7 +261,7 @@ pub(crate) mod mac_sizing {
     use tauri::{AppHandle, LogicalSize, Manager, PhysicalSize, WebviewWindow};
 
     use crate::state::{AspectLock, LiveResize};
-    use crate::window::{sized_to_aspect, sizing_area, NO_LIMIT};
+    use crate::window::{NO_LIMIT, sized_to_aspect, sizing_area};
 
     /// 引っ張り始めたカーソルが、ウィンドウの辺からこれ以内なら、その辺を引っ張っているとみなす
     /// （論理ピクセル）。左右・上下の両方の辺に近ければ角
@@ -297,7 +297,7 @@ pub(crate) mod mac_sizing {
         _sel: Sel,
         notification: *mut AnyObject,
     ) {
-        let object: *mut AnyObject = msg_send![notification, object];
+        let object: *mut AnyObject = unsafe { msg_send![notification, object] };
         let Some((app, label, window)) = viewer_of(object) else {
             return;
         };
@@ -399,7 +399,7 @@ pub(crate) mod mac_sizing {
         imp: Imp,
         types: &std::ffi::CStr,
     ) -> Result<(), String> {
-        if objc2::ffi::class_addMethod(class, name, imp, types.as_ptr()).as_bool() {
+        if unsafe { objc2::ffi::class_addMethod(class, name, imp, types.as_ptr()) }.as_bool() {
             Ok(())
         } else {
             Err(format!("{name} を追加できません（すでにあります）"))

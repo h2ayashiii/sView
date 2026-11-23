@@ -275,9 +275,11 @@ fn window_state_keeps_the_fit_area_of_each_kind() {
     // 「自由に変更」の枠（最上位）には広さを書かない
     state.store(WindowSlot::Free, &record);
     assert_eq!(state.area, None);
-    assert!(!serde_json::to_string(&WindowState::default())
-        .unwrap()
-        .contains("area"));
+    assert!(
+        !serde_json::to_string(&WindowState::default())
+            .unwrap()
+            .contains("area")
+    );
     // 以前の「最後に使った種類」（kind）が残っていても読める
     let old: WindowState =
         serde_json::from_str(r#"{"width":800,"height":600,"kind":"video"}"#).unwrap();

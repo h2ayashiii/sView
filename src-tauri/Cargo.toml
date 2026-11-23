@@ -2,7 +2,7 @@
 name = "sview"
 version = "0.1.0"
 description = "Minimal frameless cross-platform viewer for images, videos and audio"
-edition = "2021"
+edition = "2024"
 # Commons Clause + MIT。この組み合わせに該当する SPDX 識別子がないため
 # LicenseRef で示す。全文はリポジトリルートの LICENSE を参照
 license = "LicenseRef-MIT-Commons-Clause"

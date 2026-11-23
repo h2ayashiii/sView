@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
-use crate::archive::{list_archive_images, ArchiveCache};
+use crate::archive::{ArchiveCache, list_archive_images};
 use crate::media::{
-    is_archive, is_media, media_kind, natural_cmp, ImageList, MediaKind, WindowKindKey, MAX_DEPTH,
+    ImageList, MAX_DEPTH, MediaKind, WindowKindKey, is_archive, is_media, media_kind, natural_cmp,
 };
 use crate::state::StartupListing;
 
