@@ -1,5 +1,6 @@
 import { MkvPlayer } from "./mkv-player.js";
 import { normalizeSettings, SETTINGS_DEFAULTS } from "./settings-defs.js";
+import { resolveShortcutAction } from "./shortcut-defs.js";
 import { createArchiveCache } from "./viewer/archive-cache.js";
 import { audioTrackLabel, audioTrackList, selectedAudioTrack } from "./viewer/audio-tracks.js";
 import { createContextMenu } from "./viewer/context-menu.js";
@@ -30,29 +31,29 @@ const appWindow = window.__TAURI__.window.getCurrentWindow();
 
 const app = document.getElementById("app");
 const stage = document.getElementById("stage");
-const img = document.getElementById("image");
+const img = /** @type {HTMLImageElement} */ (document.getElementById("image"));
 const bookEl = document.getElementById("book");
-const bookLeft = document.getElementById("book-left");
-const bookRight = document.getElementById("book-right");
-const video = document.getElementById("video");
+const bookLeft = /** @type {HTMLImageElement} */ (document.getElementById("book-left"));
+const bookRight = /** @type {HTMLImageElement} */ (document.getElementById("book-right"));
+const video = /** @type {HTMLVideoElement} */ (document.getElementById("video"));
 const videobar = document.getElementById("videobar");
-const vbPlay = document.getElementById("vb-play");
-const vbMute = document.getElementById("vb-mute");
-const vbBack = document.getElementById("vb-back");
-const vbFwd = document.getElementById("vb-fwd");
-const vbPrev = document.getElementById("vb-prev");
-const vbNext = document.getElementById("vb-next");
-const vbSeek = document.getElementById("vb-seek");
-const vbVolume = document.getElementById("vb-volume");
+const vbPlay = /** @type {HTMLButtonElement} */ (document.getElementById("vb-play"));
+const vbMute = /** @type {HTMLButtonElement} */ (document.getElementById("vb-mute"));
+const vbBack = /** @type {HTMLButtonElement} */ (document.getElementById("vb-back"));
+const vbFwd = /** @type {HTMLButtonElement} */ (document.getElementById("vb-fwd"));
+const vbPrev = /** @type {HTMLButtonElement} */ (document.getElementById("vb-prev"));
+const vbNext = /** @type {HTMLButtonElement} */ (document.getElementById("vb-next"));
+const vbSeek = /** @type {HTMLInputElement} */ (document.getElementById("vb-seek"));
+const vbVolume = /** @type {HTMLInputElement} */ (document.getElementById("vb-volume"));
 const vbTime = document.getElementById("vb-time");
 const vbDuration = document.getElementById("vb-duration");
 const vbTip = document.getElementById("vb-tip");
-const ibPrev = document.getElementById("ib-prev");
-const ibNext = document.getElementById("ib-next");
-const ibSeek = document.getElementById("ib-seek");
+const ibPrev = /** @type {HTMLButtonElement} */ (document.getElementById("ib-prev"));
+const ibNext = /** @type {HTMLButtonElement} */ (document.getElementById("ib-next"));
+const ibSeek = /** @type {HTMLInputElement} */ (document.getElementById("ib-seek"));
 const ibTip = document.getElementById("ib-tip");
 const audioBox = document.getElementById("audio");
-const artwork = document.getElementById("artwork");
+const artwork = /** @type {HTMLImageElement} */ (document.getElementById("artwork"));
 const audioArt = document.getElementById("audio-art");
 const audioPanel = document.getElementById("audio-panel");
 const audioTitle = document.getElementById("audio-title");
@@ -64,11 +65,11 @@ const filenameEl = document.getElementById("filename");
 const counterEl = document.getElementById("counter");
 const chromeEl = document.getElementById("chrome");
 const ctxmenu = document.getElementById("ctxmenu");
-const btnMax = document.getElementById("btn-max");
+const btnMax = /** @type {HTMLButtonElement} */ (document.getElementById("btn-max"));
 const confirmEl = document.getElementById("confirm");
 const confirmNameEl = document.getElementById("confirm-name");
-const confirmSkipEl = document.getElementById("confirm-skip");
-const confirmOkEl = document.getElementById("confirm-ok");
+const confirmSkipEl = /** @type {HTMLInputElement} */ (document.getElementById("confirm-skip"));
+const confirmOkEl = /** @type {HTMLButtonElement} */ (document.getElementById("confirm-ok"));
 
 // 現在の設定（settings-defs.js の既定値で開始し、読み込み後に上書きされる）
 let settings = { ...SETTINGS_DEFAULTS };
@@ -316,15 +317,14 @@ function zoomTo(target) {
 // ---- display ----
 // エラーと案内（端に到達したなど）を同じ場所に出す。kind で色だけ変える。
 // ms を省くと、案内は 1.5 秒、エラーは 4 秒で消える
-function showToast(message, kind, ms) {
+let toastTimer = null;
+
+function showToast(message, kind, ms = undefined) {
   errorBox.textContent = String(message);
   errorBox.classList.toggle("notice", kind === "notice");
   errorBox.hidden = false;
-  clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(
-    () => (errorBox.hidden = true),
-    ms ?? (kind === "notice" ? 1500 : 4000)
-  );
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (errorBox.hidden = true), ms ?? (kind === "notice" ? 1500 : 4000));
 }
 
 function showError(message) {
@@ -601,14 +601,15 @@ img.addEventListener("error", () => {
 
 // 画像の表示に使う URL（書庫の中なら取り出して blob URL にする）
 // 読み込みが終わる（失敗も含む）のを待つ
+/** @returns {Promise<void>} */
 function imageSettled(el) {
   return new Promise((resolve) => {
     if (el.complete && el.naturalWidth) {
       resolve();
       return;
     }
-    el.addEventListener("load", resolve, { once: true });
-    el.addEventListener("error", resolve, { once: true });
+    el.addEventListener("load", () => resolve(), { once: true });
+    el.addEventListener("error", () => resolve(), { once: true });
   });
 }
 
@@ -694,7 +695,10 @@ function usesMkvPlayer(path) {
   return IS_MAC && extOf(path) === "mkv";
 }
 
-// options: autoplay（読み込んだら再生する）、audio（鳴らす音声の番号）、startTime（始める位置・秒）
+/**
+ * @param {string} path
+ * @param {{ autoplay?: boolean, audio?: number, startTime?: number }} [options]
+ */
 function startMkvPlayer(path, { autoplay = false, audio, startTime } = {}) {
   const player = new MkvPlayer(video, path, {
     audio,
@@ -1491,7 +1495,9 @@ function hideChrome() {
   clearTimeout(chromeTimer);
   chromeTimer = null;
   // ボタンをクリックするとフォーカスが残り、:focus-within で出たままになるので外す
-  if (chromeEl.contains(document.activeElement)) document.activeElement.blur();
+  if (chromeEl.contains(document.activeElement) && document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
   app.classList.remove("chrome-visible");
   hideVideoTip();
   hideImageTip();
@@ -1529,54 +1535,7 @@ window.addEventListener("blur", syncActive);
 syncActive();
 
 // ---- input: keyboard ----
-// 動画・音楽を表示している間だけのキー。処理したら true を返す。
-// ← → は早送り・巻き戻し、↑ ↓ は音量。前後のファイルへはキーでは移らず、
-// 再生操作カードの ⏮ ⏭ ボタンとマウスのサイドボタンで移る
-function handleVideoKey(e) {
-  switch (e.key) {
-    case " ":
-    case "k":
-    case "K":
-      if (!e.repeat) togglePlay();
-      break;
-    case "m":
-    case "M":
-      if (!e.repeat) toggleMute();
-      break;
-    case "j":
-    case "J":
-      seekBy(-SEEK_STEP_S);
-      break;
-    case "l":
-    case "L":
-      seekBy(SEEK_STEP_S);
-      break;
-    case "ArrowLeft":
-      seekBy(-SEEK_STEP_S);
-      break;
-    case "ArrowRight":
-      seekBy(SEEK_STEP_S);
-      break;
-    // 画像の前後移動に使うキーは、動画・音楽では何もしない（誤ってファイルが変わらないように）
-    case "PageUp":
-    case "PageDown":
-    case "Backspace":
-    case "Home":
-    case "End":
-      break;
-    case "ArrowUp":
-      changeVolumeBy(VOLUME_STEP);
-      break;
-    case "ArrowDown":
-      changeVolumeBy(-VOLUME_STEP);
-      break;
-    default:
-      return false;
-  }
-  e.preventDefault();
-  return true;
-}
-
+// キー割り当て本体は shortcut-defs.js に集約し、shortcuts.js（一覧表示）と共有する
 window.addEventListener("keydown", (e) => {
   // 確認ウィンドウが開いている間は、そちらの操作だけを受け付ける。
   // Enter はフォーカスのあるボタンを押す既定の動きに任せる（誤って「移動」を
@@ -1588,92 +1547,92 @@ window.addEventListener("keydown", (e) => {
     }
     return;
   }
-  // 設定を開くショートカット（macOS: Command + , / その他: Ctrl + ,）
-  if (e.key === "," && (IS_MAC ? e.metaKey : e.ctrlKey) && !e.altKey) {
-    e.preventDefault();
-    openSettings();
-    return;
-  }
-  // macOS で「ゴミ箱に入れる」は Command + Delete。この Delete は Backspace として
-  // 届くので、修飾キーで弾く前にここで拾う（単体の Backspace は前の画像のまま）
-  if (IS_MAC && e.key === "Backspace" && e.metaKey && !e.ctrlKey && !e.altKey) {
-    e.preventDefault();
-    deleteCurrent();
-    return;
-  }
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (showingMedia && handleVideoKey(e)) return;
-  switch (e.key) {
-    // ← → は左開き / 右開きにかかわらず、← が前・→ が次（本モードでは見開きごと）
-    case "ArrowRight":
-    case "PageDown":
-    case " ":
-      e.preventDefault();
+  const resolved = resolveShortcutAction(e, {
+    isMac: IS_MAC,
+    showingMedia,
+    showingBook,
+  });
+  if (!resolved) return;
+  if (resolved.preventDefault) e.preventDefault();
+  switch (resolved.action) {
+    case "noop":
+      break;
+    case "openSettings":
+      openSettings();
+      break;
+    case "deleteCurrent":
+      deleteCurrent();
+      break;
+    case "togglePlay":
+      togglePlay();
+      break;
+    case "toggleMute":
+      toggleMute();
+      break;
+    case "seekBack":
+      seekBy(-SEEK_STEP_S);
+      break;
+    case "seekForward":
+      seekBy(SEEK_STEP_S);
+      break;
+    case "volumeUp":
+      changeVolumeBy(VOLUME_STEP);
+      break;
+    case "volumeDown":
+      changeVolumeBy(-VOLUME_STEP);
+      break;
+    case "stepNext":
       step(1);
       break;
-    case "ArrowLeft":
-    case "PageUp":
-    case "Backspace":
-      e.preventDefault();
+    case "stepPrev":
       step(-1);
       break;
-    // ↑ ↓ は本モードで 1 ページずつずらすのに使う。それ以外では今後の機能のために空けておく
-    case "ArrowUp":
-    case "ArrowDown":
-      if (!showingBook) break;
-      e.preventDefault();
-      stepBook(e.key === "ArrowUp" ? -1 : 1);
+    case "stepBookPrev":
+      stepBook(-1);
       break;
-    case "Home":
+    case "stepBookNext":
+      stepBook(1);
+      break;
+    case "goFirst":
       if (images.length) {
         index = 0;
         show();
       }
       break;
-    case "End":
+    case "goLast":
       if (images.length) {
         index = showingBook ? lastSpreadIndex() : images.length - 1;
         show();
       }
       break;
-    case "b":
-    case "B":
-      if (!e.repeat) toggleBookMode();
+    case "toggleBookMode":
+      toggleBookMode();
       break;
-    case "+":
-    case "=":
+    case "zoomIn":
       zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1.25);
       break;
-    case "-":
+    case "zoomOut":
       zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1 / 1.25);
       break;
-    case "0":
+    case "fitMode":
       setFitMode();
       break;
-    case "1":
+    case "zoomActual":
       zoomTo(1);
       break;
-    case "o":
-    case "O":
+    case "openDialog":
       openDialog();
       break;
-    case "d":
-    case "D":
+    case "openFolderDialog":
       openFolderDialog();
       break;
-    case "r":
-    case "R":
+    case "rescan":
       rescan();
       break;
-    case "f":
-    case "F":
+    case "toggleFullscreen":
       toggleFullscreen();
       break;
-    case "Delete":
-      e.preventDefault();
-      deleteCurrent();
-      break;
-    case "Escape":
+    case "escape":
       // メニューが開いているときは、まずそれを閉じる
       if (!ctxmenu.hidden) hideContextMenu();
       else appWindow.close().catch(() => {});
@@ -1987,7 +1946,8 @@ window.addEventListener(
   "mousedown",
   (e) => {
     if (e.detail < 2) return;
-    const region = e.target.closest?.("[data-tauri-drag-region]");
+    const region =
+      e.target instanceof Element ? e.target.closest("[data-tauri-drag-region]") : null;
     if (region && !region.closest("#titlebar")) e.stopPropagation();
   },
   true
@@ -2015,7 +1975,7 @@ appWindow.listen("tauri://drag-enter", () => app.classList.add("dropping"));
 appWindow.listen("tauri://drag-leave", () => app.classList.remove("dropping"));
 appWindow.listen("tauri://drag-drop", (event) => {
   app.classList.remove("dropping");
-  const paths = event.payload?.paths ?? [];
+  const paths = /** @type {{ paths?: string[] }} */ (event.payload)?.paths ?? [];
   if (paths.length) openPath(paths[0]);
 });
 
@@ -2187,7 +2147,7 @@ const { openContextMenu, hideContextMenu } = createContextMenu({
 window.addEventListener(
   "mousedown",
   (e) => {
-    pressClosedMenu = !ctxmenu.hidden && !ctxmenu.contains(e.target);
+    pressClosedMenu = !ctxmenu.hidden && !ctxmenu.contains(/** @type {Node} */ (e.target));
     if (pressClosedMenu) hideContextMenu();
   },
   true

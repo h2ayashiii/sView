@@ -3,10 +3,13 @@
   "files": {
     "includes": [
       "src/**/*.js",
+      "src/**/*.d.ts",
       "src/**/*.css",
       "scripts/**/*.mjs",
       "tests/**/*.mjs",
+      "media-formats.json",
       "package.json",
+      "tsconfig.json",
       "biome.json"
     ]
   },

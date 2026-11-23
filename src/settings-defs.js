@@ -272,7 +272,7 @@ export const SETTINGS_SECTIONS = [
 // videoVolume / audioVolume: 再生中の音量（0〜100%）。動画と音楽で別々に持ち、
 // 再生操作のつまみ・↑ ↓ キー・右ボタンを押したまま / Ctrl + ホイールで変える。
 // bookBinding: 本モードの綴じ方（"left": 左開き / "right": 右開き）。右クリックメニューで変える
-const HIDDEN_DEFAULTS = {
+export const HIDDEN_DEFAULTS = {
   videoVolume: 100,
   audioVolume: 100,
   bookBinding: "left",
@@ -280,14 +280,15 @@ const HIDDEN_DEFAULTS = {
 
 // type: "action" の行はボタンだけで、保存する値を持たない（default がない）。
 // フィルタを外すと undefined が settings.json に書き込まれてしまう
-export const SETTINGS_DEFAULTS = {
+/** @type {import("./types.d.ts").Settings} */
+export const SETTINGS_DEFAULTS = /** @type {import("./types.d.ts").Settings} */ ({
   ...Object.fromEntries(
     SETTINGS_SECTIONS.flatMap((s) =>
       s.items.filter((i) => "default" in i).map((i) => [i.key, i.default])
     )
   ),
   ...HIDDEN_DEFAULTS,
-};
+});
 
 // 廃止した項目。古い settings.json に残っていても読み捨てる
 // windowPerKind: ウィンドウの大きさと位置を種類ごとに覚えるかの切り替えだった（今は常に種類ごと）
@@ -308,8 +309,12 @@ const LEGACY_VALUES = {
 };
 
 // 保存値に既定値を補い、欠けたキーのない設定オブジェクトを作る
+/**
+ * @param {unknown} raw
+ * @returns {import("./types.d.ts").Settings}
+ */
 export function normalizeSettings(raw) {
-  const saved = raw && typeof raw === "object" ? raw : {};
+  const saved = /** @type {Record<string, any>} */ (raw && typeof raw === "object" ? raw : {});
   const settings = { ...SETTINGS_DEFAULTS, ...saved };
   for (const key of OBSOLETE_KEYS) delete settings[key];
   // 動画の終わりはオン / オフ（videoLoop）だった。まだ選んでいなければ引き継ぐ

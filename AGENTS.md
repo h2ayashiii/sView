@@ -23,6 +23,8 @@ npm run dev          # tauri dev
 npm run build        # tauri build
 npm run lint         # Biome lint + format check (src/, scripts/, tests/)
 npm run format       # Biome format --write
+npm run typecheck    # JSDoc + tsc --noEmit (src/ + src/types.d.ts)
+npm run sync:formats # Sync src/viewer/media-formats.js and tauri.conf.json from media-formats.json
 npm test             # Node.js built-in unit tests (tests/*.test.mjs)
 
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
@@ -60,8 +62,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 
 - `docs/specs/*.md` (one file per feature, Japanese) — update the matching spec.
 - `CHANGELOG.md` — add user-visible changes under `未リリース`.
-- `src/shortcuts.js` — `SHORTCUT_SECTIONS` is a hand-written copy of the key handling in
-  `main.js`; update it when a key changes.
+- `src/shortcut-defs.js` — single source of truth for both `main.js` key dispatch and
+  `shortcuts.js` display; update it when a key changes.
 - `README.md` is an entry point only; detailed behaviour goes in `docs/`.
 - `.agents/rules/*.md` — fix the note there when the code it describes changes.
 
@@ -75,7 +77,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `main.js` loads it too.
 - **Add a Rust command** → define it in the appropriate submodule under `src-tauri/src/` (as
   `pub(crate)`) and register it in `tauri::generate_handler![...]` inside `run()` in `lib.rs`.
-  Custom commands need no permission entry; only core / plugin APIs called from JS do
+  Also add its signature to `TauriCommandMap` in `src/types.d.ts` so `npm run typecheck` checks JS
+  callers. Custom commands need no permission entry; only core / plugin APIs called from JS do
   (`src-tauri/capabilities/*.json`).
 - **Add a frontend file** → for CSS, add a `<link>` tag to `index.html`, `settings.html`, and/or
   `shortcuts.html`. For JS, export from the new ES module and `import` it from `main.js`,
@@ -90,12 +93,11 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   under the gitignored `src-tauri/gen/`, which does not exist until a build has run.
 - `MIN_WINDOW_SIZE` in `src-tauri/src/window.rs` must stay in sync with `minWidth` / `minHeight`
   in `tauri.conf.json`.
-- Supported extensions are duplicated in three places — update all of them: `IMAGE_EXTS` /
-  `VIDEO_EXTS` / `AUDIO_EXTS` (`src-tauri/src/media.rs`), `IMAGE_EXT_FILTER` / `MIME` /
-  `VIDEO_EXT_FILTER` / `AUDIO_EXT_FILTER` (`src/viewer/media-types.js`), `fileAssociations`
-  (`tauri.conf.json`, one entry per kind). The `supported_extensions_stay_in_sync` test in
-  `src-tauri/src/tests.rs` fails when they drift. Archives (`ARCHIVE_EXTS`) are deliberately
-  **not** file-associated.
+- Supported extensions live in `media-formats.json` (single source of truth). Rust reads it at
+  compile time via `src-tauri/build.rs`, and `npm run sync:formats` updates
+  `src/viewer/media-formats.js` and `fileAssociations` in `src-tauri/tauri.conf.json`. Both
+  `npm run check:formats` and `supported_extensions_stay_in_sync` in `src-tauri/src/tests.rs` fail
+  when they drift. Archives (`archive`) are deliberately **not** file-associated.
 - No codec is bundled (codec patent licensing): videos and audio play with the OS WebView's
   decoders only, so don't add formats the WebViews can't handle. MKV on macOS is the one container
   we unpack ourselves (remuxed to fragmented MP4, never re-encoded; see `media-playback.md`).
