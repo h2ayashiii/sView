@@ -27,10 +27,11 @@ pub(crate) fn collect_media(
             if is_media(&path) {
                 out.push(path);
             }
-        } else if depth > 1 && file_type.is_dir() {
-            if let Err(e) = collect_media(&path, depth - 1, out) {
-                log::warn!("フォルダを読めません ({}): {e}", path.display());
-            }
+        } else if depth > 1
+            && file_type.is_dir()
+            && let Err(e) = collect_media(&path, depth - 1, out)
+        {
+            log::warn!("フォルダを読めません ({}): {e}", path.display());
         }
     }
     Ok(())
