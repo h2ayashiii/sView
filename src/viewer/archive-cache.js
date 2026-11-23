@@ -1,6 +1,6 @@
 // 書庫内画像の遅延ロード・LRU blob キャッシュ
 
-import { MIME, extOf, toBytes } from "./media-types.js";
+import { extOf, MIME, toBytes } from "./media-types.js";
 
 // 書庫は一括展開せず、表示するエントリだけを Rust 側から取り出して
 // blob URL 化する。前後の先読み分を含め数枚だけ保持する

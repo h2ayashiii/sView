@@ -1,4 +1,4 @@
-import { SETTINGS_DEFAULTS, normalizeSettings } from "./settings-defs.js";
+import { normalizeSettings, SETTINGS_DEFAULTS } from "./settings-defs.js";
 import { applyTheme } from "./theme.js";
 
 // ショートカット一覧ウィンドウ。
@@ -52,7 +52,10 @@ const SHORTCUT_SECTIONS = [
     label: "マウス",
     items: [
       { label: "次 / 前のファイル", keys: "サイドボタン 進む / 戻る" },
-      { label: "次 / 前の画像（動画・音楽では 3 秒進む / 戻る）", keys: "ホイール 下 / 上（横のホイールは 右 / 左）" },
+      {
+        label: "次 / 前の画像（動画・音楽では 3 秒進む / 戻る）",
+        keys: "ホイール 下 / 上（横のホイールは 右 / 左）",
+      },
       { label: "ズーム（画像）", keys: "右ボタンを押したまま / Ctrl + ホイール" },
       { label: "音量（動画・音楽）", keys: "右ボタンを押したまま / Ctrl + ホイール" },
       { label: "再生 / 一時停止（動画・音楽）", keys: "クリック" },

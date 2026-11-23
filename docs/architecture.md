@@ -55,14 +55,16 @@ sView/
 │   ├── installer-hooks.nsh  # Windows インストーラ（NSIS）のフック。旧ユーザー単位インストールの後始末
 │   ├── installer/           # インストーラの見た目（Windows のインストーラの画像、macOS の dmg の背景）
 │   └── icons/               # アプリのアイコン
+├── tests/                   # フロントエンドのユニットテスト（node:test、依存追加なし）
 ├── docs/                    # 仕様（specs/）・全体構成・開発手順
 ├── scripts/                 # ビルドスクリプト、リリース時にタグのバージョンを反映する set-version.mjs、
 │                            # THIRD-PARTY-NOTICES を作り直す gen-third-party-notices.mjs
 ├── .github/
-│   ├── workflows/ci.yml     # PR / main への push で cargo test
+│   ├── workflows/ci.yml     # PR / main への push で Biome・フロントエンドテスト・cargo fmt / clippy / test
 │   ├── workflows/build.yml  # タグ・手動実行で配布ビルド（タグはリリースも）
 │   ├── release-notes/       # タグ名と同じ .md を置くとリリースノートに使われる
 │   └── ISSUE_TEMPLATE/      # 不具合報告のテンプレート
+├── biome.json               # JS / CSS / JSON の Lint・フォーマット設定（Biome）
 ├── CHANGELOG.md             # 変更履歴
 ├── AGENTS.md                # AI エージェント向けの指示
 ├── .agents/rules/           # AI エージェント向けの実装メモ（話題別。該当ファイルを触るときだけ読み込まれる）

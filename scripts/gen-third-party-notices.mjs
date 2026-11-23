@@ -37,10 +37,35 @@ const LICENSE_URLS = [
 // かかりうるかを判定する。判断が付かないものは「含める」側に倒す
 const DESKTOP_HINTS = ["windows", "macos", "darwin", "apple", "unix"];
 const FOREIGN_ONLY = [
-  "linux", "android", "wasm", "emscripten", "wasi", "fuchsia", "redox",
-  "netbsd", "freebsd", "openbsd", "dragonfly", "solaris", "illumos", "haiku",
-  "hermit", "ios", "tvos", "watchos", "visionos", "vita", "horizon", "nto",
-  "aix", "espidf", "xous", "teeos", "sgx", "uefi", "psp",
+  "linux",
+  "android",
+  "wasm",
+  "emscripten",
+  "wasi",
+  "fuchsia",
+  "redox",
+  "netbsd",
+  "freebsd",
+  "openbsd",
+  "dragonfly",
+  "solaris",
+  "illumos",
+  "haiku",
+  "hermit",
+  "ios",
+  "tvos",
+  "watchos",
+  "visionos",
+  "vita",
+  "horizon",
+  "nto",
+  "aix",
+  "espidf",
+  "xous",
+  "teeos",
+  "sgx",
+  "uefi",
+  "psp",
 ];
 
 function targetApplies(target) {
@@ -146,5 +171,5 @@ for (const [license, pkgs] of sortedGroups) {
   }
 }
 
-writeFileSync(outPath, lines.join("\n") + "\n");
+writeFileSync(outPath, `${lines.join("\n")}\n`);
 console.log(`THIRD-PARTY-NOTICES: ${reachable.size} 件のクレートを書き出しました`);

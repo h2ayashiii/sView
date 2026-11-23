@@ -81,7 +81,12 @@ export function createSubtitleController({ video, invoke, isCurrentToken }) {
       label: "字幕",
       disabled: items.length === 0,
       submenu: [
-        { label: "オフ", radio: true, checked: subtitleIndex < 0, action: () => selectSubtitle(-1) },
+        {
+          label: "オフ",
+          radio: true,
+          checked: subtitleIndex < 0,
+          action: () => selectSubtitle(-1),
+        },
         ...items,
       ],
     };

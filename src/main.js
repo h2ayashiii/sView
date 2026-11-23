@@ -1,29 +1,25 @@
-import { SETTINGS_DEFAULTS, normalizeSettings } from "./settings-defs.js";
 import { MkvPlayer } from "./mkv-player.js";
+import { normalizeSettings, SETTINGS_DEFAULTS } from "./settings-defs.js";
+import { createArchiveCache } from "./viewer/archive-cache.js";
+import { audioTrackLabel, audioTrackList, selectedAudioTrack } from "./viewer/audio-tracks.js";
+import { createContextMenu } from "./viewer/context-menu.js";
+import { createDeleteConfirm } from "./viewer/delete-confirm.js";
 import {
-  IMAGE_EXT_FILTER,
-  VIDEO_EXT_FILTER,
-  AUDIO_EXT_FILTER,
   ARCHIVE_EXT_FILTER,
-  extOf,
-  isVideoPath,
-  isAudioPath,
+  AUDIO_EXT_FILTER,
   baseName,
-  toBytes,
+  extOf,
   formatTime,
   hexToRgba,
+  IMAGE_EXT_FILTER,
+  isAudioPath,
+  isVideoPath,
+  toBytes,
+  VIDEO_EXT_FILTER,
 } from "./viewer/media-types.js";
-import { createArchiveCache } from "./viewer/archive-cache.js";
-import {
-  audioTrackLabel,
-  audioTrackList,
-  selectedAudioTrack,
-} from "./viewer/audio-tracks.js";
 import { createSubtitleController } from "./viewer/subtitles.js";
-import { RANGE_THUMB_PX, syncRangeFill, showBarTip, rangeRatioAt } from "./viewer/tooltips.js";
-import { WHEEL_SEEK_S, createWheelController } from "./viewer/wheel.js";
-import { createDeleteConfirm } from "./viewer/delete-confirm.js";
-import { createContextMenu } from "./viewer/context-menu.js";
+import { RANGE_THUMB_PX, rangeRatioAt, showBarTip, syncRangeFill } from "./viewer/tooltips.js";
+import { createWheelController, WHEEL_SEEK_S } from "./viewer/wheel.js";
 
 // sView - minimal frameless image viewer
 // withGlobalTauri: true のため window.__TAURI__ からAPIを利用（バンドラ不要）
@@ -238,9 +234,10 @@ function layoutBook() {
     bookEl.style.height = "0px";
     return;
   }
-  const s = mode === "zoom"
-    ? 1
-    : Math.min(stage.clientWidth / size.width, stage.clientHeight / size.height);
+  const s =
+    mode === "zoom"
+      ? 1
+      : Math.min(stage.clientWidth / size.width, stage.clientHeight / size.height);
   bookEl.style.width = `${size.width * s}px`;
   bookEl.style.height = `${size.height * s}px`;
 }
@@ -258,7 +255,9 @@ function zoomEl() {
 
 function zoomNaturalSize() {
   if (showingBook) return bookSize();
-  return img.src && img.naturalWidth ? { width: img.naturalWidth, height: img.naturalHeight } : null;
+  return img.src && img.naturalWidth
+    ? { width: img.naturalWidth, height: img.naturalHeight }
+    : null;
 }
 
 // 動画・音楽は拡大縮小しない（常にウィンドウに合わせて表示する）
@@ -351,9 +350,10 @@ function updateChrome() {
   filenameEl.title = shown
     .map((entry) => (archivePath ? `${archivePath} :: ${entry}` : entry))
     .join("\n");
-  counterEl.textContent = shown.length > 1
-    ? `${index + 1}-${index + shown.length} / ${images.length}`
-    : `${index + 1} / ${images.length}`;
+  counterEl.textContent =
+    shown.length > 1
+      ? `${index + 1}-${index + shown.length} / ${images.length}`
+      : `${index + 1} / ${images.length}`;
   // 前後のファイルへのボタン（端では押せない）。
   // 画像は画像の操作カード、動画・音楽は再生操作カードのボタンを使う
   ibPrev.disabled = index === 0;
@@ -850,7 +850,15 @@ for (const input of [vbSeek, vbVolume]) {
   input.addEventListener("input", () => syncRangeFill(input));
 }
 
-for (const type of ["play", "pause", "ended", "timeupdate", "durationchange", "volumechange", "emptied"]) {
+for (const type of [
+  "play",
+  "pause",
+  "ended",
+  "timeupdate",
+  "durationchange",
+  "volumechange",
+  "emptied",
+]) {
   video.addEventListener(type, syncVideoBar);
 }
 
@@ -901,7 +909,7 @@ let artworkUrl = null;
 
 function setArtwork(url) {
   if (artworkUrl) URL.revokeObjectURL(artworkUrl);
-  artworkUrl = url && url.startsWith("blob:") ? url : null;
+  artworkUrl = url?.startsWith("blob:") ? url : null;
   if (url) artwork.src = url;
   else artwork.removeAttribute("src");
 }
@@ -920,7 +928,9 @@ async function loadAudioInfo(path, token) {
   audioSub.textContent = "";
   const [info, bytes] = await Promise.all([
     invoke("audio_info", { path }).catch(() => null),
-    invoke("audio_artwork", { path }).then(toBytes).catch(() => null),
+    invoke("audio_artwork", { path })
+      .then(toBytes)
+      .catch(() => null),
   ]);
   if (token !== showToken) return; // 既に別のファイルへ移動している
   audioTitle.textContent = info?.title || baseName(path);
@@ -1063,7 +1073,7 @@ function syncImageSeek() {
 // （AB / CD … か、1 ページずらした BC / DE … か）を崩さないよう、同じ偶奇の位置にそろえる
 function imageSeekTarget(i) {
   if (!showingBook) return i;
-  const next = i - (((i - index) % 2) + 2) % 2;
+  const next = i - ((((i - index) % 2) + 2) % 2);
   return Math.max(next, 0);
 }
 
@@ -1378,7 +1388,8 @@ const { askDeleteConfirm, closeConfirm } = createDeleteConfirm({
 
 async function deleteCurrent() {
   if (!canDelete()) {
-    if (showingBook) showToast("本モードでは削除できません（B で 1 ページ表示に戻せます）", "notice");
+    if (showingBook)
+      showToast("本モードでは削除できません（B で 1 ページ表示に戻せます）", "notice");
     else if (archivePath) showToast("圧縮フォルダの中の画像は削除できません", "notice");
     return;
   }
@@ -1435,7 +1446,10 @@ async function openDialog() {
         {
           name: "画像・動画・音楽・圧縮フォルダ",
           extensions: [
-            ...IMAGE_EXT_FILTER, ...VIDEO_EXT_FILTER, ...AUDIO_EXT_FILTER, ...ARCHIVE_EXT_FILTER,
+            ...IMAGE_EXT_FILTER,
+            ...VIDEO_EXT_FILTER,
+            ...AUDIO_EXT_FILTER,
+            ...ARCHIVE_EXT_FILTER,
           ],
         },
         { name: "画像", extensions: IMAGE_EXT_FILTER },
@@ -1461,7 +1475,8 @@ async function openFolderDialog() {
 
 function toggleFullscreen() {
   selfResizedAt = Date.now();
-  appWindow.isFullscreen()
+  appWindow
+    .isFullscreen()
     .then((fs) => appWindow.setFullscreen(!fs))
     .catch(() => {});
 }
@@ -1610,10 +1625,16 @@ window.addEventListener("keydown", (e) => {
       stepBook(e.key === "ArrowUp" ? -1 : 1);
       break;
     case "Home":
-      if (images.length) { index = 0; show(); }
+      if (images.length) {
+        index = 0;
+        show();
+      }
       break;
     case "End":
-      if (images.length) { index = showingBook ? lastSpreadIndex() : images.length - 1; show(); }
+      if (images.length) {
+        index = showingBook ? lastSpreadIndex() : images.length - 1;
+        show();
+      }
       break;
     case "b":
     case "B":
@@ -1736,9 +1757,17 @@ window.addEventListener(
       return;
     }
     if (showingMedia) {
-      wheelStep(delta, () => seekBy(WHEEL_SEEK_S), () => seekBy(-WHEEL_SEEK_S));
+      wheelStep(
+        delta,
+        () => seekBy(WHEEL_SEEK_S),
+        () => seekBy(-WHEEL_SEEK_S)
+      );
     } else {
-      wheelStep(delta, () => step(1), () => step(-1));
+      wheelStep(
+        delta,
+        () => step(1),
+        () => step(-1)
+      );
     }
   },
   { passive: false }
@@ -1771,7 +1800,8 @@ let videoPress = null;
 stage.addEventListener("mousedown", (e) => {
   videoPress = null;
   // ダブルクリックの 2 回目は数えない（2 回切り替わって元に戻らないように）
-  if (!showingMedia || e.button !== 0 || e.detail > 1 || pressClosedMenu || !confirmEl.hidden) return;
+  if (!showingMedia || e.button !== 0 || e.detail > 1 || pressClosedMenu || !confirmEl.hidden)
+    return;
   videoPress = { x: e.clientX, y: e.clientY, t: performance.now() };
 });
 window.addEventListener("mousemove", (e) => {
@@ -1780,7 +1810,8 @@ window.addEventListener("mousemove", (e) => {
     videoPress = null;
     return;
   }
-  if (Math.hypot(e.clientX - videoPress.x, e.clientY - videoPress.y) < VIDEO_DRAG_THRESHOLD_PX) return;
+  if (Math.hypot(e.clientX - videoPress.x, e.clientY - videoPress.y) < VIDEO_DRAG_THRESHOLD_PX)
+    return;
   videoPress = null;
   startWindowDrag();
 });
@@ -1821,7 +1852,10 @@ document.getElementById("btn-min").addEventListener("click", () => {
 });
 btnMax.addEventListener("click", () => {
   selfResizedAt = Date.now();
-  appWindow.toggleMaximize().then(syncMaximized).catch(() => {});
+  appWindow
+    .toggleMaximize()
+    .then(syncMaximized)
+    .catch(() => {});
 });
 document.getElementById("btn-close").addEventListener("click", () => appWindow.close());
 // サイズ変更が落ち着いたときの後始末。ドラッグ中は何度も届くので 1 回だけ行う。
@@ -1903,7 +1937,16 @@ function startWindowDrag() {
 
 // Tauri の判定（drag.js の isDragRegion）と同じ。押せる要素の上ではドラッグ領域にしない
 const CLICKABLE_TAGS = new Set(["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "LABEL", "SUMMARY"]);
-const INTERACTIVE_ROLES = new Set(["button", "link", "menuitem", "tab", "checkbox", "radio", "switch", "option"]);
+const INTERACTIVE_ROLES = new Set([
+  "button",
+  "link",
+  "menuitem",
+  "tab",
+  "checkbox",
+  "radio",
+  "switch",
+  "option",
+]);
 function isDragRegion(path) {
   for (const el of path) {
     if (!(el instanceof HTMLElement)) continue;
@@ -2125,7 +2168,8 @@ function audioMenuItem() {
     // 再生できない音声（macOS の MKV で非対応のコーデック）はグレーアウトしてコーデック名を添える
     const disabled = !!tracks[i].disabled;
     items.push({
-      label: audioTrackLabel(tracks[i], i) + (disabled ? `（${tracks[i].codec}・再生できません）` : ""),
+      label:
+        audioTrackLabel(tracks[i], i) + (disabled ? `（${tracks[i].codec}・再生できません）` : ""),
       radio: true,
       checked: selected === i,
       disabled,
@@ -2140,10 +2184,14 @@ const { openContextMenu, hideContextMenu } = createContextMenu({
   buildItems: buildContextMenu,
 });
 
-window.addEventListener("mousedown", (e) => {
-  pressClosedMenu = !ctxmenu.hidden && !ctxmenu.contains(e.target);
-  if (pressClosedMenu) hideContextMenu();
-}, true);
+window.addEventListener(
+  "mousedown",
+  (e) => {
+    pressClosedMenu = !ctxmenu.hidden && !ctxmenu.contains(e.target);
+    if (pressClosedMenu) hideContextMenu();
+  },
+  true
+);
 window.addEventListener("blur", hideContextMenu);
 window.addEventListener("resize", hideContextMenu);
 

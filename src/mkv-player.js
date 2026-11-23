@@ -73,8 +73,10 @@ export class MkvPlayer {
   }
 
   audioPlayable(track) {
-    return !!track.codecString &&
-      MediaSource.isTypeSupported(MkvPlayer.mime(this.info.videoCodec, track.codecString));
+    return (
+      !!track.codecString &&
+      MediaSource.isTypeSupported(MkvPlayer.mime(this.info.videoCodec, track.codecString))
+    );
   }
 
   async start() {
@@ -344,7 +346,8 @@ export class MkvPlayer {
 // invoke が返した生のバイト列（ArrayBuffer）を Uint8Array にする
 function mkvBytes(data) {
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  if (ArrayBuffer.isView(data))
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   if (Array.isArray(data)) return Uint8Array.from(data);
   throw new Error("動画のデータを読み込めませんでした");
 }
