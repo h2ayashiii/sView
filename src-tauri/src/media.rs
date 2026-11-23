@@ -1,21 +1,12 @@
 use std::cmp::Ordering;
 use std::path::Path;
 
-/// 対応する画像拡張子（小文字で比較）
-pub(crate) const IMAGE_EXTS: &[&str] = &[
-    "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg", "png", "svg", "tif", "tiff", "webp",
-];
-
-/// 対応する動画拡張子（小文字で比較）。
-/// デコードは OS の WebView に任せる（コーデックは同梱しない）ので、
-/// どの OS の WebView でもおおむね再生できるコンテナだけに絞っている。
-/// MKV は WebView2（Windows）ならそのまま再生できる。macOS の WKWebView は MKV を
-/// 再生できないので、MKV のリマックス（mkv_open など）で fragmented MP4 に詰め直して流す
-pub(crate) const VIDEO_EXTS: &[&str] = &["m4v", "mkv", "mov", "mp4", "webm"];
-
-/// 対応する音楽拡張子（小文字で比較）。
-/// 動画と同じく再生は OS の WebView に任せる（コーデックは同梱しない）
-pub(crate) const AUDIO_EXTS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav"];
+// 対応する画像・動画・音楽・書庫の拡張子一覧（小文字で比較）。
+// リポジトリルートの media-formats.json から build.rs が自動生成する。
+// 動画・音楽のデコードは OS の WebView に任せる（コーデックは同梱しない）。
+// MKV は WebView2（Windows）ならそのまま再生でき、macOS の WKWebView では
+// mkv_open などで fragmented MP4 に詰め直して流す
+include!(concat!(env!("OUT_DIR"), "/media_exts.rs"));
 
 /// 音楽ファイルと同じフォルダに置かれたジャケット画像とみなすファイル名（拡張子を除く・小文字）。
 /// 埋め込みのアートワークが無いときだけ使う
@@ -23,9 +14,6 @@ pub(crate) const COVER_STEMS: &[&str] = &["cover", "folder", "front", "album", "
 
 /// アートワークとして読む画像の上限（埋め込み・同じフォルダの画像とも）
 pub(crate) const MAX_ARTWORK_BYTES: u64 = 64 * 1024 * 1024;
-
-/// 対応する書庫（圧縮フォルダ）拡張子
-pub(crate) const ARCHIVE_EXTS: &[&str] = &["cbz", "zip"];
 
 /// フォルダ・書庫を開いたときに読む深さ。開いたフォルダ・書庫の直下を 1 層目とし、
 /// その下 2 層（= 3 層目）まで。ファイルが多すぎる場所を開いても一覧が膨らみすぎないようにする

@@ -277,6 +277,7 @@ export class MkvPlayer {
   }
 
   // SourceBuffer の操作をして、終わる（updateend）まで待つ
+  /** @returns {Promise<void>} */
   whenUpdated(action) {
     return new Promise((resolve, reject) => {
       const sb = this.sourceBuffer;
@@ -312,9 +313,10 @@ export class MkvPlayer {
   }
 
   // 何か起きる（再生が進む・シークする）か、しばらくたつまで待つ
+  /** @returns {Promise<void>} */
   idle() {
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, MKV_IDLE_MS);
+      const timer = setTimeout(() => resolve(), MKV_IDLE_MS);
       this.wakeUp = () => {
         clearTimeout(timer);
         resolve();

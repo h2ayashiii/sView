@@ -33,8 +33,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Check media-formats sync
+        run: npm run check:formats
+
       - name: Lint and format check (Biome)
         run: npm run lint
+
+      - name: Type check (tsc --noEmit)
+        run: npm run typecheck
 
       - name: Run frontend unit tests
         run: npm test

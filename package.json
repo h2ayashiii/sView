@@ -22,10 +22,14 @@
     "lint": "biome check",
     "format": "biome format --write",
     "format:check": "biome format",
+    "typecheck": "tsc --noEmit",
+    "sync:formats": "node scripts/sync-media-formats.mjs",
+    "check:formats": "node scripts/sync-media-formats.mjs --check",
     "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "typescript": "7.0.2"
   }
 }

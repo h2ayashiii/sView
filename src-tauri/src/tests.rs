@@ -995,8 +995,8 @@ fn supported_extensions_stay_in_sync() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("リポジトリのルートが取れません");
-    let media_types_js = fs::read_to_string(root.join("src/viewer/media-types.js"))
-        .expect("viewer/media-types.js を読めません");
+    let media_types_js = fs::read_to_string(root.join("src/viewer/media-formats.js"))
+        .expect("viewer/media-formats.js を読めません");
     let read_conf = |name: &str| -> serde_json::Value {
         serde_json::from_str(
             &fs::read_to_string(root.join("src-tauri").join(name))

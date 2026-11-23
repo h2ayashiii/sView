@@ -1,4 +1,5 @@
 import {
+  HIDDEN_DEFAULTS,
   normalizeSettings,
   SETTINGS_DEFAULTS,
   SETTINGS_SECTIONS,
@@ -10,6 +11,7 @@ import { applyTheme } from "./theme.js";
 // 保存 → 本体ウィンドウへ通知する（適用ボタンは置かない）。
 // Tauri API が取れなくても、閉じる操作だけは必ず効くようにここから先に用意する。
 const tauri = window.__TAURI__ ?? {};
+/** @type {import("./types.d.ts").TauriInvoke} */
 const invoke =
   tauri.core?.invoke ?? (() => Promise.reject(new Error("Tauri API を利用できません")));
 const emit = tauri.event?.emit ?? (() => Promise.resolve());
@@ -53,12 +55,13 @@ invoke("app_version")
 
 let settings = { ...SETTINGS_DEFAULTS };
 const controls = new Map(); // key -> 値を書き戻す関数
+let statusTimer = null;
 
-function setStatus(text, isError) {
+function setStatus(text, isError = false) {
   statusEl.textContent = text;
   statusEl.classList.toggle("error", !!isError);
-  clearTimeout(setStatus.timer);
-  if (!isError) setStatus.timer = setTimeout(() => (statusEl.textContent = ""), 1200);
+  clearTimeout(statusTimer);
+  if (!isError) statusTimer = setTimeout(() => (statusEl.textContent = ""), 1200);
 }
 
 // settings.json には changes の項目だけを書く（Windows ではファイルごとに別のプロセスで、
@@ -298,12 +301,16 @@ window.addEventListener("focus", () => reloadAssociations());
 
 // タブを切り替える。設定ウィンドウは閉じても隠すだけなので、次に開いたときも同じタブのまま
 function selectTab(id) {
-  for (const button of tabBar.children) {
+  for (const el of tabBar.children) {
+    const button = /** @type {HTMLElement} */ (el);
     const active = button.dataset.tab === id;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
   }
-  for (const panel of body.children) panel.hidden = panel.dataset.tab !== id;
+  for (const el of body.children) {
+    const panel = /** @type {HTMLElement} */ (el);
+    panel.hidden = panel.dataset.tab !== id;
+  }
   body.scrollTop = 0;
 }
 
