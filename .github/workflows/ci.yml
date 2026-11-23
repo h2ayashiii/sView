@@ -17,6 +17,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint and format check (Biome)
+        run: npm run lint
+
+      - name: Run frontend unit tests
+        run: npm test
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -29,6 +51,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           toolchain: stable
+          components: rustfmt, clippy
 
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -37,7 +60,10 @@ jobs:
           # PR ごとのキャッシュで容量枠（10 GB）が埋まり main の分が追い出されるのを防ぐ
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # cargo test でも tauri crate をリンクするため、GUI の開発パッケージが必要。
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      # cargo test / clippy でも tauri crate をリンクするため、GUI の開発パッケージが必要。
       # 無いと gdk-3.0.pc not found でコケる（コードの問題ではない）
       - name: Install Linux build dependencies
         run: |
@@ -51,6 +77,9 @@ jobs:
             librsvg2-dev \
             libxdo-dev \
             libssl-dev
+
+      - name: Run Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
       - name: Run Rust tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml

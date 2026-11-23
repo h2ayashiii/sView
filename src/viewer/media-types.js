@@ -1,8 +1,19 @@
 // 対応拡張子とファイルパス・時間・色の純粋ユーティリティ
 
 export const IMAGE_EXT_FILTER = [
-  "avif", "bmp", "gif", "ico", "jfif", "jpe", "jpeg", "jpg",
-  "png", "svg", "tif", "tiff", "webp",
+  "avif",
+  "bmp",
+  "gif",
+  "ico",
+  "jfif",
+  "jpe",
+  "jpeg",
+  "jpg",
+  "png",
+  "svg",
+  "tif",
+  "tiff",
+  "webp",
 ];
 
 // 動画は OS の WebView が再生できるものだけ（コーデックは同梱しない）。
@@ -17,9 +28,18 @@ export const ARCHIVE_EXT_FILTER = ["zip", "cbz"];
 
 // blob URL に必要な MIME（拡張子から判定）
 export const MIME = {
-  avif: "image/avif", bmp: "image/bmp", gif: "image/gif", ico: "image/x-icon",
-  jfif: "image/jpeg", jpe: "image/jpeg", jpeg: "image/jpeg", jpg: "image/jpeg",
-  png: "image/png", svg: "image/svg+xml", tif: "image/tiff", tiff: "image/tiff",
+  avif: "image/avif",
+  bmp: "image/bmp",
+  gif: "image/gif",
+  ico: "image/x-icon",
+  jfif: "image/jpeg",
+  jpe: "image/jpeg",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  png: "image/png",
+  svg: "image/svg+xml",
+  tif: "image/tiff",
+  tiff: "image/tiff",
   webp: "image/webp",
 };
 

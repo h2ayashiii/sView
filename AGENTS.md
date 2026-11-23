@@ -21,7 +21,12 @@ sView is a minimal, frameless media viewer (images, videos, audio, zip/cbz archi
 npm install
 npm run dev          # tauri dev
 npm run build        # tauri build
+npm run lint         # Biome lint + format check (src/, scripts/, tests/)
+npm run format       # Biome format --write
+npm test             # Node.js built-in unit tests (tests/*.test.mjs)
 
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_numerically  # single test
 ```
@@ -30,7 +35,8 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev` and pkg-config; a `gdk-3.0.pc` not
   found error is a missing dependency, not a code error.
 - `dev` / `build` need a display and a WebView runtime, so they do not work in a headless
-  container. There are no frontend tests; verify JS changes by reading.
+  container. Pure frontend modules have unit tests in `tests/*.test.mjs` (`npm test`); verify DOM /
+  WebView-specific JS changes by reading.
 - After changing dependencies, run `node scripts/gen-third-party-notices.mjs`
   (`THIRD-PARTY-NOTICES` ships inside the bundle).
 - Releasing is `git tag vX.Y.Z && git push origin vX.Y.Z`; CI takes the version from the tag, so
@@ -41,9 +47,11 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
 
 - **Comments, doc comments (`///`) and user-facing strings are Japanese.** Identifiers and file
   names are English.
-- Rust: default `cargo fmt`. Commands return `Result<T, String>` with Japanese error messages;
-  state is a newtype-wrapped `Mutex` (`StartupFile`, `ArchiveCache`).
-- JS/HTML/CSS: 2-space indent, semicolons, `const` / `let`. No linter or formatter config exists.
+- Rust: default `cargo fmt` and `cargo clippy --all-targets -- -D warnings`. Commands return
+  `Result<T, String>` with Japanese error messages; state is a newtype-wrapped `Mutex`
+  (`StartupFile`, `ArchiveCache`).
+- JS/HTML/CSS: 2-space indent, semicolons, `const` / `let`. Checked and formatted with **Biome**
+  (`biome.json`, `npm run lint`).
 - Commits: Japanese, often `Area: 説明` (e.g. `CI: 手動実行でビルドする OS を選べるようにする`).
   Not Conventional Commits. Work lands on `main` via PRs from `feat-…` / `bugfix-…` branches.
 - "削除" always means the OS trash (`trash` crate), never `fs::remove_file`.

@@ -33,7 +33,7 @@ export function createContextMenu({ ctxmenu, buildItems }) {
     const accel = document.createElement("span");
     accel.className = "ctx-accel";
     // サブメニューを持つ項目は右端に「›」を出す
-    accel.textContent = item.submenu ? "\u203a" : item.accel ?? "";
+    accel.textContent = item.submenu ? "\u203a" : (item.accel ?? "");
     if (item.submenu) btn.setAttribute("aria-haspopup", "menu");
     btn.append(label, accel);
     if (!item.submenu) {

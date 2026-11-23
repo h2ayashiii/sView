@@ -1,8 +1,8 @@
 import {
-  SETTINGS_TABS,
-  SETTINGS_SECTIONS,
-  SETTINGS_DEFAULTS,
   normalizeSettings,
+  SETTINGS_DEFAULTS,
+  SETTINGS_SECTIONS,
+  SETTINGS_TABS,
 } from "./settings-defs.js";
 import { applyTheme } from "./theme.js";
 
@@ -230,7 +230,9 @@ function buildAssociationRow(item) {
   const boxes = [];
   // 最後に読んだ OS の状態（他の種類の拡張子も含む）
   let status = null;
-  const setAll = (checked) => boxes.forEach((b) => (b.checked = checked));
+  const setAll = (checked) => {
+    for (const b of boxes) b.checked = checked;
+  };
   selectAll.addEventListener("click", () => setAll(true));
   selectNone.addEventListener("click", () => setAll(false));
 

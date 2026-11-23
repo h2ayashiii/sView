@@ -1,6 +1,7 @@
 {
   "name": "sview",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "description": "Minimal frameless cross-platform viewer for images, videos and audio, built with Tauri",
   "license": "SEE LICENSE IN LICENSE",
@@ -17,9 +18,14 @@
     "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
-    "build:debug": "tauri build --debug"
+    "build:debug": "tauri build --debug",
+    "lint": "biome check",
+    "format": "biome format --write",
+    "format:check": "biome format",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.8",
     "@tauri-apps/cli": "^2"
   }
 }

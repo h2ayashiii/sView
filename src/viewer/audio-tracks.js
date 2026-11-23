@@ -6,9 +6,8 @@
 
 // 音声・字幕のトラックの表示名（番号 + 名前・言語のうちあるもの。どちらも無ければ「音声 n」など）
 export function trackLabel(label, language, i, kind) {
-  const name = label && language && !label.includes(language)
-    ? `${label} (${language})`
-    : label || language;
+  const name =
+    label && language && !label.includes(language) ? `${label} (${language})` : label || language;
   return name ? `${i + 1}: ${name}` : `${kind} ${i + 1}`;
 }
 

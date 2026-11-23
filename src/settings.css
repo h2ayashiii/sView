@@ -391,7 +391,9 @@ input[type="color"]::-webkit-color-swatch {
   height: 14px;
   border-radius: 50%;
   background: var(--thumb);
-  transition: transform 0.15s ease, background 0.15s ease;
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
 }
 
 .switch input:checked + .track {
