@@ -736,10 +736,9 @@ pub(crate) fn remux_video_track(
         video.display_unit(),
     ) {
         (Some(w), Some(h), None | Some(DisplayUnit::Pixels)) => (clamp(w.get()), clamp(h.get())),
-        (Some(w), Some(h), Some(DisplayUnit::DisplayAspectRatio)) => (
-            clamp((height as u64 * w.get() + h.get() / 2) / h.get()),
-            height,
-        ),
+        (Some(w), Some(h), Some(DisplayUnit::DisplayAspectRatio)) => {
+            (clamp((height as u64 * w.get() + h.get() / 2) / h), height)
+        }
         _ => (width, height),
     };
     Ok(RemuxVideo {

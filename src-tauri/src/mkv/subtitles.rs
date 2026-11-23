@@ -129,7 +129,7 @@ pub(crate) fn clean_ass_text(text: &str) -> String {
                 .take_while(|c| c.is_ascii_digit())
                 .collect();
             if !digits.is_empty() {
-                drawing = digits.trim_start_matches('0') != "";
+                drawing = !digits.trim_start_matches('0').is_empty();
             }
         }
         rest = &rest[open + close + 1..];

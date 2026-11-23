@@ -19,15 +19,6 @@ pub(crate) fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(CONFIG_DIR_NAME))
 }
 
-/// WebView がキャッシュや localStorage を置くフォルダ。
-///
-/// Windows: 指定しないと WebView2 は実行ファイルの隣（`C:\Program Files\sView`）に
-/// `sview.exe.WebView2` を作ろうとして、書き込めずに起動そのものが失敗する。
-/// 明示的に `%LOCALAPPDATA%\sview` を渡す。フォルダ名を bundle ID ではなく
-/// `sview` にしているのは CONFIG_DIR_NAME と同じ理由。
-///
-/// macOS: WKWebView にはデータフォルダを指定する仕組みが無く、置き場所
-
 /// 設定ファイルから文字列項目を 1 つ読む（Rust 側から設定を参照する用）
 pub(crate) fn settings_value(app: &AppHandle, key: &str) -> Option<String> {
     let path = settings_file(app).ok()?;
@@ -44,13 +35,6 @@ pub(crate) fn fits_window_to_image(app: &AppHandle) -> bool {
         Some("image") | Some("flexible")
     )
 }
-
-/// 起動時に、開くファイルの種類 kind（関連付け・コマンドラインから開いたとき）に合わせて
-/// ウィンドウを置く（ウィンドウを見せる前に呼ぶ）。
-/// 「自由に変更」では種類によらず 1 つの枠（最上位）、「メディアに合わせる」では kind の枠の
-/// 大きさ・位置で開く。ファイルを指定せずに起動したとき（kind が None）は何もしない
-/// （tauri.conf.json の既定の大きさのまま、画面の中央に出る）。
-/// 「画像に合わせる」では最初の画像で縦横比を合わせ直すので、そのときも
 
 /// 設定ファイルの置き場所（OS の設定フォルダ / sview / settings.json）
 pub(crate) fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {

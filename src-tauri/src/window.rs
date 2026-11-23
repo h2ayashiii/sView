@@ -549,9 +549,7 @@ pub(crate) fn place_window(
         }
     }
     // 中央に置いたときは、最初の縦横比合わせも中心を保てばよいので覚えない
-    if restored.is_none() {
-        return None;
-    }
+    restored?;
     Some(RestoredPosition {
         saved: saved?,
         placed: (x, y),
@@ -1043,6 +1041,7 @@ pub(crate) fn keep_aspect_on_resize(window: &tauri::Window, size: PhysicalSize<u
 /// 起動直後・種類の姿へ置き直した直後の 1 枚だけは、置いた左上に合わせる。
 /// 最大化中・全画面中は大きさを変えない（変えると解けてしまう）
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fit_window_to_image(
     window: WebviewWindow,
     pending: State<PendingPosition>,
