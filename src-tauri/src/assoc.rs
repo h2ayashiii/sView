@@ -2,7 +2,7 @@ use std::path::Path;
 
 use tauri::AppHandle;
 
-use crate::media::{media_kind, MediaKind, AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS};
+use crate::media::{AUDIO_EXTS, IMAGE_EXTS, MediaKind, VIDEO_EXTS, media_kind};
 #[cfg(target_os = "macos")]
 use crate::platform::macos::mac_assoc;
 #[cfg(target_os = "windows")]

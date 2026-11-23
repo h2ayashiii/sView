@@ -1,25 +1,25 @@
 pub(crate) mod win_assoc {
     use std::path::{Path, PathBuf};
-    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
     use winreg::RegKey;
+    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
 
     /// 「既定のアプリ」画面や RegisteredApplications に出る名前
     pub const APP_NAME: &str = "sView";
     const CAPABILITIES_KEY: &str = r"Software\sView\Capabilities";
     /// 種類ごとの ProgID と、エクスプローラーに出る種類の名前
-    const PROG_IDS: &[(super::MediaKind, &str, &str)] = &[
+    const PROG_IDS: &[(crate::media::MediaKind, &str, &str)] = &[
         (
-            super::MediaKind::Image,
+            crate::media::MediaKind::Image,
             "sView.Image",
             "画像ファイル (sView)",
         ),
         (
-            super::MediaKind::Video,
+            crate::media::MediaKind::Video,
             "sView.Video",
             "動画ファイル (sView)",
         ),
         (
-            super::MediaKind::Audio,
+            crate::media::MediaKind::Audio,
             "sView.Audio",
             "音楽ファイル (sView)",
         ),
@@ -27,7 +27,7 @@ pub(crate) mod win_assoc {
 
     /// 拡張子に対応する sView の ProgID
     fn prog_id_for(ext: &str) -> &'static str {
-        let kind = super::media_kind(Path::new(&format!("x.{ext}")));
+        let kind = crate::media::media_kind(Path::new(&format!("x.{ext}")));
         PROG_IDS
             .iter()
             .find(|(k, _, _)| Some(*k) == kind)
@@ -36,7 +36,7 @@ pub(crate) mod win_assoc {
     }
 
     #[link(name = "shell32")]
-    extern "system" {
+    unsafe extern "system" {
         fn SHChangeNotify(
             event_id: i32,
             flags: u32,
@@ -184,7 +184,7 @@ pub(crate) mod win_assoc {
 /// 書いておくので、続いて届く Resized は keep_aspect_on_resize が跳ね返りとして見送る
 pub(crate) mod win_sizing {
     use crate::state::AspectLock;
-    use crate::window::{sized_to_aspect, sizing_area, NO_LIMIT};
+    use crate::window::{NO_LIMIT, sized_to_aspect, sizing_area};
     use tauri::{AppHandle, LogicalSize, Manager, PhysicalSize, WebviewWindow};
 
     type Hwnd = isize;
@@ -199,13 +199,13 @@ pub(crate) mod win_sizing {
     }
 
     #[link(name = "comctl32")]
-    extern "system" {
+    unsafe extern "system" {
         fn SetWindowSubclass(hwnd: Hwnd, proc: SubclassProc, id: usize, data: usize) -> i32;
         fn DefSubclassProc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize;
     }
 
     #[link(name = "user32")]
-    extern "system" {
+    unsafe extern "system" {
         fn GetWindowRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
         fn GetClientRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
         fn GetDpiForWindow(hwnd: Hwnd) -> u32;
@@ -251,12 +251,13 @@ pub(crate) mod win_sizing {
         data: usize,
     ) -> isize {
         if msg == WM_SIZING && lparam != 0 && data != 0 {
-            let target = &*(data as *const Target);
-            if constrain(target, hwnd, wparam, &mut *(lparam as *mut Rect)) {
+            let target = unsafe { &*(data as *const Target) };
+            let rect = unsafe { &mut *(lparam as *mut Rect) };
+            if constrain(target, hwnd, wparam, rect) {
                 return 1;
             }
         }
-        DefSubclassProc(hwnd, msg, wparam, lparam)
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
     /// 引っ張られている辺・角 edge に合わせて、これからなる四角形 rect（外枠・物理ピクセル）を

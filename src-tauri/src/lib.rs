@@ -15,8 +15,8 @@ mod window;
 mod tests;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow, WebviewWindowBuilder};
 
@@ -28,16 +28,16 @@ use crate::mkv::MkvStreams;
 use crate::platform::macos::{mac_pointer, mac_sizing};
 #[cfg(target_os = "windows")]
 use crate::platform::windows::win_sizing;
-use crate::settings::fits_window_to_image;
 #[cfg(target_os = "windows")]
 use crate::settings::CONFIG_DIR_NAME;
+use crate::settings::fits_window_to_image;
 use crate::state::{
     AspectLock, FolderWatcher, PendingPosition, PerWindow, StartupFile, StartupListing, WindowKind,
     WindowSlot,
 };
 use crate::window::{
-    current_geometry, default_geometry, keep_aspect_on_resize, kind_target, place_kind_geometry,
-    read_window_state, restore_window_state, save_window_state, KindTarget,
+    KindTarget, current_geometry, default_geometry, keep_aspect_on_resize, kind_target,
+    place_kind_geometry, read_window_state, restore_window_state, save_window_state,
 };
 
 /// 起動引数（関連付け起動など）やこのウィンドウに割り当てたファイルを一度だけ返す
@@ -71,8 +71,7 @@ pub(crate) fn webview_data_dir(_app: &AppHandle) -> Option<PathBuf> {
 /// 同じデータフォルダを使う WebView2 は起動引数がそろっていないと作れないので、
 /// すべてのウィンドウに同じものを渡す（webview_options）
 #[cfg(target_os = "windows")]
-pub(crate) const WEBVIEW2_BROWSER_ARGS: &str =
-    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+pub(crate) const WEBVIEW2_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
      --enable-blink-features=AudioVideoTracks";
 
 /// すべてのウィンドウに共通の WebView の指定（データフォルダと、Windows では起動引数）

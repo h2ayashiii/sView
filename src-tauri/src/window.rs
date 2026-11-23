@@ -14,7 +14,7 @@ use crate::settings::{config_dir, fits_window_to_image, temp_path};
 use crate::state::{
     AspectLock, AspectState, PendingPosition, RestoredPosition, WindowKind, WindowSlot,
 };
-use crate::{is_viewer, CASCADE_OFFSET, MAIN_LABEL};
+use crate::{CASCADE_OFFSET, MAIN_LABEL, is_viewer};
 
 /// 最小ウィンドウサイズ（tauri.conf.json の minWidth / minHeight と合わせる）
 pub(crate) const MIN_WINDOW_SIZE: (f64, f64) = (200.0, 150.0);
@@ -297,11 +297,7 @@ pub(crate) const PHYSICAL_DESKTOP: bool = cfg!(target_os = "windows");
 
 /// 論理ピクセルを画面上の位置の座標へ直す倍率（scale はその場所のディスプレイの倍率）
 pub(crate) fn desktop_ratio(scale: f64, physical: bool) -> f64 {
-    if physical {
-        scale
-    } else {
-        1.0
-    }
+    if physical { scale } else { 1.0 }
 }
 
 /// 保存した左上を画面上の位置の座標で返す。
@@ -541,12 +537,12 @@ pub(crate) fn place_window(
     // 設定によっては OS が描き直しても論理ピクセルの大きさが保たれない）。
     // 大きさを変えても左上は動かない。macOS は大きさを変えると左下が残って
     // 左上がずれるので、位置より後には付けない（倍率が違っても論理ピクセルのまま描かれる）
-    if PHYSICAL_DESKTOP && resized {
-        if let Ok(now) = window.scale_factor() {
-            if (now - scale).abs() > f64::EPSILON {
-                let _ = window.set_size(inner);
-            }
-        }
+    if PHYSICAL_DESKTOP
+        && resized
+        && let Ok(now) = window.scale_factor()
+        && (now - scale).abs() > f64::EPSILON
+    {
+        let _ = window.set_size(inner);
     }
     // 中央に置いたときは、最初の縦横比合わせも中心を保てばよいので覚えない
     restored?;
@@ -934,7 +930,7 @@ pub(crate) fn mouse_button_down() -> bool {
     #[cfg(target_os = "windows")]
     {
         #[link(name = "user32")]
-        extern "system" {
+        unsafe extern "system" {
             fn GetAsyncKeyState(key: i32) -> i16;
         }
         // VK_LBUTTON / VK_RBUTTON / VK_MBUTTON。左右を入れ替えた設定でも物理ボタンで見るので両方調べる

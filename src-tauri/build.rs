@@ -31,10 +31,10 @@ fn extract_exts(json: &str, key: &str, open: char, close: char) -> Vec<String> {
         // オブジェクト: "avif": "image/avif", ...（キーだけを取り出す）
         for line in body.lines() {
             let trimmed = line.trim();
-            if let Some(after_quote) = trimmed.strip_prefix('"') {
-                if let Some(end) = after_quote.find('"') {
-                    exts.push(after_quote[..end].to_string());
-                }
+            if let Some(after_quote) = trimmed.strip_prefix('"')
+                && let Some(end) = after_quote.find('"')
+            {
+                exts.push(after_quote[..end].to_string());
             }
         }
     }

@@ -3,11 +3,11 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tauri::ipc::Response;
 use tauri::State;
+use tauri::ipc::Response;
 use zip::ZipArchive;
 
-use crate::media::{is_image, natural_cmp, ImageList, MediaKind, MAX_DEPTH, MAX_ENTRY_BYTES};
+use crate::media::{ImageList, MAX_DEPTH, MAX_ENTRY_BYTES, MediaKind, is_image, natural_cmp};
 
 /// 直近に開いた書庫のハンドルを 1 つだけ保持する。
 /// ZipArchive は生成時に末尾のセントラルディレクトリだけを読むため、

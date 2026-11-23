@@ -261,11 +261,11 @@ pub(crate) fn scan_subtitle_blocks_inner<R: BufRead + Seek>(
     let mut group_end: Option<u64> = None;
     let mut pending: Option<RawSubtitle> = None;
     loop {
-        if let Some(end) = group_end {
-            if r.stream_position()? >= end {
-                group_end = None;
-                out.extend(pending.take());
-            }
+        if let Some(end) = group_end
+            && r.stream_position()? >= end
+        {
+            group_end = None;
+            out.extend(pending.take());
         }
         let (Some(id), _) = (match read_ebml_vint(r, true) {
             Ok(v) => v,

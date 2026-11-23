@@ -1,5 +1,5 @@
 use super::remux::{
-    RemuxAudio, RemuxAudioCodec, RemuxVideo, RemuxVideoCodec, REMUX_VIDEO_TIMESCALE,
+    REMUX_VIDEO_TIMESCALE, RemuxAudio, RemuxAudioCodec, RemuxVideo, RemuxVideoCodec,
 };
 
 // ---- fragmented MP4 の書き出し ----
@@ -105,11 +105,7 @@ pub(crate) fn video_sample_entry(video: &RemuxVideo) -> Vec<u8> {
 }
 
 pub(crate) fn gcd(a: u64, b: u64) -> u64 {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
-    }
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 pub(crate) fn audio_sample_entry(audio: &RemuxAudio) -> Vec<u8> {
@@ -271,11 +267,7 @@ pub(crate) fn mp4_trex(track_id: u32) -> Vec<u8> {
 /// サンプルの flags（ISO/IEC 14496-12 8.8.3.1）。キーフレームは他に依存しない、
 /// それ以外は依存する・同期サンプルではない
 pub(crate) fn sample_flags(keyframe: bool) -> u32 {
-    if keyframe {
-        0x0200_0000
-    } else {
-        0x0101_0000
-    }
+    if keyframe { 0x0200_0000 } else { 0x0101_0000 }
 }
 
 pub(crate) fn mp4_traf(run: &TrackRun, data_offset: u32) -> Vec<u8> {

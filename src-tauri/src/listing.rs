@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
-use crate::archive::{list_archive_images, ArchiveCache};
+use crate::archive::{ArchiveCache, list_archive_images};
 use crate::media::{
-    is_archive, is_media, media_kind, natural_cmp, ImageList, MediaKind, WindowKindKey, MAX_DEPTH,
+    ImageList, MAX_DEPTH, MediaKind, WindowKindKey, is_archive, is_media, media_kind, natural_cmp,
 };
 use crate::state::StartupListing;
 
@@ -27,10 +27,11 @@ pub(crate) fn collect_media(
             if is_media(&path) {
                 out.push(path);
             }
-        } else if depth > 1 && file_type.is_dir() {
-            if let Err(e) = collect_media(&path, depth - 1, out) {
-                log::warn!("フォルダを読めません ({}): {e}", path.display());
-            }
+        } else if depth > 1
+            && file_type.is_dir()
+            && let Err(e) = collect_media(&path, depth - 1, out)
+        {
+            log::warn!("フォルダを読めません ({}): {e}", path.display());
         }
     }
     Ok(())
