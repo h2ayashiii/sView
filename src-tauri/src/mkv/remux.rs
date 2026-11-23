@@ -430,10 +430,10 @@ pub(crate) fn read_cues<R: Read + Seek>(
                             _ => r.seek_relative(size as i64)?,
                         }
                     }
-                    if let (Some(track), Some(cluster)) = (track, cluster) {
-                        if track == video_track {
-                            clusters.push(segment_start + cluster);
-                        }
+                    if let (Some(track), Some(cluster)) = (track, cluster)
+                        && track == video_track
+                    {
+                        clusters.push(segment_start + cluster);
                     }
                 }
                 _ => r.seek_relative(size as i64)?,

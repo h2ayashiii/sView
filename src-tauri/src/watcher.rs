@@ -88,10 +88,10 @@ pub(crate) fn watch_folder(
     // macOS の FSEvents は実体のパス（/private/var/... など）で知らせてくることがあるので、
     // 渡されたパスと実体のパスの両方を基準にして深さを数える
     let mut roots = vec![dir.clone()];
-    if let Ok(real) = dir.canonicalize() {
-        if real != dir {
-            roots.push(real);
-        }
+    if let Ok(real) = dir.canonicalize()
+        && real != dir
+    {
+        roots.push(real);
     }
     let handle = window.app_handle().clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {

@@ -537,12 +537,12 @@ pub(crate) fn place_window(
     // 設定によっては OS が描き直しても論理ピクセルの大きさが保たれない）。
     // 大きさを変えても左上は動かない。macOS は大きさを変えると左下が残って
     // 左上がずれるので、位置より後には付けない（倍率が違っても論理ピクセルのまま描かれる）
-    if PHYSICAL_DESKTOP && resized {
-        if let Ok(now) = window.scale_factor() {
-            if (now - scale).abs() > f64::EPSILON {
-                let _ = window.set_size(inner);
-            }
-        }
+    if PHYSICAL_DESKTOP
+        && resized
+        && let Ok(now) = window.scale_factor()
+        && (now - scale).abs() > f64::EPSILON
+    {
+        let _ = window.set_size(inner);
     }
     // 中央に置いたときは、最初の縦横比合わせも中心を保てばよいので覚えない
     restored?;
