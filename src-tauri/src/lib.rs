@@ -65,13 +65,16 @@ pub(crate) fn webview_data_dir(_app: &AppHandle) -> Option<PathBuf> {
 }
 
 /// WebView2 の起動引数（Windows のみ）。
-/// 前半は wry が既定で渡している指定（引数を自分で渡すと既定のものは渡されなくなるので書き写す）。
+/// 前半 2 つは wry が既定で渡している指定（引数を自分で渡すと既定のものは渡されなくなるので書き写す）。
+/// `--autoplay-policy=no-user-gesture-required` が欠けると、エクスプローラーから動画を開いた直後など
+/// WebView 内の操作前で音声付き自動再生がブロックされる。
 /// `AudioVideoTracks` は実験的機能の `HTMLMediaElement.audioTracks` を有効にし、
-/// MKV などに入っている複数の音声（副音声）を再生操作カードから切り替えられるようにする。
+/// MKV などに入っている複数の音声（副音声）を右クリックメニューから切り替えられるようにする。
 /// 同じデータフォルダを使う WebView2 は起動引数がそろっていないと作れないので、
 /// すべてのウィンドウに同じものを渡す（webview_options）
 #[cfg(target_os = "windows")]
 pub(crate) const WEBVIEW2_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+     --autoplay-policy=no-user-gesture-required \
      --enable-blink-features=AudioVideoTracks";
 
 /// すべてのウィンドウに共通の WebView の指定（データフォルダと、Windows では起動引数）

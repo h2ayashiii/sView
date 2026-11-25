@@ -96,10 +96,10 @@ globs: "src/main.js, src/mkv-player.js, src/viewer/*.js, src/index.html, src/sty
   `normalizeSettings`) — `"next"` advances on `ended` to the next entry of the same kind
   (`nextMediaIndex`; never wraps — paging stops at both ends, there is no wrap-around setting) and forces playback via `continuePlayback`. Audio is played at `AUDIO_VOLUME_GAIN` (0.5) of the
   slider value (`getVolume` / `setVolume` wrap `video.volume`; never read or write it directly for
-  the user-facing volume). The volume is stored per kind (`videoVolume` / `audioVolume`, picked by
-  `volumeKey()`); both are `HIDDEN_DEFAULTS` in `settings-defs.js` — stored in `settings.json` but not
-  shown in the settings window, and kept by "Reset to defaults". Mute is never saved: every launch
-  starts unmuted. `#audio-art` has fixed-px padding (left / right / top) that `mediaSize()`
+  the user-facing volume). The volume and mute state are stored per kind (`videoVolume` / `audioVolume`,
+  `videoMuted` / `audioMuted`, picked by `volumeKey()` / `muteKey()`); all are `HIDDEN_DEFAULTS` in
+  `settings-defs.js` — stored in `settings.json` but not shown in the settings window, and kept by
+  "Reset to defaults". `playVideo()` never mutes or lowers volume on its own. `#audio-art` has fixed-px padding (left / right / top) that `mediaSize()`
   reads via `getComputedStyle`. `layoutArtwork()` sizes `#artwork` to the drawn picture (instead
   of `object-fit` on a full box) so its `border-radius` (`--window-radius`, same as `#app`)
   rounds the picture itself.
