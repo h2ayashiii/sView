@@ -39,7 +39,6 @@ describe("settings-defs", () => {
     const result = normalizeSettings({
       showNavButtons: true,
       roundedCorners: false,
-      videoMuted: true,
       wrapAround: true,
       sideButtons: false,
       windowPerKind: true,
@@ -47,7 +46,6 @@ describe("settings-defs", () => {
     for (const key of [
       "showNavButtons",
       "roundedCorners",
-      "videoMuted",
       "wrapAround",
       "sideButtons",
       "windowPerKind",
@@ -66,6 +64,11 @@ describe("settings-defs", () => {
   it("古い videoVolume は audioVolume が無いときだけ引き継がれる", () => {
     assert.equal(normalizeSettings({ videoVolume: 0.4 }).audioVolume, 0.4);
     assert.equal(normalizeSettings({ videoVolume: 0.4, audioVolume: 0.8 }).audioVolume, 0.8);
+  });
+
+  it("古い videoMuted は audioMuted が無いときだけ引き継がれる", () => {
+    assert.equal(normalizeSettings({ videoMuted: true }).audioMuted, true);
+    assert.equal(normalizeSettings({ videoMuted: true, audioMuted: false }).audioMuted, false);
   });
 
   it("古い windowSizeMode の値（fixed / flexible）を読み替える", () => {

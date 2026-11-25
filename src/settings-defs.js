@@ -271,10 +271,13 @@ export const SETTINGS_SECTIONS = [
 // 設定ウィンドウには出さず、本体だけが読み書きする値。
 // videoVolume / audioVolume: 再生中の音量（0〜100%）。動画と音楽で別々に持ち、
 // 再生操作のつまみ・↑ ↓ キー・右ボタンを押したまま / Ctrl + ホイールで変える。
+// videoMuted / audioMuted: 消音状態。動画と音楽で別々に持ち、M キーや消音ボタンで変える。
 // bookBinding: 本モードの綴じ方（"left": 左開き / "right": 右開き）。右クリックメニューで変える
 export const HIDDEN_DEFAULTS = {
   videoVolume: 100,
   audioVolume: 100,
+  videoMuted: false,
+  audioMuted: false,
   bookBinding: "left",
 };
 
@@ -295,7 +298,6 @@ export const SETTINGS_DEFAULTS = /** @type {import("./types.d.ts").Settings} */ 
 const OBSOLETE_KEYS = [
   "showNavButtons",
   "roundedCorners",
-  "videoMuted",
   "videoLoop",
   "wrapAround",
   "sideButtons",
@@ -323,6 +325,8 @@ export function normalizeSettings(raw) {
   }
   // 音量は動画と音楽で共通（videoVolume）だった。音楽の音量がまだ無ければ引き継ぐ
   if (!("audioVolume" in saved) && "videoVolume" in saved) settings.audioVolume = saved.videoVolume;
+  // 消音も以前の版では動画と音楽で共通（videoMuted）だった。音楽の消音がまだ無ければ引き継ぐ
+  if (!("audioMuted" in saved) && "videoMuted" in saved) settings.audioMuted = saved.videoMuted;
   for (const [key, table] of Object.entries(LEGACY_VALUES)) {
     const value = settings[key];
     // 継承したプロパティ（"constructor" など）を拾わないよう自前の値だけ見る

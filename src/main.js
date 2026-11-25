@@ -668,12 +668,11 @@ let volumeSaveTimer = null;
 const volumeSaveKeys = new Set();
 // シークバーをつかんでいる間は、再生位置でつまみを動かさない
 let seekDragging = false;
-// 自動再生の制限で音を消したことは 1 回だけ知らせる（動画ごとに出すとうるさい）
-let autoplayMuteNoticed = false;
 
 function loadVideo(path, autoplay) {
   video.loop = mediaLoop();
   setVolume(mediaVolume());
+  video.muted = mediaMuted();
   if (usesMkvPlayer(path)) {
     startMkvPlayer(path, { autoplay });
     syncVideoBar();
@@ -769,7 +768,7 @@ function setVolume(v) {
   video.volume = Math.min(1, Math.max(0, v)) * volumeGain();
 }
 
-// 音量は動画と音楽で別々に保存する（0〜100%）
+// 音量と消音は動画と音楽で別々に保存する（音量は 0〜100%）
 function volumeKey() {
   return showingAudio ? "audioVolume" : "videoVolume";
 }
@@ -779,18 +778,17 @@ function mediaVolume() {
   return Number.isFinite(v) ? Math.min(1, Math.max(0, v / 100)) : 1;
 }
 
+function muteKey() {
+  return showingAudio ? "audioMuted" : "videoMuted";
+}
+
+function mediaMuted() {
+  return Boolean(settings[muteKey()]);
+}
+
 function playVideo() {
-  video.play().catch((e) => {
-    // WebView の自動再生の制限で、音ありの再生だけ止められることがある。
-    // 消音なら許されるので、音を消して再生し直す
-    if (e?.name !== "NotAllowedError" || video.muted) return;
-    video.muted = true;
-    syncVideoBar();
-    video.play().catch(() => {});
-    if (autoplayMuteNoticed) return;
-    autoplayMuteNoticed = true;
-    showToast("自動再生のため音を消しました（M で戻せます）", "notice");
-  });
+  // 再生できなかったときも、勝手に消音したり音量を下げたりせず前回の音量・消音状態を保つ
+  video.play().catch(() => {});
 }
 
 function togglePlay() {
@@ -799,10 +797,11 @@ function togglePlay() {
   else video.pause();
 }
 
-// 消音は保存しない（起動したときは常に音が出る。起動している間は次のファイルにも持ち越す）
 function toggleMute() {
   if (!showingMedia) return;
   video.muted = !video.muted;
+  settings[muteKey()] = video.muted;
+  saveSettings(muteKey());
 }
 
 function seekBy(seconds) {
@@ -818,7 +817,11 @@ function changeVolumeBy(delta) {
   setVolume(volume);
   settings[volumeKey()] = Math.round(volume * 100);
   // 音量を上げたら消音も解く（再生バーの音量つまみと同じ扱い）
-  if (delta > 0 && video.muted) video.muted = false;
+  if (delta > 0 && video.muted) {
+    video.muted = false;
+    settings[muteKey()] = false;
+    volumeSaveKeys.add(muteKey());
+  }
   // 待っている間に動画と音楽を行き来しても、変えた方の音量をどちらも保存する
   volumeSaveKeys.add(volumeKey());
   clearTimeout(volumeSaveTimer);
@@ -1047,12 +1050,16 @@ video.addEventListener("volumechange", () => {
 vbVolume.addEventListener("input", () => {
   setVolume(Number(vbVolume.value) / 100);
   // 音量を上げたら消音も解く（上げても聞こえないのは分かりにくい）
-  if (video.volume > 0 && video.muted) video.muted = false;
+  if (video.volume > 0 && video.muted) {
+    video.muted = false;
+    settings[muteKey()] = false;
+  }
 });
 // 保存はつまみを離したときだけ（ドラッグ中に何度も書き込まない）
 vbVolume.addEventListener("change", () => {
   settings[volumeKey()] = Number(vbVolume.value);
-  saveSettings(volumeKey());
+  settings[muteKey()] = video.muted;
+  saveSettings(volumeKey(), muteKey());
   vbVolume.blur();
 });
 
@@ -2008,6 +2015,7 @@ function applySettings() {
   bookEl.style.imageRendering = settings.imageRendering;
   video.loop = mediaLoop();
   setVolume(mediaVolume());
+  video.muted = mediaMuted();
   appWindow.setAlwaysOnTop(!!settings.alwaysOnTop).catch(() => {});
   syncWatcher();
 }

@@ -12,8 +12,9 @@ globs: "src-tauri/src/lib.rs, src-tauri/src/platform/*.rs, src-tauri/src/logging
   `%LOCALAPPDATA%\sview` (`webview_data_dir()`). macOS (WKWebView) cannot set it — the OS derives
   `~/Library/WebKit/<bundle id>` and `~/Library/Caches/<bundle id>` from the identifier — so it
   returns `None` there. All window builders go through `webview_options()`, which sets that folder and,
-  on Windows, `additional_browser_args(WEBVIEW2_BROWSER_ARGS)`: wry's default
-  `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection` (passing args replaces it, so it is
+  on Windows, `additional_browser_args(WEBVIEW2_BROWSER_ARGS)`: wry's defaults
+  `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection` and
+  `--autoplay-policy=no-user-gesture-required` (passing args replaces them, so both are
   copied) plus `--enable-blink-features=AudioVideoTracks` for audio-track switching. WebView2 instances on
   the same data folder must share identical args, so never give one window different args.
 - `tauri-plugin-log` is registered from `setup()` via `app.handle().plugin(...)`, not on the

@@ -20,6 +20,8 @@ export interface Settings {
   audioEnd: string;
   videoVolume: number;
   audioVolume: number;
+  videoMuted: boolean;
+  audioMuted: boolean;
   bookBinding: string;
   [key: string]: unknown;
 }
