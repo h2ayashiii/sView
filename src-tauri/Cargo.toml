@@ -47,6 +47,19 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSEvent", "NSResponder", "NSTrackingArea", "NSView", "NSWindow"] }
 
+# macOS（Apple Silicon）: AV1 のハードウェアデコーダを持たない M1 / M2 世代向けに
+# ソフトウェアデコード（rav1d）を行う。Apple Silicon には SVE2 が無いため外す
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+rav1d = { version = "1.1", default-features = false, features = ["asm", "asm_arm64_dotprod", "asm_arm64_i8mm", "bitdepth_8", "bitdepth_16"] }
+
+# macOS（Intel など aarch64 以外）: nasm に依存せずビルドできるよう Rust 実装を使う
+[target.'cfg(all(target_os = "macos", not(target_arch = "aarch64")))'.dependencies]
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+
+# Linux の CI でも rav1d デコーダと AV1 変換経路をテストする（配布バイナリには含まれない）
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+
 # 軽量化: リリースバイナリを最小化
 [profile.release]
 codegen-units = 1

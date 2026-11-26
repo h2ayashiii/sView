@@ -558,7 +558,7 @@ async function show() {
     img.removeAttribute("src");
     releaseBookPages();
     const autoplay = continuing || (showingAudio ? settings.audioAutoplay : settings.videoAutoplay);
-    loadVideo(images[index], autoplay);
+    loadVideo(images[index], autoplay, token);
     if (showingAudio) {
       loadAudioInfo(images[index], token);
     } else {
@@ -658,7 +658,7 @@ for (const el of [bookLeft, bookRight]) {
 
 // ---- 動画 ----
 // 再生は OS の WebView 任せ（Windows: WebView2 / macOS: WKWebView）。
-// 再生できる形式は OS ごとに違い、sView からは増やせない
+// macOS では MKV の詰め直しと、AV1 ハードウェアデコーダを持たない機種での AV1 変換のみ自前で行う
 const SEEK_STEP_S = 5;
 // ↑ ↓ で変える音量の幅（0〜1）
 const VOLUME_STEP = 0.05;
@@ -669,7 +669,7 @@ const volumeSaveKeys = new Set();
 // シークバーをつかんでいる間は、再生位置でつまみを動かさない
 let seekDragging = false;
 
-function loadVideo(path, autoplay) {
+async function loadVideo(path, autoplay, token) {
   video.loop = mediaLoop();
   setVolume(mediaVolume());
   video.muted = mediaMuted();
@@ -678,14 +678,29 @@ function loadVideo(path, autoplay) {
     syncVideoBar();
     return;
   }
+  if (IS_MAC && showingVideo && MkvPlayer.isSupported()) {
+    syncVideoBar();
+    let needsStream = false;
+    try {
+      needsStream = await invoke("video_needs_stream", { path });
+    } catch {
+      needsStream = false;
+    }
+    if (token !== showToken) return;
+    if (needsStream) {
+      startMkvPlayer(path, { autoplay });
+      syncVideoBar();
+      return;
+    }
+  }
   video.src = convertFileSrc(path);
   syncVideoBar();
   if (autoplay) playVideo();
 }
 
-// ---- MKV（macOS） ----
-// macOS の WKWebView は MKV を再生できないので、Rust 側で fragmented MP4 に詰め直して
-// MSE で再生する（mkv-player.js）。Windows の WebView2 はそのまま再生できる
+// ---- MKV・AV1 ストリーム（macOS） ----
+// macOS の WKWebView は MKV を再生できず、M1 / M2 世代では AV1 も再生できない。
+// Rust 側で fragmented MP4 へ詰め直し（必要なら rav1d + VideoToolbox で変換）して MSE で再生する
 let mkvPlayer = null;
 // MKV の音声の知らせ・エラーを出しておく長さ（文が長いので、ふつうの案内より長く出す）
 const MKV_NOTICE_MS = 4000;

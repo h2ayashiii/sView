@@ -399,6 +399,7 @@ pub fn run() {
             audio::audio_info,
             audio::audio_artwork,
             mkv::subtitles::video_subtitles,
+            mkv::video_needs_stream,
             mkv::mkv_open,
             mkv::mkv_init,
             mkv::mkv_seek,

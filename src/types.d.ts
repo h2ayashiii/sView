@@ -69,6 +69,8 @@ export interface MkvOpened {
   duration: number | null;
   audioTracks: RemuxAudioTrack[];
   audio: number | null;
+  transcoded: boolean;
+  canTranscode: boolean;
 }
 
 export interface AssociationItem {
@@ -174,8 +176,12 @@ export interface TauriCommandMap {
     args: { path: string };
     result: SubtitleTrack[];
   };
+  video_needs_stream: {
+    args: { path: string };
+    result: boolean;
+  };
   mkv_open: {
-    args: { path: string; audio: number | null };
+    args: { path: string; audio: number | null; transcode?: boolean | null };
     result: MkvOpened;
   };
   mkv_init: {

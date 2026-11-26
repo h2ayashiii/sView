@@ -1,17 +1,20 @@
-// MKV を MSE（Media Source Extensions）で再生する（macOS 用）。
-// macOS の WKWebView は MKV を再生できないので、Rust 側（lib.rs の mkv_open / mkv_read など）が
-// MKV の映像・音声を再エンコードせずに fragmented MP4 へ詰め直し、ここで SourceBuffer に流す。
-// デコードは WebView 任せ（コーデックは同梱しない）。対応は映像 H.264 / HEVC、音声 AAC / Opus。
-// Windows の WebView2 は MKV をそのまま再生できるので、この経路は使わない。
+// MKV / AV1 動画を MSE（Media Source Extensions）で再生する（macOS 用）。
+// - MKV（H.264 / HEVC、および M3 以降の AV1）は再エンコードせずに fragmented MP4 へ詰め直す。
+// - AV1 ハードウェアデコーダが無い Mac（M1 / M2 世代など）では、Rust 側が rav1d でデコードし
+//   VideoToolbox（H.264）へリアルタイム変換した fragmented MP4 を流す。
+// Windows の WebView2 は MKV も AV1 もそのまま再生できるので、この経路は使わない。
 //
 // 読み込みは 1 本のループ（run）で順に行う: シークの要求があればバッファを空にして
-// Rust 側を目標の直前のキーフレームへ移し、なければ再生位置の先 MKV_AHEAD_S 秒まで断片を足す。
+// Rust 側を目標の直前のキーフレームへ移し、なければ再生位置の先まで断片を足す。
 // Rust 側の読み取りは前へ進むだけなので、要求が重ならないよう同時には 1 つしか出さない
 
-// 再生位置より先に読んでおく長さ（秒）
+// 無変換リマックス時に再生位置より先に読んでおく長さ（秒）
 const MKV_AHEAD_S = 20;
-// 再生位置より前に残しておく長さ（秒）。これより前は SourceBuffer.remove() で手放す
+// 無変換リマックス時に再生位置より前に残しておく長さ（秒）
 const MKV_BEHIND_S = 10;
+// AV1 変換時の先読み・保持の長さ（秒）。先読みを短く保ち CPU 負荷・発熱・切り替え時の無駄を抑える
+const TRANSCODE_AHEAD_S = 6;
+const TRANSCODE_BEHIND_S = 6;
 // 再生位置が映像・音声の始まりより少し手前にあって止まっているとき、飛び越す隙間の上限（秒）
 const MKV_GAP_JUMP_S = 1;
 // シーク先が読み込み済みの範囲の終わりからこれ以内なら、空にせず続きを読んで追いつく（秒）
@@ -20,7 +23,7 @@ const MKV_CONTINUE_S = 3;
 const MKV_IDLE_MS = 500;
 
 export class MkvPlayer {
-  // video: 再生する <video>。path: MKV のパス。
+  // video: 再生する <video>。path: 動画のパス。
   // options: audio（鳴らす音声の番号。省略で既定）、startTime（始める位置・秒）、
   //   play（再生を始める関数。src を入れた後に呼ぶ）、onError（読めないとき）、onNotice（知らせ）
   constructor(video, path, options = {}) {
@@ -58,6 +61,18 @@ export class MkvPlayer {
     return `video/mp4; codecs="${codecs}"`;
   }
 
+  aheadSeconds() {
+    return this.info?.transcoded ? TRANSCODE_AHEAD_S : MKV_AHEAD_S;
+  }
+
+  behindSeconds() {
+    return this.info?.transcoded ? TRANSCODE_BEHIND_S : MKV_BEHIND_S;
+  }
+
+  mediaLabel() {
+    return this.path.toLowerCase().endsWith(".mkv") ? "MKV" : "動画";
+  }
+
   // 音声トラックの一覧（右クリックメニューの「音声」に出す）。
   // リマックスできない・WebView が再生できない音声は disabled
   get audioTracks() {
@@ -91,21 +106,30 @@ export class MkvPlayer {
     }
   }
 
-  // Rust 側で MKV を開き、WebView が再生できる組み合わせ（映像・音声）を決める
+  // Rust 側で動画を開き、WebView が再生できる組み合わせ（映像・音声）を決める
   async open(audio) {
     const { invoke } = window.__TAURI__.core;
-    let info = await invoke("mkv_open", { path: this.path, audio: audio ?? null });
+    let info = await invoke("mkv_open", { path: this.path, audio: audio ?? null, transcode: null });
     if (this.closed) return this.close(info.id);
     if (!MediaSource.isTypeSupported(MkvPlayer.mime(info.videoCodec, null))) {
-      this.close(info.id);
-      throw new Error("この MKV の映像は、この Mac では再生できません");
+      // M3 以降でも WebView が再生できない AV1 プロファイルなら変換モードへフォールバックする
+      if (info.canTranscode) {
+        this.close(info.id);
+        info = await invoke("mkv_open", { path: this.path, audio: audio ?? null, transcode: true });
+        if (this.closed) return this.close(info.id);
+      }
+      if (!MediaSource.isTypeSupported(MkvPlayer.mime(info.videoCodec, null))) {
+        this.close(info.id);
+        throw new Error(`この ${this.mediaLabel()} の映像は、この Mac では再生できません`);
+      }
     }
     if (!MediaSource.isTypeSupported(MkvPlayer.mime(info.videoCodec, info.audioCodec))) {
       // Rust はリマックスできても WebView が鳴らせない音声。鳴らせる別の音声か、音声なしで開き直す
       this.info = info;
       const alt = info.audioTracks.findIndex((t) => this.audioPlayable(t));
+      const transcode = info.transcoded ? true : null;
       this.close(info.id);
-      info = await invoke("mkv_open", { path: this.path, audio: alt });
+      info = await invoke("mkv_open", { path: this.path, audio: alt, transcode });
       if (this.closed) return this.close(info.id);
     }
     this.id = info.id;
@@ -119,10 +143,11 @@ export class MkvPlayer {
     if (!tracks.length) return;
     const wanted = tracks.find((t) => t.default) ?? tracks[0];
     if (this.audioPlayable(wanted)) return;
+    const kind = this.mediaLabel();
     this.options.onNotice?.(
       this.info.audio == null
-        ? `この MKV の音声（${wanted.codec}）には対応していないため、音声なしで再生します`
-        : `この MKV の既定の音声（${wanted.codec}）には対応していないため、別の音声で再生します`
+        ? `この ${kind} の音声（${wanted.codec}）には対応していないため、音声なしで再生します`
+        : `この ${kind} の既定の音声（${wanted.codec}）には対応していないため、別の音声で再生します`
     );
   }
 
@@ -171,7 +196,7 @@ export class MkvPlayer {
           await this.seek(this.seekTarget);
           continue;
         }
-        if (this.eof || this.bufferedAhead() >= MKV_AHEAD_S) {
+        if (this.eof || this.bufferedAhead() >= this.aheadSeconds()) {
           await this.idle();
           continue;
         }
@@ -245,7 +270,7 @@ export class MkvPlayer {
 
   // 断片を足す。入りきらなければ（QuotaExceededError）再生位置より前を手放してから入れ直す
   async appendWithRoom(data) {
-    await this.evictBehind(MKV_BEHIND_S);
+    await this.evictBehind(this.behindSeconds());
     try {
       await this.append(data);
     } catch (e) {

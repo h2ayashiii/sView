@@ -1561,3 +1561,516 @@ fn archive_listing_and_single_entry_read() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn av1_codec_string_and_helpers() {
+    // 8bit Main / 10bit High / 12bit Professional
+    assert_eq!(
+        av1_codec_string(&[0x81, 0x04, 0x0C, 0x00]).as_deref(),
+        Some("av01.0.04M.08")
+    );
+    assert_eq!(
+        av1_codec_string(&[0x81, 0x0D, 0xCC, 0x00]).as_deref(),
+        Some("av01.0.13H.10")
+    );
+    assert_eq!(
+        av1_codec_string(&[0x81, 0x48, 0x6C, 0x00]).as_deref(),
+        Some("av01.2.08M.12")
+    );
+    assert_eq!(av1_codec_string(&[0x80, 0x04, 0x0C, 0x00]), None);
+    assert_eq!(av1_codec_string(&[0x81, 0x04, 0x0C]), None);
+    assert_eq!(av1_codec_string(&[0x81, 0x60, 0x0C, 0x00]), None);
+
+    // SPS / PPS から avcC を組み立てて codecs 文字列へ戻せる
+    let avcc = build_avcc_from_sps_pps(&[0x67, 0x64, 0x00, 0x1F, 0xAC], &[0x68, 0xEE]).unwrap();
+    assert_eq!(avc_codec_string(&avcc).as_deref(), Some("avc1.64001F"));
+    assert_eq!(build_avcc_from_sps_pps(&[0x67, 0x64], &[0x68]), None);
+    assert_eq!(
+        build_avcc_from_sps_pps(&[0x67, 0x64, 0x00, 0x1F], &[]),
+        None
+    );
+
+    // SDR はそのまま、HDR (PQ / HLG) は 8bit H.264 向けに BT.709 へ落とす、未指定は None
+    let bt709 = ColorInfo {
+        primaries: 1,
+        transfer: 1,
+        matrix: 1,
+        full_range: false,
+    };
+    assert_eq!(bt709.for_sdr_h264(), Some(bt709));
+    let hdr_pq = ColorInfo {
+        primaries: 9,
+        transfer: 16,
+        matrix: 9,
+        full_range: false,
+    };
+    assert_eq!(hdr_pq.for_sdr_h264(), Some(bt709));
+    let hdr_hlg = ColorInfo {
+        primaries: 9,
+        transfer: 18,
+        matrix: 9,
+        full_range: true,
+    };
+    assert_eq!(
+        hdr_hlg.for_sdr_h264(),
+        Some(ColorInfo {
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+            full_range: true,
+        })
+    );
+    let unspecified = ColorInfo {
+        primaries: 2,
+        transfer: 2,
+        matrix: 2,
+        full_range: false,
+    };
+    assert_eq!(unspecified.for_sdr_h264(), None);
+
+    // ビットレートの上下限と 1080p の目安
+    assert_eq!(target_h264_bitrate(64, 48, 24.0), 2_000_000);
+    let fhd = target_h264_bitrate(1920, 1080, 30.0);
+    assert!((10_000_000..=15_000_000).contains(&fhd), "{fhd}");
+    assert_eq!(target_h264_bitrate(7680, 4320, 60.0), 60_000_000);
+}
+
+#[test]
+fn nv12_conversion_handles_bit_depths_and_layouts() {
+    // 1. 8bit I420（ストライド余白あり、dst が src より広いときのパディングも含む）
+    let y_src = [10, 20, 30, 40, 99, 99, 50, 60, 70, 80, 99, 99];
+    let u_src = [100, 110, 99];
+    let v_src = [200, 210, 99];
+    let frame = DecodedFrame {
+        width: 4,
+        height: 2,
+        bpc: 8,
+        layout: PixelLayout::I420,
+        y: PlaneView::from_slice(&y_src, 6, 4, 2),
+        u: Some(PlaneView::from_slice(&u_src, 3, 2, 1)),
+        v: Some(PlaneView::from_slice(&v_src, 3, 2, 1)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0xFFu8; 8 * 4];
+    let mut dst_uv = vec![0xFFu8; 8 * 2];
+    copy_frame_to_nv12(&frame, 6, 4, &mut dst_y, 8, &mut dst_uv, 8);
+    assert_eq!(&dst_y[0..6], &[10, 20, 30, 40, 16, 16]);
+    assert_eq!(&dst_y[8..14], &[50, 60, 70, 80, 16, 16]);
+    assert_eq!(&dst_y[16..22], &[16; 6]);
+    assert_eq!(&dst_uv[0..6], &[100, 200, 110, 210, 128, 128]);
+    assert_eq!(&dst_uv[8..14], &[128; 6]);
+
+    // 2. 10bit I420（丸め付きダウンシフト）
+    let mut y10 = Vec::new();
+    for val in [0u16, 400, 1020, 1023, 200, 300, 500, 600] {
+        y10.extend_from_slice(&val.to_le_bytes());
+    }
+    let mut u10 = Vec::new();
+    for val in [512u16, 1022] {
+        u10.extend_from_slice(&val.to_le_bytes());
+    }
+    let mut v10 = Vec::new();
+    for val in [256u16, 768] {
+        v10.extend_from_slice(&val.to_le_bytes());
+    }
+    let frame10 = DecodedFrame {
+        width: 4,
+        height: 2,
+        bpc: 10,
+        layout: PixelLayout::I420,
+        y: PlaneView::from_slice(&y10, 8, 8, 2),
+        u: Some(PlaneView::from_slice(&u10, 4, 4, 1)),
+        v: Some(PlaneView::from_slice(&v10, 4, 4, 1)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0u8; 8];
+    let mut dst_uv = vec![0u8; 4];
+    copy_frame_to_nv12(&frame10, 4, 2, &mut dst_y, 4, &mut dst_uv, 4);
+    assert_eq!(dst_y, vec![0, 100, 255, 255, 50, 75, 125, 150]);
+    assert_eq!(dst_uv, vec![128, 64, 255, 192]);
+
+    // 3. 12bit I420
+    let mut y12 = Vec::new();
+    for val in [0u16, 2048, 4095, 1024] {
+        y12.extend_from_slice(&val.to_le_bytes());
+    }
+    let u12 = 2048u16.to_le_bytes();
+    let v12 = 4095u16.to_le_bytes();
+    let frame12 = DecodedFrame {
+        width: 2,
+        height: 2,
+        bpc: 12,
+        layout: PixelLayout::I420,
+        y: PlaneView::from_slice(&y12, 4, 4, 2),
+        u: Some(PlaneView::from_slice(&u12, 2, 2, 1)),
+        v: Some(PlaneView::from_slice(&v12, 2, 2, 1)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0u8; 4];
+    let mut dst_uv = vec![0u8; 2];
+    copy_frame_to_nv12(&frame12, 2, 2, &mut dst_y, 2, &mut dst_uv, 2);
+    assert_eq!(dst_y, vec![0, 128, 255, 64]);
+    assert_eq!(dst_uv, vec![128, 255]);
+
+    // 4. 8bit I422（縦 2 行おきに色差を間引く）
+    let y422 = [1u8; 8];
+    let u422 = [11, 22, 33, 44];
+    let v422 = [55, 66, 77, 88];
+    let frame422 = DecodedFrame {
+        width: 4,
+        height: 2,
+        bpc: 8,
+        layout: PixelLayout::I422,
+        y: PlaneView::from_slice(&y422, 4, 4, 2),
+        u: Some(PlaneView::from_slice(&u422, 2, 2, 2)),
+        v: Some(PlaneView::from_slice(&v422, 2, 2, 2)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0u8; 8];
+    let mut dst_uv = vec![0u8; 4];
+    copy_frame_to_nv12(&frame422, 4, 2, &mut dst_y, 4, &mut dst_uv, 4);
+    assert_eq!(dst_uv, vec![11, 55, 22, 66]);
+
+    // 5. 8bit I444（横・縦とも 2 画素おきに間引く）
+    let y444 = [2u8; 8];
+    let u444 = [10, 11, 20, 21, 30, 31, 40, 41];
+    let v444 = [50, 51, 60, 61, 70, 71, 80, 81];
+    let frame444 = DecodedFrame {
+        width: 4,
+        height: 2,
+        bpc: 8,
+        layout: PixelLayout::I444,
+        y: PlaneView::from_slice(&y444, 4, 4, 2),
+        u: Some(PlaneView::from_slice(&u444, 4, 4, 2)),
+        v: Some(PlaneView::from_slice(&v444, 4, 4, 2)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0u8; 8];
+    let mut dst_uv = vec![0u8; 4];
+    copy_frame_to_nv12(&frame444, 4, 2, &mut dst_y, 4, &mut dst_uv, 4);
+    assert_eq!(dst_uv, vec![10, 50, 20, 60]);
+
+    // 6. 8bit I400（モノクロ: UV を無彩色 128 で埋め、フルレンジ時は Y 余白を 0 にする）
+    let y400 = [77, 88, 99, 111];
+    let frame400 = DecodedFrame {
+        width: 2,
+        height: 2,
+        bpc: 8,
+        layout: PixelLayout::I400,
+        y: PlaneView::from_slice(&y400, 2, 2, 2),
+        u: None,
+        v: None,
+        pts: 0,
+        color: Some(ColorInfo {
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+            full_range: true,
+        }),
+    };
+    let mut dst_y = vec![0xFFu8; 16];
+    let mut dst_uv = vec![0u8; 8];
+    copy_frame_to_nv12(&frame400, 4, 4, &mut dst_y, 4, &mut dst_uv, 4);
+    assert_eq!(&dst_y[0..4], &[77, 88, 0, 0]);
+    assert_eq!(&dst_y[4..8], &[99, 111, 0, 0]);
+    assert_eq!(&dst_y[8..16], &[0; 8]);
+    assert_eq!(dst_uv, vec![128; 8]);
+}
+
+#[test]
+fn av1_video_detection_distinguishes_codecs_and_containers() {
+    let mp4 = remux_testdata("av1.mp4");
+    let webm = remux_testdata("av1.webm");
+    let h264 = remux_testdata("remux.mkv");
+    let mpeg4 = remux_testdata("unsupported.mkv");
+
+    assert!(is_mp4_av1(&mp4));
+    assert!(is_av1_video(&mp4));
+
+    assert!(!is_mp4_av1(&webm));
+    assert!(is_av1_video(&webm));
+
+    assert!(!is_mp4_av1(&h264));
+    assert!(!is_av1_video(&h264));
+    assert!(!is_av1_video(&mpeg4));
+}
+
+#[test]
+fn av1_mp4_and_webm_remux_and_fragmented_mp4_roundtrip() {
+    let mut fmp4_bytes = Vec::new();
+    for (name, expected_audio_codec, sample_step) in [
+        ("av1.mp4", "mp4a.40.2", 1024i64),
+        ("av1.webm", "opus", 960i64),
+    ] {
+        let (mut stream, info) =
+            MkvStream::open_with_options(&remux_testdata(name), None, Some(false)).unwrap();
+        assert!(!info.transcoded);
+        assert!(
+            info.video_codec.starts_with("av01."),
+            "{name}: {}",
+            info.video_codec
+        );
+        assert_eq!(info.audio_codec.as_deref(), Some(expected_audio_codec));
+        assert!((info.duration.unwrap() - 2.0).abs() < 0.15, "{name}");
+
+        let init = stream.init_segment();
+        let has = |needle: &[u8]| init.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"av01") && has(b"av1C"),
+            "{name}: av01/av1C がありません"
+        );
+        if name == "av1.mp4" {
+            fmp4_bytes.extend_from_slice(&init);
+        }
+
+        let mut video = Vec::new();
+        let mut audio_end: Option<i64> = None;
+        loop {
+            let fragment = stream.read_fragment().unwrap();
+            if fragment.is_empty() {
+                break;
+            }
+            if name == "av1.mp4" {
+                fmp4_bytes.extend_from_slice(&fragment);
+            }
+            let tracks = parse_fragment(&fragment);
+            let v = &tracks[&1];
+            assert!(v[0].keyframe, "{name}: 断片はキーフレームから始めます");
+            video.extend(v.iter().map(|s| (s.dts, s.pts, s.keyframe)));
+            if let Some(a) = tracks.get(&2) {
+                if let Some(end) = audio_end {
+                    assert_eq!(a[0].dts, end, "{name}: 音声の継ぎ目が途切れています");
+                } else {
+                    assert!(
+                        a[0].dts <= 2400,
+                        "{name}: 音声の開始が遅れています {}",
+                        a[0].dts
+                    );
+                }
+                audio_end = Some(a.last().unwrap().dts + sample_step);
+            }
+        }
+        assert_eq!(video.len(), 48, "{name}: 映像フレーム数");
+        let audio_sec = audio_end.unwrap() as f64 / 48_000.0;
+        assert!((audio_sec - 2.0).abs() < 0.12, "{name}: {audio_sec}");
+    }
+
+    // 書き出した fMP4（moov + mvex + moof/mdat）をそのまま fragmented MP4 として読み戻せること
+    let tmp = std::env::temp_dir().join(format!("sview-fmp4-test-{}.mp4", std::process::id()));
+    fs::write(&tmp, &fmp4_bytes).unwrap();
+    assert!(is_mp4_av1(&tmp));
+    assert!(is_av1_video(&tmp));
+    let (mut stream, info) = MkvStream::open_with_options(&tmp, None, Some(false)).unwrap();
+    assert!(info.video_codec.starts_with("av01."));
+    let mut frames = 0usize;
+    let mut audio_samples = 0usize;
+    loop {
+        let fragment = stream.read_fragment().unwrap();
+        if fragment.is_empty() {
+            break;
+        }
+        let tracks = parse_fragment(&fragment);
+        frames += tracks[&1].len();
+        audio_samples += tracks.get(&2).map_or(0, Vec::len);
+    }
+    assert_eq!(frames, 48);
+    assert!(audio_samples > 80, "{audio_samples}");
+    fs::remove_file(&tmp).ok();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
+    #[cfg(target_os = "linux")]
+    struct MockH264Encoder {
+        width: usize,
+        height: usize,
+        avcc: Vec<u8>,
+        pending: Vec<EncodedFrame>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl VideoEncoder for MockH264Encoder {
+        fn encode(&mut self, frame: &DecodedFrame<'_>, force_keyframe: bool) -> Result<(), String> {
+            assert_eq!(frame.width, self.width);
+            assert_eq!(frame.height, self.height);
+            // 実際に rav1d がデコードした画素を NV12 変換して中身を確かめる
+            let mut dst_y = vec![0u8; self.width * self.height];
+            let mut dst_uv = vec![0u8; self.width * self.height.div_ceil(2)];
+            copy_frame_to_nv12(
+                frame,
+                self.width,
+                self.height,
+                &mut dst_y,
+                self.width,
+                &mut dst_uv,
+                self.width,
+            );
+            assert!(
+                dst_y.iter().any(|&v| v != 0),
+                "復号された Y プレーンが空です"
+            );
+            let nal_type = if force_keyframe { 0x65 } else { 0x41 };
+            self.pending.push(EncodedFrame {
+                data: vec![0, 0, 0, 2, nal_type, 0x88],
+                pts: frame.pts,
+                keyframe: force_keyframe,
+            });
+            Ok(())
+        }
+
+        fn flush(&mut self) -> Result<Vec<EncodedFrame>, String> {
+            Ok(std::mem::take(&mut self.pending))
+        }
+
+        fn avcc(&self) -> Option<Vec<u8>> {
+            Some(self.avcc.clone())
+        }
+    }
+
+    let open_transcode = |path: &Path| -> Result<(MkvStream, MkvOpened), String> {
+        #[cfg(target_os = "macos")]
+        {
+            MkvStream::open_with_options(path, None, Some(true))
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let factory: EncoderFactory = Box::new(|w, h, _fps, _color| {
+                let avcc = build_avcc_from_sps_pps(&[0x67, 0x64, 0x00, 0x1F, 0xAC], &[0x68, 0xEE])
+                    .unwrap();
+                Ok(Box::new(MockH264Encoder {
+                    width: w as usize,
+                    height: h as usize,
+                    avcc,
+                    pending: Vec::new(),
+                }))
+            });
+            MkvStream::open_with_test_encoder(path, None, factory)
+        }
+    };
+
+    for (name, sample_step) in [("av1.mp4", 1024i64), ("av1.webm", 960i64)] {
+        let path = remux_testdata(name);
+        let (mut stream, info) = open_transcode(&path).unwrap();
+        assert!(info.transcoded, "{name}: 変換モードになっていること");
+        assert!(!info.can_transcode);
+        assert!(
+            info.video_codec.starts_with("avc1."),
+            "{name}: {}",
+            info.video_codec
+        );
+
+        let init = stream.init_segment();
+        let has = |needle: &[u8]| init.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"avc1") && has(b"avcC"),
+            "{name}: avc1/avcC がありません"
+        );
+        assert!(!has(b"av01"), "{name}: 変換後に av01 が残っています");
+
+        // 1. 先頭から末尾までの再生（全 48 フレーム・B フレームなし・音声切れ目なし）
+        let mut video = Vec::new();
+        let mut audio_end: Option<i64> = None;
+        let mut fragments = 0usize;
+        loop {
+            let fragment = stream.read_fragment().unwrap();
+            if fragment.is_empty() {
+                break;
+            }
+            fragments += 1;
+            let tracks = parse_fragment(&fragment);
+            let v = &tracks[&1];
+            assert!(v[0].keyframe, "{name}: 断片の先頭は必ずキーフレーム");
+            for s in v {
+                assert_eq!(s.dts, s.pts, "{name}: B フレームなし (DTS == PTS) を保つ");
+            }
+            video.extend(v.iter().map(|s| s.pts));
+            if let Some(a) = tracks.get(&2) {
+                if let Some(end) = audio_end {
+                    assert_eq!(a[0].dts, end, "{name}: 音声の継ぎ目が途切れています");
+                } else {
+                    assert!(a[0].dts <= 2400, "{name}: 音声開始 {}", a[0].dts);
+                }
+                audio_end = Some(a.last().unwrap().dts + sample_step);
+            }
+        }
+        assert!(fragments >= 2, "{name}: 2 秒の動画なので複数断片に分かれる");
+        assert_eq!(
+            video.len(),
+            48,
+            "{name}: 全 48 フレームが復号・出力されること"
+        );
+        for pair in video.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "{name}: PTS が単調増加していません: {pair:?}"
+            );
+        }
+        for (i, &p) in video.iter().enumerate() {
+            let exact = i as i64 * 90_000 / 24;
+            assert!((p - exact).abs() <= 90, "{name}[{i}]: {p} != {exact}");
+        }
+        let audio_sec = audio_end.unwrap() as f64 / 48_000.0;
+        assert!(
+            (audio_sec - 2.0).abs() < 0.12,
+            "{name}: 音声長さ {audio_sec}"
+        );
+
+        // 2. GOP 途中（1.25 秒）へのシーク: 1.0〜1.25 秒のエンコードを省き、映像・音声の頭を揃える
+        let sought = stream.seek(1.25).unwrap();
+        assert!((sought - 1.25).abs() < 0.02, "{name}: {sought}");
+        let mut seek_video = Vec::new();
+        let mut seek_audio_start: Option<f64> = None;
+        let mut seek_audio_end: Option<i64> = None;
+        loop {
+            let fragment = stream.read_fragment().unwrap();
+            if fragment.is_empty() {
+                break;
+            }
+            let tracks = parse_fragment(&fragment);
+            let v = &tracks[&1];
+            assert!(v[0].keyframe);
+            seek_video.extend(v.iter().map(|s| s.pts));
+            if let Some(a) = tracks.get(&2) {
+                if seek_audio_start.is_none() {
+                    seek_audio_start = Some(a[0].dts as f64 / 48_000.0);
+                }
+                if let Some(end) = seek_audio_end {
+                    assert_eq!(a[0].dts, end, "{name}: シーク後の音声が途切れています");
+                }
+                seek_audio_end = Some(a.last().unwrap().dts + sample_step);
+            }
+        }
+        let first_sec = seek_video[0] as f64 / 90_000.0;
+        assert!(
+            (1.24..=1.30).contains(&first_sec),
+            "{name}: シーク先頭映像 {first_sec}"
+        );
+        let a_start = seek_audio_start.unwrap();
+        assert!(
+            (first_sec - a_start).abs() <= 0.08,
+            "{name}: シーク直後の映像({first_sec})と音声({a_start})がずれています"
+        );
+        assert!(
+            (16..=20).contains(&seek_video.len()),
+            "{name}: 1.25〜2.0 秒のフレーム数 {}",
+            seek_video.len()
+        );
+
+        // 3. 末尾以降へのシークでも空にならず最後のキーフレームから再生できる
+        let past_end = stream.seek(10.0).unwrap();
+        assert!((past_end - 1.0).abs() < 0.05, "{name}: {past_end}");
+        let tail_frag = stream.read_fragment().unwrap();
+        assert!(
+            !tail_frag.is_empty(),
+            "{name}: 末尾以降のシークで断片が空です"
+        );
+        let tail_tracks = parse_fragment(&tail_frag);
+        assert!(tail_tracks[&1][0].keyframe);
+    }
+}

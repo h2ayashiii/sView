@@ -19,6 +19,7 @@ scripts/gen-third-party-notices.mjs）。対象は配布先である Windows / m
 ライセンス全文は、各ライセンスの正式なテキストを参照してください。
   MIT           https://opensource.org/license/mit
   Apache-2.0    https://www.apache.org/licenses/LICENSE-2.0
+  BSD-2-Clause  https://opensource.org/license/bsd-2-clause
   BSD-3-Clause  https://opensource.org/license/bsd-3-clause
   MPL-2.0       https://www.mozilla.org/MPL/2.0/
   Zlib          https://opensource.org/license/zlib
@@ -38,10 +39,10 @@ MPL-2.0 について
 入手できます。
 
 
-依存クレート一覧（315 件）
+依存クレート一覧（326 件）
 ========================================
 
---- MIT OR Apache-2.0  (162 件) ---
+--- MIT OR Apache-2.0  (163 件) ---
 
   anyhow 1.0.104
       https://github.com/dtolnay/anyhow
@@ -199,6 +200,8 @@ MPL-2.0 について
       https://github.com/rust-lang/regex
   reqwest 0.13.4
       https://github.com/seanmonstar/reqwest
+  rustversion 1.0.23
+      https://github.com/dtolnay/rustversion
   scopeguard 1.2.0
       https://github.com/bluss/scopeguard
   semver 1.0.28
@@ -368,7 +371,7 @@ MPL-2.0 について
   windows-version 0.1.7
       https://github.com/microsoft/windows-rs
 
---- MIT  (51 件) ---
+--- MIT  (54 件) ---
 
   block2 0.6.2
       https://github.com/madsmtm/objc2
@@ -428,6 +431,8 @@ MPL-2.0 について
       https://github.com/emilio/precomputed-hash
   quick-xml 0.41.0
       https://github.com/tafia/quick-xml
+  raw-cpuid 11.6.0
+      https://github.com/gz/rust-cpuid
   rfd 0.16.0
       https://github.com/PolyMeilex/rfd
   schemars 0.8.22
@@ -444,6 +449,10 @@ MPL-2.0 について
       https://github.com/tokio-rs/slab
   strsim 0.11.1
       https://github.com/rapidfuzz/strsim-rs
+  strum 0.26.3
+      https://github.com/Peternator7/strum
+  strum_macros 0.26.4
+      https://github.com/Peternator7/strum
   synstructure 0.13.2
       https://github.com/mystor/synstructure
   tokio 1.53.1
@@ -569,6 +578,41 @@ MPL-2.0 について
   zerovec-derive 0.11.3
       https://github.com/unicode-org/icu4x
 
+--- MIT/Apache-2.0  (16 件) ---
+
+  assert_matches 1.5.0
+      https://github.com/murarth/assert_matches
+  atomig 0.4.3
+      https://github.com/LukasKalbertodt/atomig/
+  atomig-macro 0.4.0
+      https://github.com/LukasKalbertodt/atomig/
+  bitflags 1.3.2
+      https://github.com/bitflags/bitflags
+  bs58 0.5.1
+      https://github.com/Nullus157/bs58-rs
+  foreign-types 0.5.0
+      https://github.com/sfackler/foreign-types
+  foreign-types-macros 0.2.4
+      https://github.com/sfackler/foreign-types
+  foreign-types-shared 0.3.1
+      https://github.com/sfackler/foreign-types
+  ident_case 1.0.1
+      https://github.com/TedDriggs/ident_case
+  json-patch 3.0.1
+      https://github.com/idubrov/json-patch
+  siphasher 1.0.3
+      https://github.com/jedisct1/rust-siphash
+  unic-char-property 0.9.0
+      https://github.com/open-i18n/rust-unic/
+  unic-char-range 0.9.0
+      https://github.com/open-i18n/rust-unic/
+  unic-common 0.9.0
+      https://github.com/open-i18n/rust-unic/
+  unic-ucd-ident 0.9.0
+      https://github.com/open-i18n/rust-unic/
+  unic-ucd-version 0.9.0
+      https://github.com/open-i18n/rust-unic/
+
 --- Zlib OR Apache-2.0 OR MIT  (14 件) ---
 
   dispatch2 0.3.1
@@ -599,35 +643,6 @@ MPL-2.0 について
       https://github.com/madsmtm/objc2
   tinyvec 1.12.0
       https://github.com/Lokathor/tinyvec
-
---- MIT/Apache-2.0  (13 件) ---
-
-  bitflags 1.3.2
-      https://github.com/bitflags/bitflags
-  bs58 0.5.1
-      https://github.com/Nullus157/bs58-rs
-  foreign-types 0.5.0
-      https://github.com/sfackler/foreign-types
-  foreign-types-macros 0.2.4
-      https://github.com/sfackler/foreign-types
-  foreign-types-shared 0.3.1
-      https://github.com/sfackler/foreign-types
-  ident_case 1.0.1
-      https://github.com/TedDriggs/ident_case
-  json-patch 3.0.1
-      https://github.com/idubrov/json-patch
-  siphasher 1.0.3
-      https://github.com/jedisct1/rust-siphash
-  unic-char-property 0.9.0
-      https://github.com/open-i18n/rust-unic/
-  unic-char-range 0.9.0
-      https://github.com/open-i18n/rust-unic/
-  unic-common 0.9.0
-      https://github.com/open-i18n/rust-unic/
-  unic-ucd-ident 0.9.0
-      https://github.com/open-i18n/rust-unic/
-  unic-ucd-version 0.9.0
-      https://github.com/open-i18n/rust-unic/
 
 --- MPL-2.0  (5 件) ---
 
@@ -660,12 +675,26 @@ MPL-2.0 について
   tao 0.35.3
       https://github.com/tauri-apps/tao
 
+--- BSD-2-Clause OR Apache-2.0 OR MIT  (2 件) ---
+
+  zerocopy 0.7.35
+      https://github.com/google/zerocopy
+  zerocopy-derive 0.7.35
+      https://github.com/google/zerocopy
+
 --- BSD-3-Clause  (2 件) ---
 
   alloc-no-stdlib 2.0.4
       https://github.com/dropbox/rust-alloc-no-stdlib
   alloc-stdlib 0.2.4
       https://github.com/dropbox/rust-alloc-no-stdlib
+
+--- CC0-1.0  (2 件) ---
+
+  notify 8.2.0
+      https://github.com/notify-rs/notify.git
+  to_method 1.1.0
+      https://github.com/whentze/to_method
 
 --- MIT OR Apache-2.0 OR Zlib  (2 件) ---
 
@@ -715,6 +744,11 @@ MPL-2.0 について
   dpi 0.1.2
       https://github.com/rust-windowing/winit
 
+--- BSD-2-Clause  (1 件) ---
+
+  rav1d 1.1.0
+      https://github.com/memorysafety/rav1d
+
 --- BSD-3-Clause AND MIT  (1 件) ---
 
   brotli 8.0.4
@@ -724,11 +758,6 @@ MPL-2.0 について
 
   brotli-decompressor 5.0.3
       https://github.com/dropbox/rust-brotli-decompressor
-
---- CC0-1.0  (1 件) ---
-
-  notify 8.2.0
-      https://github.com/notify-rs/notify.git
 
 --- CC0-1.0 OR MIT-0 OR Apache-2.0  (1 件) ---
 
