@@ -531,6 +531,11 @@ pub(crate) struct VtH264Encoder {
     height: u32,
     pixel_format: OSType,
     color: Option<ColorInfo>,
+    /// 巻き戻しシーク後も VideoToolbox へ渡す PTS を単調増加に保つための状態
+    /// （本来の 90 kHz PTS は sourceFrameRefCon 経由でそのまま出力へ戻す）
+    last_vt_pts: Option<i64>,
+    vt_pts_offset: i64,
+    default_frame_ticks: i64,
 }
 
 // VTCompressionSessionRef はスレッドセーフな CF オブジェクトであり、
@@ -609,6 +614,9 @@ impl VtH264Encoder {
             ));
         }
 
+        let default_frame_ticks = (REMUX_VIDEO_TIMESCALE as f64 / fps.clamp(1.0, 240.0))
+            .round()
+            .max(1.0) as i64;
         let encoder = Self {
             session,
             callback_state: state_ptr,
@@ -617,6 +625,9 @@ impl VtH264Encoder {
             height,
             pixel_format,
             color,
+            last_vt_pts: None,
+            vt_pts_offset: 0,
+            default_frame_ticks,
         };
 
         unsafe {
@@ -797,7 +808,17 @@ impl VideoEncoder for VtH264Encoder {
             }
         }
 
-        let pts = CMTime::new(frame.pts, REMUX_VIDEO_TIMESCALE as i32);
+        // 巻き戻しシークで PTS が戻っても VideoToolbox へ渡す時刻は単調増加を保つ
+        let mut vt_pts = frame.pts.saturating_add(self.vt_pts_offset);
+        if let Some(prev) = self.last_vt_pts
+            && vt_pts <= prev
+        {
+            let next = prev.saturating_add(self.default_frame_ticks);
+            self.vt_pts_offset = next.saturating_sub(frame.pts);
+            vt_pts = next;
+        }
+        self.last_vt_pts = Some(vt_pts);
+        let pts = CMTime::new(vt_pts, REMUX_VIDEO_TIMESCALE as i32);
         let dur = CMTime::invalid();
         let props = if force_keyframe {
             self.force_keyframe_props.as_ptr()
