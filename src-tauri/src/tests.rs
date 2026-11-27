@@ -1127,11 +1127,12 @@ fn be32(data: &[u8], at: usize) -> u32 {
     u32::from_be_bytes(data[at..at + 4].try_into().unwrap())
 }
 
-/// テスト用のサンプル（DTS, PTS, キーフレームか, 大きさ。時刻はトラックの単位）
+/// テスト用のサンプル（DTS, PTS, 長さ, キーフレームか。時刻はトラックの単位）
 #[derive(Debug)]
 struct ParsedSample {
     dts: i64,
     pts: i64,
+    duration: i64,
     keyframe: bool,
 }
 
@@ -1174,6 +1175,7 @@ fn parse_fragment(fragment: &[u8]) -> BTreeMap<u32, Vec<ParsedSample>> {
             samples.push(ParsedSample {
                 dts,
                 pts: dts + cts,
+                duration,
                 keyframe: be32(trun, at + 8) & 0x0001_0000 == 0,
             });
             dts += duration;
@@ -1973,10 +1975,12 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
         );
         assert!(!has(b"av01"), "{name}: 変換後に av01 が残っています");
 
-        // 1. 先頭から末尾までの再生（全 48 フレーム・B フレームなし・音声切れ目なし）
+        // 1. 先頭から末尾までの再生（全 48 フレーム・B フレームなし・映像も音声も断片境界 0 ティック連続）
         let mut video = Vec::new();
+        let mut video_end: Option<i64> = None;
         let mut audio_end: Option<i64> = None;
         let mut fragments = 0usize;
+        let mut first_frag_frames = 0usize;
         loop {
             let fragment = stream.read_fragment().unwrap();
             if fragment.is_empty() {
@@ -1985,10 +1989,18 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
             fragments += 1;
             let tracks = parse_fragment(&fragment);
             let v = &tracks[&1];
+            if fragments == 1 {
+                first_frag_frames = v.len();
+            }
             assert!(v[0].keyframe, "{name}: 断片の先頭は必ずキーフレーム");
+            if let Some(end) = video_end {
+                assert_eq!(v[0].dts, end, "{name}: 映像断片の継ぎ目に隙間があります");
+            }
             for s in v {
                 assert_eq!(s.dts, s.pts, "{name}: B フレームなし (DTS == PTS) を保つ");
             }
+            let v_last = v.last().unwrap();
+            video_end = Some(v_last.dts + v_last.duration);
             video.extend(v.iter().map(|s| s.pts));
             if let Some(a) = tracks.get(&2) {
                 if let Some(end) = audio_end {
@@ -1999,7 +2011,11 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
                 audio_end = Some(a.last().unwrap().dts + sample_step);
             }
         }
-        assert!(fragments >= 2, "{name}: 2 秒の動画なので複数断片に分かれる");
+        assert!(fragments >= 3, "{name}: 初回短断片 + 後続断片に分かれる");
+        assert!(
+            (5..=8).contains(&first_frag_frames),
+            "{name}: 初回断片は 0.25 秒前後で素早く返す: {first_frag_frames}"
+        );
         assert_eq!(
             video.len(),
             48,
@@ -2021,10 +2037,14 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
             "{name}: 音声長さ {audio_sec}"
         );
 
-        // 2. GOP 途中（1.25 秒）へのシーク: 1.0〜1.25 秒のエンコードを省き、映像・音声の頭を揃える
+        // 2. GOP 途中（1.25 秒）へのシーク: 先頭断片が 1.25 秒を覆い、1 秒後以降の断片境界も隙間 0 で続く
         let sought = stream.seek(1.25).unwrap();
-        assert!((sought - 1.25).abs() < 0.02, "{name}: {sought}");
+        assert!(
+            (1.19..=1.25).contains(&sought),
+            "{name}: シーク戻り値 {sought}"
+        );
         let mut seek_video = Vec::new();
+        let mut seek_video_end: Option<i64> = None;
         let mut seek_audio_start: Option<f64> = None;
         let mut seek_audio_end: Option<i64> = None;
         loop {
@@ -2035,6 +2055,14 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
             let tracks = parse_fragment(&fragment);
             let v = &tracks[&1];
             assert!(v[0].keyframe);
+            if let Some(end) = seek_video_end {
+                assert_eq!(
+                    v[0].dts, end,
+                    "{name}: シーク後の映像断片の継ぎ目に隙間があります"
+                );
+            }
+            let v_last = v.last().unwrap();
+            seek_video_end = Some(v_last.dts + v_last.duration);
             seek_video.extend(v.iter().map(|s| s.pts));
             if let Some(a) = tracks.get(&2) {
                 if seek_audio_start.is_none() {
@@ -2048,21 +2076,32 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
         }
         let first_sec = seek_video[0] as f64 / 90_000.0;
         assert!(
-            (1.24..=1.30).contains(&first_sec),
-            "{name}: シーク先頭映像 {first_sec}"
+            (1.19..=1.25).contains(&first_sec),
+            "{name}: シーク先頭映像({first_sec})は目標時刻 1.25 秒以下で覆うこと"
         );
         let a_start = seek_audio_start.unwrap();
         assert!(
-            (first_sec - a_start).abs() <= 0.08,
+            a_start <= first_sec + 0.01 && first_sec - a_start <= 0.05,
             "{name}: シーク直後の映像({first_sec})と音声({a_start})がずれています"
         );
         assert!(
-            (16..=20).contains(&seek_video.len()),
-            "{name}: 1.25〜2.0 秒のフレーム数 {}",
+            (18..=21).contains(&seek_video.len()),
+            "{name}: 1.20〜2.0 秒のフレーム数 {}",
             seek_video.len()
         );
 
-        // 3. 末尾以降へのシークでも空にならず最後のキーフレームから再生できる
+        // 3. 巻き戻しシーク（0.55 秒）でも継ぎ目なく再生できる
+        let back = stream.seek(0.55).unwrap();
+        assert!((0.49..=0.55).contains(&back), "{name}: {back}");
+        let back_frag = stream.read_fragment().unwrap();
+        let back_tracks = parse_fragment(&back_frag);
+        let back_first_sec = back_tracks[&1][0].pts as f64 / 90_000.0;
+        assert!(
+            (0.49..=0.55).contains(&back_first_sec),
+            "{name}: 巻き戻し先頭 {back_first_sec}"
+        );
+
+        // 4. 末尾以降へのシークでも空にならず最後のキーフレームから再生できる
         let past_end = stream.seek(10.0).unwrap();
         assert!((past_end - 1.0).abs() < 0.05, "{name}: {past_end}");
         let tail_frag = stream.read_fragment().unwrap();

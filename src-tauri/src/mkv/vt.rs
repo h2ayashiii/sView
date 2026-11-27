@@ -224,6 +224,7 @@ unsafe extern "C" {
 unsafe extern "C" {
     static kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: CFStringRef;
     static kVTCompressionPropertyKey_RealTime: CFStringRef;
+    static kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality: CFStringRef;
     static kVTCompressionPropertyKey_AllowFrameReordering: CFStringRef;
     static kVTCompressionPropertyKey_AllowOpenGOP: CFStringRef;
     static kVTCompressionPropertyKey_ProfileLevel: CFStringRef;
@@ -359,6 +360,7 @@ struct CallbackState {
     frames: Vec<EncodedFrame>,
     avcc: Option<Vec<u8>>,
     error: Option<String>,
+    dropped_keyframe: bool,
 }
 
 /// フォーマット記述子から fMP4 用の avcC（AVCDecoderConfigurationRecord）を取り出す
@@ -441,6 +443,9 @@ unsafe extern "C" fn encode_output_callback(
         return;
     }
     if info_flags & K_VT_ENCODE_INFO_FRAME_DROPPED != 0 || sample_buffer.is_null() {
+        if guard.frames.is_empty() {
+            guard.dropped_keyframe = true;
+        }
         return;
     }
     if guard.avcc.is_none() {
@@ -522,7 +527,7 @@ fn cv_color_keys(
     }
 }
 
-/// VideoToolbox H.264 ハードウェアエンコーダ（B フレームなし・リアルタイム向け）
+/// VideoToolbox H.264 ハードウェアエンコーダ（B フレームなし・バースト高速変換向け）
 pub(crate) struct VtH264Encoder {
     session: VTCompressionSessionRef,
     callback_state: *mut Mutex<CallbackState>,
@@ -531,10 +536,11 @@ pub(crate) struct VtH264Encoder {
     height: u32,
     pixel_format: OSType,
     color: Option<ColorInfo>,
-    /// 巻き戻しシーク後も VideoToolbox へ渡す PTS を単調増加に保つための状態
+    /// シークで大きく時刻が飛んでも VideoToolbox のレート制御へ滑らかな単調増加時刻を渡すための状態
     /// （本来の 90 kHz PTS は sourceFrameRefCon 経由でそのまま出力へ戻す）
-    last_vt_pts: Option<i64>,
-    vt_pts_offset: i64,
+    prev_input_pts: Option<i64>,
+    synthetic_vt_pts: i64,
+    has_encoded: bool,
     default_frame_ticks: i64,
 }
 
@@ -589,6 +595,7 @@ impl VtH264Encoder {
             frames: Vec::new(),
             avcc: None,
             error: None,
+            dropped_keyframe: false,
         }));
         let state_ptr = Box::into_raw(state);
 
@@ -625,18 +632,26 @@ impl VtH264Encoder {
             height,
             pixel_format,
             color,
-            last_vt_pts: None,
-            vt_pts_offset: 0,
+            prev_input_pts: None,
+            synthetic_vt_pts: 0,
+            has_encoded: false,
             default_frame_ticks,
         };
 
         unsafe {
-            // リアルタイム再生向け設定:
+            // 断片単位のバースト変換向け設定:
+            // - RealTime = false + PrioritizeEncodingSpeedOverQuality = true にすることで、
+            //   実時間レートへの省電力スロットリングやフレームドロップを防ぎ、シーク直後も最大速度で圧縮する
             // - AllowFrameReordering = false で B フレームを無効化し、PTS == DTS を保証（音ズレ・遅延防止）
             // - AllowOpenGOP = false で断片境界が独立してデコードできるようにする
             let _ = VTSessionSetProperty(
                 encoder.session,
                 kVTCompressionPropertyKey_RealTime,
+                kCFBooleanFalse,
+            );
+            let _ = VTSessionSetProperty(
+                encoder.session,
+                kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
                 kCFBooleanTrue,
             );
             let _ = VTSessionSetProperty(
@@ -808,19 +823,37 @@ impl VideoEncoder for VtH264Encoder {
             }
         }
 
-        // 巻き戻しシークで PTS が戻っても VideoToolbox へ渡す時刻は単調増加を保つ
-        let mut vt_pts = frame.pts.saturating_add(self.vt_pts_offset);
-        if let Some(prev) = self.last_vt_pts
-            && vt_pts <= prev
-        {
-            let next = prev.saturating_add(self.default_frame_ticks);
-            self.vt_pts_offset = next.saturating_sub(frame.pts);
-            vt_pts = next;
+        // 前方・後方どちらのシークでもレート制御が大きく乱れないよう、
+        // VideoToolbox へは滑らかな連続時刻を渡し、本来の PTS は sourceFrameRefCon で運ぶ
+        if !self.has_encoded {
+            self.synthetic_vt_pts = 0;
+            self.has_encoded = true;
+        } else {
+            let delta = match self.prev_input_pts {
+                Some(prev) => {
+                    let d = frame.pts.saturating_sub(prev);
+                    if (1..=REMUX_VIDEO_TIMESCALE as i64).contains(&d) {
+                        d
+                    } else {
+                        self.default_frame_ticks
+                    }
+                }
+                None => self.default_frame_ticks,
+            };
+            self.synthetic_vt_pts = self.synthetic_vt_pts.saturating_add(delta);
         }
-        self.last_vt_pts = Some(vt_pts);
-        let pts = CMTime::new(vt_pts, REMUX_VIDEO_TIMESCALE as i32);
-        let dur = CMTime::invalid();
-        let props = if force_keyframe {
+        self.prev_input_pts = Some(frame.pts);
+
+        let retry_kf = {
+            let state = unsafe { &*self.callback_state };
+            state
+                .lock()
+                .map(|mut g| std::mem::replace(&mut g.dropped_keyframe, false))
+                .unwrap_or(false)
+        };
+        let pts = CMTime::new(self.synthetic_vt_pts, REMUX_VIDEO_TIMESCALE as i32);
+        let dur = CMTime::new(self.default_frame_ticks, REMUX_VIDEO_TIMESCALE as i32);
+        let props = if force_keyframe || retry_kf {
             self.force_keyframe_props.as_ptr()
         } else {
             null()
@@ -855,6 +888,7 @@ impl VideoEncoder for VtH264Encoder {
         let mut guard = state
             .lock()
             .map_err(|_| "VideoToolbox の状態を取得できません".to_string())?;
+        guard.dropped_keyframe = false;
         if let Some(err) = guard.error.take() {
             return Err(err);
         }
@@ -864,6 +898,10 @@ impl VideoEncoder for VtH264Encoder {
     fn avcc(&self) -> Option<Vec<u8>> {
         let state = unsafe { &*self.callback_state };
         state.lock().ok().and_then(|g| g.avcc.clone())
+    }
+
+    fn on_seek(&mut self) {
+        self.prev_input_pts = None;
     }
 }
 

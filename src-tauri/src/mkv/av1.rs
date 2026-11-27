@@ -443,10 +443,11 @@ pub(crate) trait VideoEncoder: Send {
     fn encode(&mut self, frame: &DecodedFrame<'_>, force_keyframe: bool) -> Result<(), String>;
     fn flush(&mut self) -> Result<Vec<EncodedFrame>, String>;
     fn avcc(&self) -> Option<Vec<u8>>;
+    fn on_seek(&mut self) {}
 }
 
 /// プレーナ YUV（8/10/12 bit、I420 / I422 / I444 / I400）を NV12（Y + UV インターリーブ）へ直接書き込む。
-/// 8bit I420 を最速パスとして行単位コピー＆単純ループで処理し、中間バッファを確保しない
+/// 8bit / 10bit I420 を最速パスとして境界検査なしのスライス反復で処理し、NEON ベクトル化を効かせる
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub(crate) fn copy_frame_to_nv12(
     frame: &DecodedFrame<'_>,
@@ -470,9 +471,10 @@ pub(crate) fn copy_frame_to_nv12(
         for row in 0..copy_h {
             let src = frame.y.row(row);
             let dst = &mut dst_y[row * dst_y_stride..row * dst_y_stride + dst_w];
-            dst[..copy_w].copy_from_slice(&src[..copy_w]);
-            if copy_w < dst_w {
-                dst[copy_w..].fill(pad_y);
+            let n = copy_w.min(src.len());
+            dst[..n].copy_from_slice(&src[..n]);
+            if n < dst_w {
+                dst[n..].fill(pad_y);
             }
         }
     } else {
@@ -481,12 +483,13 @@ pub(crate) fn copy_frame_to_nv12(
         for row in 0..copy_h {
             let src = frame.y.row(row);
             let dst = &mut dst_y[row * dst_y_stride..row * dst_y_stride + dst_w];
-            for (x, out) in dst[..copy_w].iter_mut().enumerate() {
-                let raw = u16::from_le_bytes([src[x * 2], src[x * 2 + 1]]) as u32;
+            let n = copy_w.min(src.len() / 2);
+            for (&pair, out) in src[..n * 2].as_chunks::<2>().0.iter().zip(&mut dst[..n]) {
+                let raw = u16::from_le_bytes(pair) as u32;
                 *out = ((raw + half) >> shift).min(255) as u8;
             }
-            if copy_w < dst_w {
-                dst[copy_w..].fill(pad_y);
+            if n < dst_w {
+                dst[n..].fill(pad_y);
             }
         }
     }
@@ -525,9 +528,14 @@ pub(crate) fn copy_frame_to_nv12(
                 let v_row = v_plane.row(sy);
                 let dst = &mut dst_uv[row * dst_uv_stride..row * dst_uv_stride + dst_uv_w * 2];
                 let w = copy_uv_w.min(u_row.len()).min(v_row.len());
-                for x in 0..w {
-                    dst[x * 2] = u_row[x];
-                    dst[x * 2 + 1] = v_row[x];
+                for ((pair, &u), &v) in dst[..w * 2]
+                    .as_chunks_mut::<2>()
+                    .0
+                    .iter_mut()
+                    .zip(&u_row[..w])
+                    .zip(&v_row[..w])
+                {
+                    *pair = [u, v];
                 }
                 if w < dst_uv_w {
                     dst[w * 2..].fill(128);
@@ -548,6 +556,34 @@ pub(crate) fn copy_frame_to_nv12(
                 if copy_uv_w < dst_uv_w {
                     dst[copy_uv_w * 2..].fill(128);
                 }
+            }
+        }
+    } else if step_x == 1 && step_y == 1 {
+        // 10bit / 12bit I420 の高速パス
+        let shift = (frame.bpc - 8) as u32;
+        let half = 1u32 << (shift - 1);
+        for row in 0..copy_uv_h {
+            let sy = row.min(max_src_uv_y);
+            let u_row = u_plane.row(sy);
+            let v_row = v_plane.row(sy);
+            let dst = &mut dst_uv[row * dst_uv_stride..row * dst_uv_stride + dst_uv_w * 2];
+            let w = copy_uv_w.min(u_row.len() / 2).min(v_row.len() / 2);
+            for ((pair, &u_bytes), &v_bytes) in dst[..w * 2]
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .zip(u_row[..w * 2].as_chunks::<2>().0)
+                .zip(v_row[..w * 2].as_chunks::<2>().0)
+            {
+                let u_val = u16::from_le_bytes(u_bytes) as u32;
+                let v_val = u16::from_le_bytes(v_bytes) as u32;
+                *pair = [
+                    ((u_val + half) >> shift).min(255) as u8,
+                    ((v_val + half) >> shift).min(255) as u8,
+                ];
+            }
+            if w < dst_uv_w {
+                dst[w * 2..].fill(128);
             }
         }
     } else {
@@ -580,6 +616,7 @@ pub(crate) fn copy_frame_to_nv12(
 
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 mod decoder {
+    use std::collections::VecDeque;
     use std::ffi::c_int;
     use std::mem::MaybeUninit;
     use std::ptr::NonNull;
@@ -631,11 +668,10 @@ mod decoder {
                 dav1d_default_settings(NonNull::new_unchecked(settings.as_mut_ptr()));
             }
             let mut settings = unsafe { settings.assume_init() };
-            // 負荷とメモリを抑えるためスレッド数は 2〜4、フレーム遅延は 2 に制限する
-            // （M1 / M2 の性能コア 4 本で 1080p60〜4K を十分余裕をもって復号しつつ
-            //   システム全体やバッテリーへの負担を軽く保つ）
-            let threads =
-                std::thread::available_parallelism().map_or(4, |n| n.get().clamp(2, 4)) as c_int;
+            // シーク時のキーフレーム〜目標時刻の復号も速く終わるよう論理コアの 3/4（最大 8）を使い、
+            // フレーム遅延は 2 に抑えてメモリと通常時のレイテンシを低く保つ（待機スレッドは Condvar で休む）
+            let threads = std::thread::available_parallelism()
+                .map_or(4, |n| (n.get() * 3 / 4).clamp(2, 8)) as c_int;
             settings.n_threads = threads;
             settings.max_frame_delay = 2;
             settings.frame_size_limit = MAX_FRAME_PIXELS;
@@ -833,7 +869,8 @@ mod decoder {
     >;
 
     /// AV1（rav1d）→ H.264（VideoToolbox / テスト用エンコーダ）のリアルタイム変換器。
-    /// 最初のデコード済みフレームで実際の解像度と色空間を確定してからエンコーダを作る
+    /// 次の断片の先頭フレームが届いた時点で前の断片を確定することで、
+    /// VFR やミリ秒丸め（WebM）でも断片境界の隙間・重なりを 0 ティックに保つ
     pub(crate) struct Av1Transcoder {
         decoder: Av1Decoder,
         encoder: Option<Box<dyn VideoEncoder>>,
@@ -843,7 +880,10 @@ mod decoder {
         encoded_color: Option<ColorInfo>,
         avcc: Option<Vec<u8>>,
         last_encoded_pts: Option<i64>,
+        fragment_start_pts: Option<i64>,
+        in_flight_count: usize,
         force_next_keyframe: bool,
+        completed_fragments: VecDeque<(Vec<EncodedFrame>, i64)>,
     }
 
     impl Av1Transcoder {
@@ -873,43 +913,64 @@ mod decoder {
                 encoded_color: None,
                 avcc: None,
                 last_encoded_pts: None,
+                fragment_start_pts: None,
+                in_flight_count: 0,
                 force_next_keyframe: true,
+                completed_fragments: VecDeque::new(),
             })
         }
 
-        /// 次の断片の最初の出力フレームを必ずキーフレーム（IDR）にする
-        pub(crate) fn mark_next_keyframe(&mut self) {
-            self.force_next_keyframe = true;
-        }
-
-        /// シーク時にデコーダをリセットする（エンコーダセッションは維持し avcC を変えない）
+        /// シーク時にデコーダと未確定フレームをリセットする（エンコーダセッション自体は維持し avcC を変えない）
         pub(crate) fn reset_for_seek(&mut self) {
             self.decoder.flush();
             if let Some(enc) = self.encoder.as_mut() {
                 let _ = enc.flush();
+                enc.on_seek();
             }
+            self.completed_fragments.clear();
+            self.fragment_start_pts = None;
+            self.in_flight_count = 0;
             self.last_encoded_pts = None;
             self.force_next_keyframe = true;
         }
 
-        /// AV1 パケットを復号し、`skip_before_pts` 以降のフレームだけをエンコーダへ渡す。
-        /// シーク時にキーフレームから目標時刻までの不要なエンコードを省くのに使う。
-        /// 戻り値は今回エンコーダへ投入したフレーム数と、直近の投入 PTS
+        /// 確定済みの断片（エンコード済みフレーム列と正確な終端 PTS）が 1 つ以上あるか
+        pub(crate) fn has_completed_fragment(&self) -> bool {
+            !self.completed_fragments.is_empty()
+        }
+
+        /// シーク目標以降のフレームがすでに 1 枚でも復号されたか
+        pub(crate) fn has_started_fragment(&self) -> bool {
+            self.in_flight_count > 0 || !self.completed_fragments.is_empty()
+        }
+
+        /// 確定済みの断片を 1 つ取り出す。戻り値は (フレーム列, 次の断片の先頭 PTS = この断片の終端 PTS)
+        pub(crate) fn pop_completed_fragment(&mut self) -> Option<(Vec<EncodedFrame>, i64)> {
+            self.completed_fragments.pop_front()
+        }
+
+        /// AV1 パケットを復号し、`skip_before_pts` 以降のフレームをエンコーダへ流す。
+        /// 蓄積中の断片が `target_span` または `max_frames` に達していたら、今回のフレームを
+        /// 次の断片の先頭（IDR）にする前に前の断片を確定させる
         pub(crate) fn push_packet(
             &mut self,
             packet: &[u8],
             pts: i64,
             skip_before_pts: Option<i64>,
-        ) -> Result<(usize, Option<i64>), String> {
-            let mut encoded_count = 0usize;
-            let mut last_pts = None;
+            target_span: i64,
+            max_frames: usize,
+        ) -> Result<bool, String> {
             let factory = &self.factory;
             let fps = self.fps;
             let encoder = &mut self.encoder;
             let encoded_size = &mut self.encoded_size;
             let encoded_color = &mut self.encoded_color;
+            let avcc = &mut self.avcc;
             let last_encoded_pts = &mut self.last_encoded_pts;
+            let fragment_start_pts = &mut self.fragment_start_pts;
+            let in_flight_count = &mut self.in_flight_count;
             let force_next_keyframe = &mut self.force_next_keyframe;
+            let completed_fragments = &mut self.completed_fragments;
 
             self.decoder.send_packet(packet, pts, &mut |frame| {
                 if let Some(min_pts) = skip_before_pts
@@ -917,71 +978,111 @@ mod decoder {
                 {
                     return Ok(());
                 }
-                Self::encode_decoded(
+                Self::handle_decoded_frame(
                     frame,
+                    target_span,
+                    max_frames,
                     factory,
                     fps,
                     encoder,
                     encoded_size,
                     encoded_color,
+                    avcc,
                     last_encoded_pts,
+                    fragment_start_pts,
+                    in_flight_count,
                     force_next_keyframe,
-                )?;
-                encoded_count += 1;
-                last_pts = *last_encoded_pts;
-                Ok(())
+                    completed_fragments,
+                )
             })?;
-            Ok((encoded_count, last_pts))
+            Ok(!self.completed_fragments.is_empty())
         }
 
-        /// EOF 時にデコーダに残ったフレームをすべてエンコーダへ流す
-        pub(crate) fn drain_decoder(
+        /// EOF 時にデコーダとエンコーダに残ったフレームをすべて吐き出して最終断片を確定させる
+        pub(crate) fn finish_eof(
             &mut self,
             skip_before_pts: Option<i64>,
-        ) -> Result<(usize, Option<i64>), String> {
-            let mut encoded_count = 0usize;
-            let mut last_pts = None;
-            let factory = &self.factory;
-            let fps = self.fps;
-            let encoder = &mut self.encoder;
-            let encoded_size = &mut self.encoded_size;
-            let encoded_color = &mut self.encoded_color;
-            let last_encoded_pts = &mut self.last_encoded_pts;
-            let force_next_keyframe = &mut self.force_next_keyframe;
+            target_span: i64,
+            max_frames: usize,
+            default_frame_ticks: i64,
+        ) -> Result<(), String> {
+            {
+                let factory = &self.factory;
+                let fps = self.fps;
+                let encoder = &mut self.encoder;
+                let encoded_size = &mut self.encoded_size;
+                let encoded_color = &mut self.encoded_color;
+                let avcc = &mut self.avcc;
+                let last_encoded_pts = &mut self.last_encoded_pts;
+                let fragment_start_pts = &mut self.fragment_start_pts;
+                let in_flight_count = &mut self.in_flight_count;
+                let force_next_keyframe = &mut self.force_next_keyframe;
+                let completed_fragments = &mut self.completed_fragments;
 
-            self.decoder.drain(&mut |frame| {
-                if let Some(min_pts) = skip_before_pts
-                    && frame.pts < min_pts
-                {
-                    return Ok(());
+                self.decoder.drain(&mut |frame| {
+                    if let Some(min_pts) = skip_before_pts
+                        && frame.pts < min_pts
+                    {
+                        return Ok(());
+                    }
+                    Self::handle_decoded_frame(
+                        frame,
+                        target_span,
+                        max_frames,
+                        factory,
+                        fps,
+                        encoder,
+                        encoded_size,
+                        encoded_color,
+                        avcc,
+                        last_encoded_pts,
+                        fragment_start_pts,
+                        in_flight_count,
+                        force_next_keyframe,
+                        completed_fragments,
+                    )
+                })?;
+            }
+
+            if self.in_flight_count > 0
+                && let Some(enc) = self.encoder.as_mut()
+            {
+                let tail = enc.flush()?;
+                if self.avcc.is_none() {
+                    self.avcc = enc.avcc();
                 }
-                Self::encode_decoded(
-                    frame,
-                    factory,
-                    fps,
-                    encoder,
-                    encoded_size,
-                    encoded_color,
-                    last_encoded_pts,
-                    force_next_keyframe,
-                )?;
-                encoded_count += 1;
-                last_pts = *last_encoded_pts;
-                Ok(())
-            })?;
-            Ok((encoded_count, last_pts))
+                self.in_flight_count = 0;
+                self.fragment_start_pts = None;
+                if !tail.is_empty() {
+                    let last_pts = tail.last().unwrap().pts;
+                    let last_dur = if tail.len() >= 2 {
+                        (last_pts - tail[tail.len() - 2].pts).max(1)
+                    } else {
+                        default_frame_ticks.max(1)
+                    };
+                    self.completed_fragments
+                        .push_back((tail, last_pts + last_dur));
+                }
+            }
+            Ok(())
         }
 
         #[allow(clippy::too_many_arguments)]
-        fn encode_decoded(
+        fn handle_decoded_frame(
             frame: &DecodedFrame<'_>,
+            target_span: i64,
+            max_frames: usize,
             factory: &EncoderFactory,
             fps: f64,
             encoder: &mut Option<Box<dyn VideoEncoder>>,
             encoded_size: &mut Option<(u32, u32)>,
             encoded_color: &mut Option<ColorInfo>,
+            avcc: &mut Option<Vec<u8>>,
             last_encoded_pts: &mut Option<i64>,
+            fragment_start_pts: &mut Option<i64>,
+            in_flight_count: &mut usize,
             force_next_keyframe: &mut bool,
+            completed_fragments: &mut VecDeque<(Vec<EncodedFrame>, i64)>,
         ) -> Result<(), String> {
             if encoder.is_none() {
                 let w = frame.width as u32;
@@ -996,6 +1097,28 @@ mod decoder {
                 Some(prev) if frame.pts <= prev => prev + 1,
                 _ => frame.pts.max(0),
             };
+
+            // 蓄積中の断片が目標長に達していたら、このフレーム（= 次断片の先頭 PTS）で前の断片を閉じる
+            if let Some(start) = *fragment_start_pts
+                && *in_flight_count > 0
+                && (pts - start >= target_span || *in_flight_count >= max_frames)
+            {
+                let enc = encoder.as_mut().unwrap();
+                let flushed = enc.flush()?;
+                if avcc.is_none() {
+                    *avcc = enc.avcc();
+                }
+                if !flushed.is_empty() {
+                    completed_fragments.push_back((flushed, pts));
+                }
+                *fragment_start_pts = None;
+                *in_flight_count = 0;
+                *force_next_keyframe = true;
+            }
+
+            if fragment_start_pts.is_none() {
+                *fragment_start_pts = Some(pts);
+            }
             let adjusted = DecodedFrame {
                 width: frame.width,
                 height: frame.height,
@@ -1028,19 +1151,8 @@ mod decoder {
             let force_kf = *force_next_keyframe;
             *force_next_keyframe = false;
             *last_encoded_pts = Some(pts);
+            *in_flight_count += 1;
             encoder.as_mut().unwrap().encode(&adjusted, force_kf)
-        }
-
-        /// エンコーダで現在完了しているフレームを回収する
-        pub(crate) fn flush_encoder(&mut self) -> Result<Vec<EncodedFrame>, String> {
-            let Some(enc) = self.encoder.as_mut() else {
-                return Ok(Vec::new());
-            };
-            let frames = enc.flush()?;
-            if self.avcc.is_none() {
-                self.avcc = enc.avcc();
-            }
-            Ok(frames)
         }
 
         pub(crate) fn avcc(&self) -> Option<&[u8]> {

@@ -1178,12 +1178,27 @@ impl Mp4Source {
         // 音声はキーフレーム時刻と目標時刻の早い方から読める位置に合わせる
         // （トランスコード時は映像の最初の出力フレームに合わせて不要な先頭音声を間引く）
         let audio_target_sec = kf_sec.min(seconds.max(0.0));
-        let target_a = (audio_target_sec * self.audio_timescale as f64) as i64;
+        self.seek_audio(audio_target_sec);
+        kf_sec
+    }
+
+    /// 音声の読み込み位置だけを `seconds` の直前へ移す（変換シーク時にキーフレーム〜目標時刻の不要な音声読み込みを省く）
+    pub(crate) fn seek_audio(&mut self, seconds: f64) {
+        let target_a = (seconds.max(0.0) * self.audio_timescale as f64) as i64;
         self.audio_idx = self
             .audio_samples
             .partition_point(|s| s.pts < target_a)
             .saturating_sub(1);
-        kf_sec
+    }
+
+    /// BufReader の 256 KB バッファを無駄に捨てないよう seek_relative で移動する
+    fn move_to(&mut self, pos: u64) -> std::io::Result<()> {
+        let here = self.reader.stream_position()?;
+        if let Ok(delta) = i64::try_from(pos as i128 - here as i128) {
+            self.reader.seek_relative(delta)
+        } else {
+            self.reader.seek(SeekFrom::Start(pos)).map(|_| ())
+        }
     }
 
     /// 次の映像サンプルを読む。戻り値は (90 kHz PTS, keyframe, payload)
@@ -1200,7 +1215,7 @@ impl Mp4Source {
             )));
         }
         let mut data = vec![0u8; sample.size as usize];
-        self.reader.seek(SeekFrom::Start(sample.offset))?;
+        self.move_to(sample.offset)?;
         self.reader.read_exact(&mut data)?;
         Ok(Some((
             self.video_pts_90k(sample.pts),
@@ -1241,7 +1256,7 @@ impl Mp4Source {
                 continue;
             }
             let mut data = vec![0u8; sample.size as usize];
-            self.reader.seek(SeekFrom::Start(sample.offset))?;
+            self.move_to(sample.offset)?;
             self.reader.read_exact(&mut data)?;
             out.push((self.audio_pts_units(sample.pts, out_timescale), data));
         }

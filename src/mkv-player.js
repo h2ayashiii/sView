@@ -38,16 +38,24 @@ export class MkvPlayer {
     this.eof = false;
     // シークの目標（null = なし）
     this.seekTarget = null;
+    // nudgeGap が自ら currentTime を微調整した値（その seeking イベントで再シークしない）
+    this.nudgeTarget = null;
     // シークでバッファを空にした直後（最初の断片の頭まで再生位置を進めてよい）
     this.afterReset = false;
     this.wakeUp = null;
     this.onEvent = () => this.notify();
     this.onSeeking = () => {
-      this.seekTarget = this.video.currentTime;
+      const t = this.video.currentTime;
+      if (this.nudgeTarget !== null && Math.abs(t - this.nudgeTarget) < 0.05) {
+        this.nudgeTarget = null;
+        return;
+      }
+      this.nudgeTarget = null;
+      this.seekTarget = t;
       this.notify();
     };
     this.onWaiting = () => {
-      this.nudgeGap();
+      this.nudgeGap(true);
       this.notify();
     };
   }
@@ -202,15 +210,19 @@ export class MkvPlayer {
         }
         const data = mkvBytes(await invoke("mkv_read", { id: this.id }));
         if (this.closed) return;
-        // 読んでいる間にシークされたら、この断片は捨てる（シーク先から読み直す）
-        if (this.seekTarget !== null) continue;
+        // 読んでいる間にバッファ外へのシークが来ていたら、この断片は捨ててシーク先から読み直す。
+        // 続きを読めば追いつく範囲へのシークでは、Rust 側がすでに先へ進んでいるため捨てずに足す
+        if (this.seekTarget !== null) {
+          if (!this.canContinueFromBuffer(this.seekTarget)) continue;
+          this.seekTarget = null;
+        }
         if (!data.length) {
           this.eof = true;
           this.endOfStream();
           continue;
         }
         await this.appendWithRoom(data);
-        this.nudgeGap();
+        this.nudgeGap(false);
       } catch (e) {
         if (this.closed) return;
         this.closed = true;
@@ -220,16 +232,22 @@ export class MkvPlayer {
     }
   }
 
+  // バッファを空にせず続きを読めば追いつけるシーク先かを返す
+  canContinueFromBuffer(target) {
+    const ranges = this.sourceBuffer?.buffered;
+    if (!ranges?.length) return false;
+    const last = ranges.length - 1;
+    if (target >= ranges.start(last) && target < ranges.end(last)) return true;
+    if (this.eof) return false;
+    // 変換時は数秒先まで全部エンコードして待つよりシークし直した方が速いので 1 秒以内にする
+    const maxAhead = this.info?.transcoded ? 1 : MKV_CONTINUE_S;
+    return target >= ranges.start(last) - 0.1 && target <= ranges.end(last) + maxAhead;
+  }
+
   async seek(target) {
     this.seekTarget = null;
-    const ranges = this.sourceBuffer.buffered;
-    if (ranges.length) {
-      // 読み込み済みの範囲（先頭側は捨てているので、最後の範囲が今読み足している所）の中か、
-      // その少し先なら、そのまま続きを読めば追いつく
-      const last = ranges.length - 1;
-      if (target >= ranges.start(last) - 0.1 && target <= ranges.end(last) + MKV_CONTINUE_S) {
-        return;
-      }
+    if (this.canContinueFromBuffer(target)) {
+      return;
     }
     await this.remove(0, Infinity);
     if (this.closed || this.seekTarget !== null) return;
@@ -250,19 +268,32 @@ export class MkvPlayer {
 
   // 再生位置が読み込み済みの範囲の少し手前で止まっていたら、範囲の頭へ進める
   // （映像の最初のフレームや音声の始まりが 0 秒やシーク先より少し後ろにあると、WebKit は止まったままになる）
-  nudgeGap() {
+  nudgeGap(stalled = false) {
     if (this.closed || !this.sourceBuffer) return;
     const ranges = this.sourceBuffer.buffered;
     const t = this.video.currentTime;
     for (let i = 0; i < ranges.length; i++) {
       if (t >= ranges.start(i) && t < ranges.end(i)) {
         this.afterReset = false;
+        // 範囲の末尾直前で waiting になり、すぐ後ろに次の範囲があるときは微小な隙間を飛び越す
+        if (
+          stalled &&
+          i + 1 < ranges.length &&
+          ranges.end(i) - t < 0.05 &&
+          ranges.start(i + 1) - ranges.end(i) <= MKV_GAP_JUMP_S
+        ) {
+          const next = ranges.start(i + 1) + 0.001;
+          this.nudgeTarget = next;
+          this.video.currentTime = next;
+        }
         return;
       }
       const gap = ranges.start(i) - t;
       if (gap > 0 && (gap <= MKV_GAP_JUMP_S || this.afterReset)) {
         this.afterReset = false;
-        this.video.currentTime = ranges.start(i) + 0.001;
+        const next = ranges.start(i) + 0.001;
+        this.nudgeTarget = next;
+        this.video.currentTime = next;
         return;
       }
     }

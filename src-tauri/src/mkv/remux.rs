@@ -32,7 +32,15 @@ pub(crate) const REMUX_VIDEO_TIMESCALE: u64 = 90_000;
 /// 断片はキーフレーム（GOP の頭）でだけ区切るので、実際は GOP の長さぶん延びる
 pub(crate) const REMUX_FRAGMENT_SECONDS: f64 = 1.0;
 
-/// AV1 変換時に断片 1 つに入れる映像の長さの目安（秒）。
+/// AV1 変換の起動・シーク直後の最初の断片に入れる映像の長さ（秒）。
+/// 最初の 1 断片だけ短く返すことで、シーク後の最初の描画と再生再開までの待ち時間を抑える
+#[cfg_attr(
+    not(any(target_os = "macos", all(test, target_os = "linux"))),
+    allow(dead_code)
+)]
+pub(crate) const TRANSCODE_INITIAL_FRAGMENT_SECONDS: f64 = 0.25;
+
+/// AV1 変換時に 2 断片目以降に入れる映像の長さの目安（秒）。
 /// 出力側でキーフレームを打てるため、元動画の GOP が長くても 1 秒ごとに細切れにして応答を速く保つ
 #[cfg_attr(
     not(any(target_os = "macos", all(test, target_os = "linux"))),
@@ -995,10 +1003,14 @@ struct TranscodeState {
     transcoder: Av1Transcoder,
     /// open() で avcC を確定した際に作った最初の断片（1 回目の read_fragment でそのまま返す）
     prefetched: Option<Vec<u8>>,
+    /// Matroska / WebM でインターリーブ音声を拾う途中に先読みした映像パケット（90 kHz PTS, ペイロード）
+    pending_video: VecDeque<(i64, Vec<u8>)>,
     /// 先読み済みの音声フレーム（出力 timescale 単位の PTS, 復号済みペイロード）
     pending_audio: VecDeque<(i64, Vec<u8>)>,
     /// シーク直後にエンコードをスキップする閾値（90 kHz PTS）
     skip_before_pts: Option<i64>,
+    /// 起動・シーク直後の最初の断片か（最初の 1 断片だけ短く返して応答を速める）
+    first_fragment: bool,
     /// コンテナから映像を最後まで読み切ったか
     video_eof: bool,
     /// デフォルトの 1 フレーム長（90 kHz）
@@ -1122,8 +1134,10 @@ impl MkvStream {
                 stream.transcode = Some(TranscodeState {
                     transcoder,
                     prefetched: None,
+                    pending_video: VecDeque::new(),
                     pending_audio: VecDeque::new(),
                     skip_before_pts: None,
+                    first_fragment: true,
                     video_eof: false,
                     default_frame_ticks,
                     duration,
@@ -1342,21 +1356,30 @@ impl MkvStream {
         #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
         if let Some(tc) = self.transcode.as_mut() {
             tc.prefetched = None;
+            tc.pending_video.clear();
             tc.pending_audio.clear();
             tc.video_eof = false;
+            tc.first_fragment = true;
             tc.transcoder.reset_for_seek();
             // 動画の末尾以降へのシークでは最後のキーフレームからそのまま再生する（通常リマックスと揃える）。
-            // 途中のシークではキーフレームから目標時刻までの間を復号のみにしてエンコードを省く
+            // 途中のシークではキーフレームから目標時刻の 1 フレーム手前までを復号のみにしてエンコードを省き、
+            // 最初の断片が必ず目標時刻（video.currentTime）を覆うようにして WebKit 側の二重シークを防ぐ
             let past_end = tc.duration.is_some_and(|d| seconds >= d);
             if !past_end {
                 let target = match tc.duration {
                     Some(d) => seconds.min((d - 0.05).max(keyframe_sec)),
                     None => seconds,
                 };
-                if target > keyframe_sec + 0.01 {
-                    tc.skip_before_pts =
-                        Some((target.max(0.0) * REMUX_VIDEO_TIMESCALE as f64).round() as i64);
-                    return Ok(target);
+                let target_pts = (target.max(0.0) * REMUX_VIDEO_TIMESCALE as f64).round() as i64;
+                let kf_pts = (keyframe_sec.max(0.0) * REMUX_VIDEO_TIMESCALE as f64).round() as i64;
+                let start_pts = (target_pts - tc.default_frame_ticks - 450).max(kf_pts);
+                if start_pts > kf_pts + 450 {
+                    tc.skip_before_pts = Some(start_pts);
+                    let start_sec = start_pts as f64 / REMUX_VIDEO_TIMESCALE as f64;
+                    if let StreamSource::Mp4(mp4) = &mut self.source {
+                        mp4.seek_audio((start_sec - 0.1).max(0.0));
+                    }
+                    return Ok(start_sec);
                 }
             }
             tc.skip_before_pts = None;
@@ -1509,49 +1532,59 @@ impl MkvStream {
         ))
     }
 
-    /// AV1 リアルタイム変換（rav1d → VideoToolbox H.264）で次の 1 断片（約 1 秒分）を作る。
-    /// - 出力側で毎断片の先頭を必ずキーフレーム（IDR）にするため、元動画の GOP が長くても
-    ///   1 秒ごとに返して起動・シークの応答を速く保つ
-    /// - B フレームなし（PTS == DTS）で元フレームごとの PTS をそのまま引き継ぎ、
-    ///   音声も同じ時間範囲にピタッと揃えることで VFR でも音ズレしない
+    /// AV1 リアルタイム変換（rav1d → VideoToolbox H.264）で次の 1 断片を作る。
+    /// - 起動・シーク直後の最初の 1 断片は 0.25 秒で素早く返し、以降は 1 秒単位で返す
+    /// - 次の断片の先頭フレーム PTS で前の断片を閉じるため、VFR や WebM でも断片境界の隙間が 0 になる
+    /// - B フレームなし（PTS == DTS）で元フレームごとの PTS をそのまま引き継ぎ、音声も同じ区間へ揃える
     #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
     fn build_transcode_fragment(&mut self) -> Result<Vec<u8>, String> {
-        let Some(tc) = self.transcode.as_mut() else {
+        let Some(tc) = self.transcode.as_ref() else {
             return Ok(Vec::new());
         };
-        if tc.video_eof {
+        if tc.video_eof && !tc.transcoder.has_started_fragment() {
             return Ok(Vec::new());
         }
-        tc.transcoder.mark_next_keyframe();
-        let target_span = (TRANSCODE_FRAGMENT_SECONDS * REMUX_VIDEO_TIMESCALE as f64) as i64;
-        let mut first_pts: Option<i64> = None;
-        let mut total_encoded = 0usize;
+        let span_sec = if tc.first_fragment {
+            TRANSCODE_INITIAL_FRAGMENT_SECONDS
+        } else {
+            TRANSCODE_FRAGMENT_SECONDS
+        };
+        let target_span = (span_sec * REMUX_VIDEO_TIMESCALE as f64) as i64;
 
-        loop {
+        while !self
+            .transcode
+            .as_ref()
+            .unwrap()
+            .transcoder
+            .has_completed_fragment()
+        {
+            if self.transcode.as_ref().unwrap().video_eof {
+                break;
+            }
             let skip_before = self.transcode.as_ref().unwrap().skip_before_pts;
             let next_video = self.read_next_av1_packet()?;
             let tc = self.transcode.as_mut().unwrap();
             match next_video {
                 Some((pts_90k, payload)) => {
-                    let (n, last_pts) =
-                        tc.transcoder.push_packet(&payload, pts_90k, skip_before)?;
-                    if n > 0 {
-                        total_encoded += n;
-                        if first_pts.is_none() {
-                            first_pts = last_pts;
-                            // 目標時刻以降の最初のフレームが出たのでシークスキップを終了
-                            tc.skip_before_pts = None;
-                        }
-                        if let (Some(start), Some(end)) = (first_pts, last_pts)
-                            && (end - start >= target_span
-                                || total_encoded >= TRANSCODE_FRAGMENT_MAX_FRAMES)
-                        {
-                            break;
-                        }
+                    tc.transcoder.push_packet(
+                        &payload,
+                        pts_90k,
+                        skip_before,
+                        target_span,
+                        TRANSCODE_FRAGMENT_MAX_FRAMES,
+                    )?;
+                    if tc.transcoder.has_started_fragment() {
+                        tc.skip_before_pts = None;
                     }
                 }
                 None => {
-                    let _ = tc.transcoder.drain_decoder(skip_before)?;
+                    let default_ticks = tc.default_frame_ticks;
+                    tc.transcoder.finish_eof(
+                        skip_before,
+                        target_span,
+                        TRANSCODE_FRAGMENT_MAX_FRAMES,
+                        default_ticks,
+                    )?;
                     tc.skip_before_pts = None;
                     tc.video_eof = true;
                     break;
@@ -1559,53 +1592,43 @@ impl MkvStream {
             }
         }
 
-        let encoded = self
-            .transcode
-            .as_mut()
-            .unwrap()
-            .transcoder
-            .flush_encoder()?;
-        if encoded.is_empty() {
+        let tc = self.transcode.as_mut().unwrap();
+        let Some((encoded, video_end_pts)) = tc.transcoder.pop_completed_fragment() else {
             return Ok(Vec::new());
-        }
-
-        let video_eof = self.transcode.as_ref().unwrap().video_eof;
-        let default_ticks = self.transcode.as_ref().unwrap().default_frame_ticks;
+        };
+        tc.first_fragment = false;
+        let is_final_fragment = tc.video_eof && !tc.transcoder.has_started_fragment();
 
         let first_video_pts = encoded[0].pts.max(0);
         let mut durations = Vec::with_capacity(encoded.len());
         for i in 0..encoded.len() {
-            let d = if i + 1 < encoded.len() {
-                (encoded[i + 1].pts - encoded[i].pts).max(1)
+            let next_pts = if i + 1 < encoded.len() {
+                encoded[i + 1].pts
             } else {
-                // rav1d は数フレーム遅延して出力するため、コンテナ上の次パケットの PTS は
-                // 実際の次出力フレームより先にある。直前フレーム間隔か既定長を使い重なりを防ぐ
-                durations.last().copied().unwrap_or(default_ticks).max(1)
+                video_end_pts
             };
-            durations.push(d);
+            durations.push((next_pts - encoded[i].pts).max(1));
         }
-        let video_end_pts = encoded.last().unwrap().pts + *durations.last().unwrap();
 
         let video_run = TrackRun {
             track_id: 1,
             base_decode_time: first_video_pts as u64,
             samples: encoded
                 .into_iter()
-                .enumerate()
                 .zip(durations)
-                .map(|((i, frame), duration)| Sample {
+                .map(|(frame, duration)| Sample {
                     data: frame.data,
                     duration: duration as u32,
                     composition_offset: 0,
-                    // 断片の先頭は ForceKeyFrame で必ず IDR。念のため先頭は同期サンプル扱い
-                    keyframe: frame.keyframe || i == 0,
+                    keyframe: frame.keyframe,
                 })
                 .collect(),
             has_composition_offsets: false,
         };
 
         // 映像と同じ区間 [first_video_pts, video_end_pts] の音声を揃えて入れる
-        let audio_run = self.collect_transcode_audio(first_video_pts, video_end_pts, video_eof)?;
+        let audio_run =
+            self.collect_transcode_audio(first_video_pts, video_end_pts, is_final_fragment)?;
 
         self.sequence += 1;
         Ok(build_fragment(
@@ -1619,6 +1642,9 @@ impl MkvStream {
     /// Matroska / WebM では途中で出会った音声パケットを pending_audio に蓄える
     #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
     fn read_next_av1_packet(&mut self) -> Result<Option<(i64, Vec<u8>)>, String> {
+        if let Some(pkt) = self.transcode.as_mut().unwrap().pending_video.pop_front() {
+            return Ok(Some(pkt));
+        }
         match &mut self.source {
             StreamSource::Mp4(mp4) => mp4
                 .next_video()
@@ -1663,13 +1689,13 @@ impl MkvStream {
         &mut self,
         first_video_pts: i64,
         video_end_pts: i64,
-        video_eof: bool,
+        is_final_fragment: bool,
     ) -> Result<Option<TrackRun>, String> {
         let Some(audio) = self.audio.clone() else {
             return Ok(None);
         };
         let timescale = audio.timescale as i64;
-        let end_units = if video_eof {
+        let end_units = if is_final_fragment {
             i64::MAX
         } else {
             ((video_end_pts as i128 * timescale as i128) / REMUX_VIDEO_TIMESCALE as i128) as i64
@@ -1678,18 +1704,21 @@ impl MkvStream {
         // コンテナから video_end_pts までの音声を補充する
         match &mut self.source {
             StreamSource::Mp4(mp4) => {
-                let until_sec =
-                    (!video_eof).then_some(video_end_pts as f64 / REMUX_VIDEO_TIMESCALE as f64);
+                let until_sec = (!is_final_fragment)
+                    .then_some(video_end_pts as f64 / REMUX_VIDEO_TIMESCALE as f64);
                 let more = mp4
                     .read_audio_until(until_sec, audio.timescale)
                     .map_err(|e| format!("音声を読めません: {e}"))?;
                 self.transcode.as_mut().unwrap().pending_audio.extend(more);
             }
             StreamSource::Matroska(mkv) => {
-                // インターリーブの都合で音声が映像のすぐ後ろに並んでいる分だけ追加で拾う
+                // WebM / MKV で音声ブロックが映像ブロックより後ろにインターリーブされていても取りこぼさないよう、
+                // 途中の映像ブロックは pending_video に退避しつつ end_units まで音声を拾う
                 let video_track = self.video.number;
+                let video_decoders = &self.video.decoders;
+                let max_video_ahead = video_end_pts.saturating_add(REMUX_VIDEO_TIMESCALE as i64);
                 loop {
-                    let tail_ok = !video_eof
+                    let tail_ok = !is_final_fragment
                         && self
                             .transcode
                             .as_ref()
@@ -1708,8 +1737,18 @@ impl MkvStream {
                         break;
                     };
                     if frame.track == video_track {
-                        mkv.walker.push_back(frame);
-                        break;
+                        let v_pts = mkv.ticks_to_units(frame.timestamp, REMUX_VIDEO_TIMESCALE);
+                        let data = decode_block(frame.data, video_decoders, REMUX_MAX_FRAME_BYTES)
+                            .unwrap_or_default();
+                        self.transcode
+                            .as_mut()
+                            .unwrap()
+                            .pending_video
+                            .push_back((v_pts, data));
+                        if !is_final_fragment && v_pts > max_video_ahead {
+                            break;
+                        }
+                        continue;
                     }
                     let ts = frame.timestamp - audio.delay_ticks;
                     if ts >= 0 {
@@ -1726,11 +1765,12 @@ impl MkvStream {
             }
         }
 
-        // シーク直後の最初の断片では、映像開始時刻より 50 ms 以上前の音声を捨てて頭出しを揃える
+        // シーク直後の最初の断片では、先頭映像フレームを覆う音声フレーム（最大 1 パケット手前）から始める
         let min_units = if self.audio_next.is_none() && first_video_pts > 0 {
             let v_in_audio = ((first_video_pts as i128 * timescale as i128)
                 / REMUX_VIDEO_TIMESCALE as i128) as i64;
-            (v_in_audio - timescale / 20).max(0)
+            let frame_dur = audio.frame_samples.max(960) as i64;
+            (v_in_audio - frame_dur).max(0)
         } else {
             0
         };
