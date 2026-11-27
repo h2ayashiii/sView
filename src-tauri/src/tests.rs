@@ -2111,5 +2111,41 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
         );
         let tail_tracks = parse_fragment(&tail_frag);
         assert!(tail_tracks[&1][0].keyframe);
+
+        // 5. シーク連打の中断フラグで read_fragment が即座に打ち切られ、次の seek で復帰できる
+        stream.seek(0.5).unwrap();
+        stream
+            .abort_flag()
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(stream.read_fragment().unwrap().is_empty());
+        stream.seek(0.5).unwrap();
+        assert!(!stream.read_fragment().unwrap().is_empty());
     }
+
+    // 奇数解像度の偶数丸めと、5K / 8K 解像度の 4K 以下縮小
+    assert_eq!(h264_output_dimensions(853, 480), (854, 480));
+    assert_eq!(h264_output_dimensions(1920, 1079), (1920, 1080));
+    assert_eq!(h264_output_dimensions(7680, 4320), (4096, 2304));
+    assert_eq!(h264_output_dimensions(3840, 2160), (3840, 2160));
+
+    // NV12 の縮小コピー（8K → 4K 相当）が境界外アクセスせず書き込める
+    let big_y = vec![200u8; 8 * 6];
+    let big_u = vec![90u8; 4 * 3];
+    let big_v = vec![150u8; 4 * 3];
+    let frame = DecodedFrame {
+        width: 8,
+        height: 6,
+        bpc: 8,
+        layout: PixelLayout::I420,
+        y: PlaneView::from_slice(&big_y, 8, 8, 6),
+        u: Some(PlaneView::from_slice(&big_u, 4, 4, 3)),
+        v: Some(PlaneView::from_slice(&big_v, 4, 4, 3)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0u8; 4 * 4];
+    let mut dst_uv = vec![0u8; 4 * 2];
+    copy_frame_to_nv12(&frame, 4, 4, &mut dst_y, 4, &mut dst_uv, 4);
+    assert!(dst_y.iter().all(|&v| v == 200));
+    assert_eq!(&dst_uv[..4], &[90, 150, 90, 150]);
 }

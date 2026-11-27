@@ -28,8 +28,14 @@ pub(crate) use subtitles::*;
 
 // ---- 動画ストリーム（MKV リマックス・macOS AV1 変換）のコマンド ----
 
+type MkvStreamEntry = (
+    u64,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    std::sync::Arc<Mutex<MkvStream>>,
+);
+
 /// ウィンドウごとに開いている動画ストリーム（1 ウィンドウ 1 本。開き直したら前のものは閉じる）
-pub(crate) struct MkvStreams(pub(crate) PerWindow<Option<(u64, std::sync::Arc<Mutex<MkvStream>>)>>);
+pub(crate) struct MkvStreams(pub(crate) PerWindow<Option<MkvStreamEntry>>);
 
 static NEXT_MKV_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -41,10 +47,21 @@ impl MkvStreams {
     ) -> Result<std::sync::Arc<Mutex<MkvStream>>, String> {
         self.0
             .with(label, |s| {
-                s.as_ref().filter(|(i, _)| *i == id).map(|(_, s)| s.clone())
+                s.as_ref()
+                    .filter(|(i, _, _)| *i == id)
+                    .map(|(_, _, stream)| stream.clone())
             })
             .flatten()
             .ok_or_else(|| "動画はもう閉じています".to_string())
+    }
+
+    pub(crate) fn remove_window(&self, label: &str) {
+        self.0.with(label, |s| {
+            if let Some((_, abort, _)) = s.take() {
+                abort.store(true, AtomicOrdering::Relaxed);
+            }
+        });
+        self.0.remove(label);
     }
 }
 
@@ -85,8 +102,13 @@ pub(crate) fn mkv_open(
 ) -> Result<MkvOpened, String> {
     let (stream, mut opened) = MkvStream::open_with_options(Path::new(&path), audio, transcode)?;
     opened.id = NEXT_MKV_ID.fetch_add(1, AtomicOrdering::Relaxed);
-    let entry = (opened.id, std::sync::Arc::new(Mutex::new(stream)));
-    streams.0.with(window.label(), |s| *s = Some(entry));
+    let abort = stream.abort_flag();
+    let entry = (opened.id, abort, std::sync::Arc::new(Mutex::new(stream)));
+    streams.0.with(window.label(), |s| {
+        if let Some((_, old_abort, _)) = s.replace(entry) {
+            old_abort.store(true, AtomicOrdering::Relaxed);
+        }
+    });
     Ok(opened)
 }
 
@@ -133,12 +155,26 @@ pub(crate) fn mkv_read(
         .map_err(|e| format!("動画を読めません: {e}"))
 }
 
-/// MKV を閉じる（ファイルを手放す）
+/// シーク連打時に実行中の mkv_read（AV1 変換ループ）をロック待ちなしで中断させる
+#[tauri::command]
+pub(crate) fn mkv_cancel_read(window: tauri::Window, streams: State<MkvStreams>, id: u64) {
+    streams.0.with(window.label(), |s| {
+        if let Some((cur_id, abort, _)) = s.as_ref()
+            && *cur_id == id
+        {
+            abort.store(true, AtomicOrdering::Relaxed);
+        }
+    });
+}
+
+/// 動画ストリームを閉じる（実行中の変換があれば中断してファイルを手放す）
 #[tauri::command]
 pub(crate) fn mkv_close(window: tauri::Window, streams: State<MkvStreams>, id: u64) {
     streams.0.with(window.label(), |s| {
-        if s.as_ref().is_some_and(|(i, _)| *i == id) {
-            *s = None;
+        if s.as_ref().is_some_and(|(i, _, _)| *i == id)
+            && let Some((_, abort, _)) = s.take()
+        {
+            abort.store(true, AtomicOrdering::Relaxed);
         }
     });
 }

@@ -18,6 +18,20 @@ use super::remux::{
 const MAX_MOOV_BYTES: u64 = 128 * 1024 * 1024;
 /// moof ボックス読み込みの上限
 const MAX_MOOF_BYTES: u64 = 16 * 1024 * 1024;
+/// stsd ボックス読み込みの上限（AV1 判定時）
+const MAX_STSD_BYTES: u64 = 256 * 1024;
+/// 1 トラックあたりのサンプル数上限（壊れた stsz / stts で巨大な領域を確保しない）
+const MAX_MP4_SAMPLES: usize = 8_000_000;
+
+/// BufReader の内部バッファを無駄に破棄しないよう seek_relative 優先で移動する
+fn seek_to_pos<R: Read + Seek>(r: &mut R, pos: u64) -> std::io::Result<()> {
+    let here = r.stream_position()?;
+    if let Ok(delta) = i64::try_from(pos as i128 - here as i128) {
+        r.seek_relative(delta)
+    } else {
+        r.seek(SeekFrom::Start(pos)).map(|_| ())
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct BoxHeader {
@@ -143,41 +157,61 @@ fn read_i64(b: &[u8], off: usize) -> Option<i64> {
     Some(i64::from_be_bytes(b.get(off..off + 8)?.try_into().ok()?))
 }
 
-/// MP4 ファイルの先頭付近から moov を探し、AV1（av01）映像トラックがあるかを高速に調べる。
-/// mdat は読み飛ばすため大きなファイルでも 1 ms 未満で終わる
-#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+/// MP4 ファイルから moov → trak → mdia → minf → stbl → stsd のヘッダだけを辿り、
+/// AV1（av01）映像トラックがあるかを高速に調べる。
+/// mdat や巨大なサンプル表（stsz / stco / ctts）を一切メモリへ読まないため、
+/// 長尺の 4K H.264 / HEVC 動画を開いたときも数百バイトの読み取りだけで終わる
+#[cfg(test)]
 pub(crate) fn is_mp4_av1(path: &Path) -> bool {
     let Ok(file) = File::open(path) else {
         return false;
     };
+    is_mp4_av1_file(file)
+}
+
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) fn is_mp4_av1_file(file: File) -> bool {
     let Ok(len) = file.metadata().map(|m| m.len()) else {
         return false;
     };
-    let mut r = BufReader::with_capacity(64 * 1024, file);
-    let Some(moov) = read_moov_bytes(&mut r, len).ok().flatten() else {
+    let mut r = BufReader::with_capacity(16 * 1024, file);
+    if seek_to_pos(&mut r, 0).is_err() {
         return false;
-    };
-    for (kind, trak) in SliceBoxes::new(&moov) {
-        if &kind != b"trak" {
-            continue;
-        }
-        let Some(mdia) = find_box(trak, b"mdia") else {
-            continue;
-        };
-        let Some(minf) = find_box(mdia, b"minf") else {
-            continue;
-        };
-        let Some(stbl) = find_box(minf, b"stbl") else {
-            continue;
-        };
-        let Some(stsd) = find_box(stbl, b"stsd") else {
-            continue;
-        };
-        // stsd: version(1) + flags(3) + entry_count(4) + entries...
-        if let Some(entries) = stsd.get(8..)
-            && SliceBoxes::new(entries).any(|(k, _)| &k == b"av01")
+    }
+    while let Ok(Some(bx)) = read_box_header(&mut r, len) {
+        if &bx.kind == b"moov"
+            && has_av01_in_container(&mut r, bx.end, &[b"trak", b"mdia", b"minf", b"stbl"])
         {
             return true;
+        }
+        if seek_to_pos(&mut r, bx.end).is_err() {
+            break;
+        }
+    }
+    false
+}
+
+/// 指定した入れ子パス（`trak → mdia → minf → stbl`）だけを降りて `stsd` 内の `av01` を探す
+fn has_av01_in_container<R: Read + Seek>(r: &mut R, end: u64, path: &[&[u8; 4]]) -> bool {
+    while let Ok(Some(bx)) = read_box_header(r, end) {
+        if let Some((&want, rest)) = path.split_first() {
+            if &bx.kind == want && has_av01_in_container(r, bx.end, rest) {
+                return true;
+            }
+        } else if &bx.kind == b"stsd" {
+            let sz = bx.end.saturating_sub(bx.body);
+            if (8..=MAX_STSD_BYTES).contains(&sz) {
+                let mut stsd = vec![0u8; sz as usize];
+                if r.read_exact(&mut stsd).is_ok()
+                    && let Some(entries) = stsd.get(8..)
+                    && SliceBoxes::new(entries).any(|(k, _)| &k == b"av01")
+                {
+                    return true;
+                }
+            }
+        }
+        if seek_to_pos(r, bx.end).is_err() {
+            break;
         }
     }
     false
@@ -195,7 +229,7 @@ pub(crate) fn looks_like_mp4(header: &[u8]) -> bool {
 }
 
 fn read_moov_bytes<R: Read + Seek>(r: &mut R, file_len: u64) -> std::io::Result<Option<Vec<u8>>> {
-    r.seek(SeekFrom::Start(0))?;
+    seek_to_pos(r, 0)?;
     while let Some(bx) = read_box_header(r, file_len)? {
         if &bx.kind == b"moov" {
             let size = bx.end.saturating_sub(bx.body);
@@ -206,7 +240,7 @@ fn read_moov_bytes<R: Read + Seek>(r: &mut R, file_len: u64) -> std::io::Result<
             r.read_exact(&mut buf)?;
             return Ok(Some(buf));
         }
-        r.seek(SeekFrom::Start(bx.end))?;
+        seek_to_pos(r, bx.end)?;
     }
     Ok(None)
 }
@@ -351,14 +385,19 @@ fn parse_elst(trak: &[u8], movie_timescale: u32, track_timescale: u32) -> EditOf
     out
 }
 
-/// MP4 のサンプル 1 つ（時刻は各トラックの timescale 単位、elst 適用済み）
+/// MP4 のサンプル 1 つ（時刻は各トラックの timescale 単位、elst 適用済み、24 バイト）
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Mp4Sample {
     pub(crate) offset: u64,
-    pub(crate) size: u32,
     pub(crate) pts: i64,
-    pub(crate) duration: u32,
+    pub(crate) size: u32,
     pub(crate) keyframe: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SampleTableStats {
+    mean_dur: Option<f64>,
+    end_pts: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -369,8 +408,8 @@ struct TrexDefaults {
     flags: u32,
 }
 
-/// moov のトラック 1 本分の解析結果
-struct ParsedTrack {
+/// moov のトラック 1 本分のヘッダ解析結果（サンプル表は選ばれたトラックだけ後から展開する）
+struct ParsedTrack<'a> {
     track_id: u32,
     handler: [u8; 4],
     timescale: u32,
@@ -381,7 +420,7 @@ struct ParsedTrack {
     display: (u32, u32),
     edit: EditOffset,
     stsd_entry: Option<([u8; 4], Vec<u8>)>,
-    samples: Vec<Mp4Sample>,
+    stbl: &'a [u8],
 }
 
 fn parse_mvhd(moov: &[u8]) -> Option<(u32, Option<f64>)> {
@@ -425,7 +464,7 @@ fn parse_trex_list(moov: &[u8]) -> Vec<TrexDefaults> {
     out
 }
 
-fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrack> {
+fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrack<'_>> {
     let tkhd = find_box(trak, b"tkhd")?;
     let tkhd_ver = *tkhd.first()?;
     let tkhd_flags = u32::from_be_bytes([0, tkhd[1], tkhd[2], tkhd[3]]);
@@ -486,7 +525,6 @@ fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrack> {
         .map(|(k, b)| (k, b.to_vec()));
 
     let edit = parse_elst(trak, movie_timescale, timescale);
-    let samples = parse_sample_table(stbl, edit);
 
     Some(ParsedTrack {
         track_id,
@@ -499,22 +537,26 @@ fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrack> {
         display: (disp_w, disp_h),
         edit,
         stsd_entry,
-        samples,
+        stbl,
     })
 }
 
 /// 通常 MP4 の stbl（stts / ctts / stsc / stsz / stco / co64 / stss）からサンプル一覧を構築する
-fn parse_sample_table(stbl: &[u8], edit: EditOffset) -> Vec<Mp4Sample> {
+fn parse_sample_table(stbl: &[u8], edit: EditOffset) -> (Vec<Mp4Sample>, SampleTableStats) {
+    let empty = || (Vec::new(), SampleTableStats::default());
     // 1. サンプルサイズ（stsz）
     let Some(stsz) = find_box(stbl, b"stsz") else {
-        return Vec::new();
+        return empty();
     };
     let (Some(default_size), Some(sample_count)) = (read_u32(stsz, 4), read_u32(stsz, 8)) else {
-        return Vec::new();
+        return empty();
     };
     let sample_count = sample_count as usize;
-    if sample_count == 0 {
-        return Vec::new();
+    if sample_count == 0 || sample_count > MAX_MP4_SAMPLES {
+        return empty();
+    }
+    if default_size == 0 && stsz.len().saturating_sub(12) / 4 < sample_count {
+        return empty();
     }
     let mut sizes = Vec::with_capacity(sample_count);
     if default_size != 0 {
@@ -522,7 +564,7 @@ fn parse_sample_table(stbl: &[u8], edit: EditOffset) -> Vec<Mp4Sample> {
     } else {
         for i in 0..sample_count {
             let Some(s) = read_u32(stsz, 12 + i * 4) else {
-                return Vec::new();
+                return empty();
             };
             sizes.push(s);
         }
@@ -531,31 +573,40 @@ fn parse_sample_table(stbl: &[u8], edit: EditOffset) -> Vec<Mp4Sample> {
     // 2. チャンクオフセット（stco または co64）
     let chunk_offsets: Vec<u64> = if let Some(stco) = find_box(stbl, b"stco") {
         let Some(cnt) = read_u32(stco, 4) else {
-            return Vec::new();
+            return empty();
         };
+        let max_cnt = stco.len().saturating_sub(8) / 4;
+        if (cnt as usize) > max_cnt {
+            return empty();
+        }
         (0..cnt as usize)
             .filter_map(|i| read_u32(stco, 8 + i * 4).map(|v| v as u64))
             .collect()
     } else if let Some(co64) = find_box(stbl, b"co64") {
         let Some(cnt) = read_u32(co64, 4) else {
-            return Vec::new();
+            return empty();
         };
+        let max_cnt = co64.len().saturating_sub(8) / 8;
+        if (cnt as usize) > max_cnt {
+            return empty();
+        }
         (0..cnt as usize)
             .filter_map(|i| read_u64(co64, 8 + i * 8))
             .collect()
     } else {
-        return Vec::new();
+        return empty();
     };
 
     // 3. Sample-to-Chunk（stsc）
     let Some(stsc) = find_box(stbl, b"stsc") else {
-        return Vec::new();
+        return empty();
     };
     let Some(stsc_cnt) = read_u32(stsc, 4) else {
-        return Vec::new();
+        return empty();
     };
-    let mut stsc_entries = Vec::with_capacity(stsc_cnt as usize);
-    for i in 0..stsc_cnt as usize {
+    let stsc_cnt = (stsc_cnt as usize).min(stsc.len().saturating_sub(8) / 12);
+    let mut stsc_entries = Vec::with_capacity(stsc_cnt);
+    for i in 0..stsc_cnt {
         let off = 8 + i * 12;
         let (Some(first_chunk), Some(spc)) = (read_u32(stsc, off), read_u32(stsc, off + 4)) else {
             break;
@@ -590,38 +641,42 @@ fn parse_sample_table(stbl: &[u8], edit: EditOffset) -> Vec<Mp4Sample> {
         }
     }
     if offsets.len() < sample_count {
-        return Vec::new();
+        return empty();
     }
 
     // 4. Decoding Time to Sample（stts）
     let Some(stts) = find_box(stbl, b"stts") else {
-        return Vec::new();
+        return empty();
     };
     let Some(stts_cnt) = read_u32(stts, 4) else {
-        return Vec::new();
+        return empty();
     };
     let mut dts_list = Vec::with_capacity(sample_count);
-    let mut dur_list = Vec::with_capacity(sample_count);
     let mut cur_dts = 0i64;
+    let mut last_delta = 1u32;
+    let mut dur_sum = 0.0f64;
+    let mut dur_cnt = 0usize;
     for i in 0..stts_cnt as usize {
         let off = 8 + i * 8;
         let (Some(cnt), Some(delta)) = (read_u32(stts, off), read_u32(stts, off + 4)) else {
             break;
         };
+        last_delta = delta;
         for _ in 0..cnt {
             if dts_list.len() >= sample_count {
                 break;
             }
             dts_list.push(cur_dts);
-            dur_list.push(delta);
+            if dur_cnt < 30 && delta > 0 {
+                dur_sum += delta as f64;
+                dur_cnt += 1;
+            }
             cur_dts += delta as i64;
         }
     }
     while dts_list.len() < sample_count {
-        let delta = dur_list.last().copied().unwrap_or(1);
         dts_list.push(cur_dts);
-        dur_list.push(delta);
-        cur_dts += delta as i64;
+        cur_dts += last_delta.max(1) as i64;
     }
 
     // 5. Composition Time to Sample（ctts。任意）
@@ -669,19 +724,24 @@ fn parse_sample_table(stbl: &[u8], edit: EditOffset) -> Vec<Mp4Sample> {
         keyframes[0] = true;
     }
 
-    (0..sample_count)
+    let samples: Vec<Mp4Sample> = (0..sample_count)
         .map(|i| Mp4Sample {
             offset: offsets[i],
-            size: sizes[i],
             pts: dts_list[i] + ctts_list[i] - edit.media_offset + edit.empty_delay,
-            duration: dur_list[i],
+            size: sizes[i],
             keyframe: keyframes[i],
         })
-        .collect()
+        .collect();
+    let end_pts = samples.last().map(|s| s.pts + last_delta as i64);
+    let stats = SampleTableStats {
+        mean_dur: (dur_cnt > 0).then_some(dur_sum / dur_cnt as f64),
+        end_pts,
+    };
+    (samples, stats)
 }
 
 /// VisualSampleEntry（av01）から映像トラック情報を作る
-fn parse_av1_video_track(trak: &ParsedTrack) -> Result<RemuxVideo, String> {
+fn parse_av1_video_track(trak: &ParsedTrack<'_>) -> Result<RemuxVideo, String> {
     let Some((kind, body)) = &trak.stsd_entry else {
         return Err("この動画の映像形式を読めません".into());
     };
@@ -719,8 +779,6 @@ fn parse_av1_video_track(trak: &ParsedTrack) -> Result<RemuxVideo, String> {
         display = (dw as u32, height);
     }
 
-    let frame_ticks = trak.samples.first().map_or(0, |s| s.duration as i64);
-
     Ok(RemuxVideo {
         number: trak.track_id as u64,
         codec: RemuxVideoCodec::Av1,
@@ -731,12 +789,12 @@ fn parse_av1_video_track(trak: &ParsedTrack) -> Result<RemuxVideo, String> {
         display,
         color: None,
         decoders: Vec::new(),
-        frame_ticks,
+        frame_ticks: 0,
     })
 }
 
 /// AudioSampleEntry（mp4a / Opus）から音声トラック情報を作る
-fn parse_mp4_audio_track(trak: &ParsedTrack) -> Option<RemuxAudio> {
+fn parse_mp4_audio_track(trak: &ParsedTrack<'_>) -> Option<RemuxAudio> {
     let (kind, body) = trak.stsd_entry.as_ref()?;
     // AudioSampleEntry: version 0 = 28 bytes, version 1 (QuickTime) = 44 bytes, version 2 = 64 bytes
     let version = read_u16(body, 8)?;
@@ -787,6 +845,7 @@ fn parse_mp4_audio_track(trak: &ParsedTrack) -> Option<RemuxAudio> {
 }
 
 /// Fragmented MP4 の moof 1 つ分のサンプル一覧をパースする
+#[allow(clippy::too_many_arguments)]
 fn parse_moof_samples(
     moof: &[u8],
     moof_file_pos: u64,
@@ -795,6 +854,7 @@ fn parse_moof_samples(
     audio_id: Option<u32>,
     audio_edit: EditOffset,
     trex: &[TrexDefaults],
+    video_stats: &mut (f64, usize, Option<i64>),
 ) -> (Vec<Mp4Sample>, Vec<Mp4Sample>) {
     let mut video = Vec::new();
     let mut audio = Vec::new();
@@ -873,6 +933,7 @@ fn parse_moof_samples(
             let Some(count) = read_u32(trun, 4) else {
                 continue;
             };
+            let count = count.min(MAX_MP4_SAMPLES as u32);
             let mut tp = 8usize;
             let mut cur_off = if tr_flags & 0x0001 != 0 {
                 let data_off = read_i32(trun, tp).unwrap_or(0) as i64;
@@ -924,14 +985,19 @@ fn parse_moof_samples(
                     0
                 };
                 let keyframe = (s_flags & 0x0001_0000) == 0;
+                let pts = cur_dts + cto - edit.media_offset + edit.empty_delay;
                 let sample = Mp4Sample {
                     offset: cur_off,
+                    pts,
                     size,
-                    pts: cur_dts + cto - edit.media_offset + edit.empty_delay,
-                    duration: dur,
                     keyframe,
                 };
                 if is_video {
+                    if video_stats.1 < 30 && dur > 0 {
+                        video_stats.0 += dur as f64;
+                        video_stats.1 += 1;
+                    }
+                    video_stats.2 = Some(pts + dur as i64);
                     video.push(sample);
                 } else {
                     audio.push(sample);
@@ -945,13 +1011,18 @@ fn parse_moof_samples(
     (video, audio)
 }
 
-/// 開いた MP4 ファイルからのサンプル読み取り器
+/// 開いた MP4 ファイルからのサンプル読み取り器。
+/// インターリーブされた MP4 で映像と音声の読み取り位置が往復して互いの BufReader を破棄しないよう、
+/// 音声があるときは音声専用の BufReader を別に持つ
 pub(crate) struct Mp4Source {
     reader: BufReader<File>,
+    audio_reader: Option<BufReader<File>>,
     pub(crate) video_timescale: u32,
     pub(crate) audio_timescale: u32,
     video_samples: Vec<Mp4Sample>,
     audio_samples: Vec<Mp4Sample>,
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+    max_video_pts: Option<i64>,
     video_idx: usize,
     audio_idx: usize,
 }
@@ -967,8 +1038,11 @@ pub(crate) struct Mp4Meta {
 }
 
 impl Mp4Source {
-    pub(crate) fn open(path: &Path, audio_choice: Option<i64>) -> Result<(Self, Mp4Meta), String> {
-        let file = File::open(path).map_err(|e| format!("動画を開けません: {e}"))?;
+    pub(crate) fn open_with_file(
+        path: &Path,
+        file: File,
+        audio_choice: Option<i64>,
+    ) -> Result<(Self, Mp4Meta), String> {
         let file_len = file
             .metadata()
             .map_err(|e| format!("動画を開けません: {e}"))?
@@ -981,7 +1055,7 @@ impl Mp4Source {
             parse_mvhd(&moov).ok_or("MP4 のヘッダ（mvhd）が壊れています")?;
         let trex = parse_trex_list(&moov);
 
-        let tracks: Vec<ParsedTrack> = SliceBoxes::new(&moov)
+        let tracks: Vec<ParsedTrack<'_>> = SliceBoxes::new(&moov)
             .filter(|(k, _)| k == b"trak")
             .filter_map(|(_, b)| parse_trak(b, movie_timescale))
             .collect();
@@ -991,7 +1065,7 @@ impl Mp4Source {
             .ok_or("この動画には映像がありません")?;
         let mut video = parse_av1_video_track(video_trak)?;
 
-        let audio_traks: Vec<&ParsedTrack> =
+        let audio_traks: Vec<&ParsedTrack<'_>> =
             tracks.iter().filter(|t| &t.handler == b"soun").collect();
         let remuxable: Vec<Option<RemuxAudio>> = audio_traks
             .iter()
@@ -1024,24 +1098,25 @@ impl Mp4Source {
             .filter(|_| audio_track.is_some())
             .map(|i| audio_traks[i]);
 
-        let mut video_samples = video_trak.samples.clone();
+        // 選ばれた映像・音声トラックだけサンプル表を構築する（不要トラックの展開や clone を省く）
+        let (mut video_samples, mut video_stats) =
+            parse_sample_table(video_trak.stbl, video_trak.edit);
         let mut audio_samples = selected_audio_trak
-            .map(|t| t.samples.clone())
+            .map(|t| parse_sample_table(t.stbl, t.edit).0)
             .unwrap_or_default();
 
         // 通常 MP4 のサンプルが空で fragmented MP4（moof + mdat）なら moof ヘッダを集める
         if video_samples.is_empty() {
-            reader
-                .seek(SeekFrom::Start(0))
-                .map_err(|e| format!("MP4 を読めません: {e}"))?;
+            seek_to_pos(&mut reader, 0).map_err(|e| format!("MP4 を読めません: {e}"))?;
             let audio_id = selected_audio_trak.map(|t| t.track_id);
             let audio_edit = selected_audio_trak.map_or(EditOffset::default(), |t| t.edit);
+            let mut moof_stats = (0.0f64, 0usize, None);
             while let Some(bx) = read_box_header(&mut reader, file_len)
                 .map_err(|e| format!("MP4 を読めません: {e}"))?
             {
                 if &bx.kind == b"moof" {
                     let sz = bx.end.saturating_sub(bx.body);
-                    if sz <= MAX_MOOF_BYTES {
+                    if sz <= MAX_MOOF_BYTES && video_samples.len() < MAX_MP4_SAMPLES {
                         let mut moof = vec![0u8; sz as usize];
                         reader
                             .read_exact(&mut moof)
@@ -1054,15 +1129,18 @@ impl Mp4Source {
                             audio_id,
                             audio_edit,
                             &trex,
+                            &mut moof_stats,
                         );
                         video_samples.extend(vs);
                         audio_samples.extend(as_);
                     }
                 }
-                reader
-                    .seek(SeekFrom::Start(bx.end))
-                    .map_err(|e| format!("MP4 を読めません: {e}"))?;
+                seek_to_pos(&mut reader, bx.end).map_err(|e| format!("MP4 を読めません: {e}"))?;
             }
+            if moof_stats.1 > 0 {
+                video_stats.mean_dur = Some(moof_stats.0 / moof_stats.1 as f64);
+            }
+            video_stats.end_pts = moof_stats.2;
         }
         if video_samples.is_empty() {
             return Err("この動画に映像フレームが見つかりません".into());
@@ -1074,7 +1152,7 @@ impl Mp4Source {
             && (first.size as u64) <= REMUX_MAX_FRAME_BYTES
         {
             let mut buf = vec![0u8; first.size as usize];
-            if reader.seek(SeekFrom::Start(first.offset)).is_ok()
+            if seek_to_pos(&mut reader, first.offset).is_ok()
                 && reader.read_exact(&mut buf).is_ok()
                 && let Some(av1c) = av1c_from_obu_stream(&buf)
             {
@@ -1089,9 +1167,8 @@ impl Mp4Source {
         if duration.is_none() {
             if video_trak.duration > 0 {
                 duration = Some(video_trak.duration as f64 / video_trak.timescale as f64);
-            } else if let Some(last) = video_samples.last() {
-                let end =
-                    (last.pts + last.duration as i64).max(0) as f64 / video_trak.timescale as f64;
+            } else if let Some(end_pts) = video_stats.end_pts {
+                let end = end_pts.max(0) as f64 / video_trak.timescale as f64;
                 if end > 0.0 {
                     duration = Some(end);
                 }
@@ -1099,17 +1176,9 @@ impl Mp4Source {
         }
 
         // 1 フレームあたりの長さ（90 kHz 単位）と fps を推定する
-        let avg_dur = video_samples
-            .iter()
-            .take(30)
-            .map(|s| s.duration as f64)
-            .filter(|&d| d > 0.0)
-            .collect::<Vec<_>>();
-        let fps = if !avg_dur.is_empty() {
-            let mean = avg_dur.iter().sum::<f64>() / avg_dur.len() as f64;
-            (video_trak.timescale as f64 / mean).clamp(1.0, 240.0)
-        } else {
-            30.0
+        let fps = match video_stats.mean_dur {
+            Some(mean) if mean > 0.0 => (video_trak.timescale as f64 / mean).clamp(1.0, 240.0),
+            _ => 30.0,
         };
         video.frame_ticks = (REMUX_VIDEO_TIMESCALE as f64 / fps).round().max(1.0) as i64;
 
@@ -1117,6 +1186,14 @@ impl Mp4Source {
             .map_or(audio_track.as_ref().map_or(48_000, |a| a.timescale), |t| {
                 t.timescale
             });
+        let max_video_pts = video_samples.iter().map(|s| s.pts).max();
+        let audio_reader = if audio_samples.is_empty() {
+            None
+        } else {
+            File::open(path)
+                .ok()
+                .map(|f| BufReader::with_capacity(64 * 1024, f))
+        };
 
         let meta = Mp4Meta {
             video,
@@ -1128,14 +1205,23 @@ impl Mp4Source {
         };
         let source = Self {
             reader,
+            audio_reader,
             video_timescale: video_trak.timescale,
             audio_timescale,
             video_samples,
             audio_samples,
+            max_video_pts,
             video_idx: 0,
             audio_idx: 0,
         };
         Ok((source, meta))
+    }
+
+    /// 最終映像フレームの表示時刻（秒）
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+    pub(crate) fn max_video_pts_sec(&self) -> Option<f64> {
+        self.max_video_pts
+            .map(|pts| pts.max(0) as f64 / self.video_timescale as f64)
     }
 
     /// 映像のサンプル時刻（トラック timescale 単位）を 90 kHz に換算する
@@ -1162,14 +1248,15 @@ impl Mp4Source {
     /// 音声の読み込み位置も目標時刻の少し手前から揃える
     pub(crate) fn seek(&mut self, seconds: f64) -> f64 {
         let target_v = (seconds.max(0.0) * self.video_timescale as f64) as i64;
-        // 目標時刻以下で最も後ろのキーフレームを探す
+        // キーフレーム同士は時刻順なので、GOP 内に ctts の前後があってもキーフレームだけを基準に探す
         let mut kf_idx = 0usize;
         for (i, s) in self.video_samples.iter().enumerate() {
-            if s.pts > target_v {
-                break;
-            }
             if s.keyframe {
-                kf_idx = i;
+                if s.pts <= target_v {
+                    kf_idx = i;
+                } else {
+                    break;
+                }
             }
         }
         self.video_idx = kf_idx;
@@ -1191,16 +1278,6 @@ impl Mp4Source {
             .saturating_sub(1);
     }
 
-    /// BufReader の 256 KB バッファを無駄に捨てないよう seek_relative で移動する
-    fn move_to(&mut self, pos: u64) -> std::io::Result<()> {
-        let here = self.reader.stream_position()?;
-        if let Ok(delta) = i64::try_from(pos as i128 - here as i128) {
-            self.reader.seek_relative(delta)
-        } else {
-            self.reader.seek(SeekFrom::Start(pos)).map(|_| ())
-        }
-    }
-
     /// 次の映像サンプルを読む。戻り値は (90 kHz PTS, keyframe, payload)
     pub(crate) fn next_video(&mut self) -> std::io::Result<Option<(i64, bool, Vec<u8>)>> {
         let Some(&sample) = self.video_samples.get(self.video_idx) else {
@@ -1215,7 +1292,7 @@ impl Mp4Source {
             )));
         }
         let mut data = vec![0u8; sample.size as usize];
-        self.move_to(sample.offset)?;
+        seek_to_pos(&mut self.reader, sample.offset)?;
         self.reader.read_exact(&mut data)?;
         Ok(Some((
             self.video_pts_90k(sample.pts),
@@ -1256,8 +1333,9 @@ impl Mp4Source {
                 continue;
             }
             let mut data = vec![0u8; sample.size as usize];
-            self.move_to(sample.offset)?;
-            self.reader.read_exact(&mut data)?;
+            let r = self.audio_reader.as_mut().unwrap_or(&mut self.reader);
+            seek_to_pos(r, sample.offset)?;
+            r.read_exact(&mut data)?;
             out.push((self.audio_pts_units(sample.pts, out_timescale), data));
         }
         Ok(out)

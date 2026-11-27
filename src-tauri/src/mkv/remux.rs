@@ -3,6 +3,8 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 use super::av1::{Av1Transcoder, EncoderFactory};
@@ -10,7 +12,7 @@ use super::av1::{
     ColorInfo, av1_codec_string, av1c_from_obu_stream, can_transcode_av1, hw_av1_decode_supported,
 };
 use super::fmp4::{Sample, TrackRun, build_fragment, build_init_segment};
-use super::mp4::{Mp4Source, is_mp4_av1, looks_like_mp4};
+use super::mp4::{Mp4Source, is_mp4_av1_file, looks_like_mp4};
 use super::subtitles::{
     BlockDecode, MKV_BLOCK, MKV_BLOCK_GROUP, MKV_CLUSTER, MKV_SIMPLE_BLOCK, MKV_TIMESTAMP,
     block_decoders, decode_block, read_ebml_uint, read_ebml_vint,
@@ -873,7 +875,7 @@ pub(crate) fn is_av1_video(path: &Path) -> bool {
         });
     }
     if looks_like_mp4(&head) {
-        return is_mp4_av1(path);
+        return is_mp4_av1_file(file);
     }
     false
 }
@@ -1009,6 +1011,8 @@ struct TranscodeState {
     pending_audio: VecDeque<(i64, Vec<u8>)>,
     /// シーク直後にエンコードをスキップする閾値（90 kHz PTS）
     skip_before_pts: Option<i64>,
+    /// 直近のシークで見つけた映像キーフレーム時刻（秒）
+    last_keyframe_sec: f64,
     /// 起動・シーク直後の最初の断片か（最初の 1 断片だけ短く返して応答を速める）
     first_fragment: bool,
     /// コンテナから映像を最後まで読み切ったか
@@ -1027,11 +1031,17 @@ pub(crate) struct MkvStream {
     /// 前の断片の続きの音声の時刻（音声の単位）。シークしたら付け直す
     audio_next: Option<u64>,
     sequence: u32,
+    /// シーク連打やクローズ時に実行中の変換ループを即座に打ち切るためのフラグ
+    abort_read: Arc<AtomicBool>,
     #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
     transcode: Option<TranscodeState>,
 }
 
 impl MkvStream {
+    pub(crate) fn abort_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.abort_read)
+    }
+
     /// 動画を開く（既定のモード: MKV の H.264/HEVC は無変換、AV1 はハードウェア非対応環境なら変換）。
     /// `audio` は鳴らす音声トラックの番号（None なら既定、負なら音声なし）
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1073,16 +1083,14 @@ impl MkvStream {
         >,
         #[cfg(not(any(target_os = "macos", all(test, target_os = "linux"))))] _custom_factory: (),
     ) -> Result<(Self, MkvOpened), String> {
-        let mut probe = File::open(path).map_err(|e| format!("動画を開けません: {e}"))?;
+        let mut file = File::open(path).map_err(|e| format!("動画を開けません: {e}"))?;
         let mut head = [0u8; 8];
-        probe
-            .read_exact(&mut head)
+        file.read_exact(&mut head)
             .map_err(|e| format!("動画を読めません: {e}"))?;
-        drop(probe);
 
         let (source, mut video, audio_track, audio_tracks, chosen_audio, duration, fps) =
             if looks_like_mp4(&head) {
-                let (mp4, meta) = Mp4Source::open(path, audio)?;
+                let (mp4, meta) = Mp4Source::open_with_file(path, file, audio)?;
                 (
                     StreamSource::Mp4(mp4),
                     meta.video,
@@ -1093,7 +1101,7 @@ impl MkvStream {
                     meta.fps,
                 )
             } else {
-                Self::open_matroska(path, audio)?
+                Self::open_matroska(file, audio)?
             };
 
         let want_transcode = video.codec == RemuxVideoCodec::Av1
@@ -1108,6 +1116,7 @@ impl MkvStream {
             audio: audio_track.clone(),
             audio_next: None,
             sequence: 0,
+            abort_read: Arc::new(AtomicBool::new(false)),
             #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
             transcode: None,
         };
@@ -1137,6 +1146,7 @@ impl MkvStream {
                     pending_video: VecDeque::new(),
                     pending_audio: VecDeque::new(),
                     skip_before_pts: None,
+                    last_keyframe_sec: 0.0,
                     first_fragment: true,
                     video_eof: false,
                     default_frame_ticks,
@@ -1156,8 +1166,17 @@ impl MkvStream {
                 let codec_string =
                     avc_codec_string(&avcc).ok_or("変換後の H.264 形式を特定できませんでした")?;
                 if let Some((w, h)) = tc.transcoder.encoded_size() {
+                    let (old_w, old_h) = (stream.video.width.max(1), stream.video.height.max(1));
                     if stream.video.display == (stream.video.width, stream.video.height) {
                         stream.video.display = (w, h);
+                    } else {
+                        let dw = ((stream.video.display.0 as u64 * w as u64 + old_w as u64 / 2)
+                            / old_w as u64)
+                            .clamp(1, u16::MAX as u64) as u32;
+                        let dh = ((stream.video.display.1 as u64 * h as u64 + old_h as u64 / 2)
+                            / old_h as u64)
+                            .clamp(1, u16::MAX as u64) as u32;
+                        stream.video.display = (dw, dh);
                     }
                     stream.video.width = w;
                     stream.video.height = h;
@@ -1215,7 +1234,7 @@ impl MkvStream {
 
     #[allow(clippy::type_complexity)]
     fn open_matroska(
-        path: &Path,
+        mut file: File,
         audio: Option<i64>,
     ) -> Result<
         (
@@ -1229,7 +1248,8 @@ impl MkvStream {
         ),
         String,
     > {
-        let file = File::open(path).map_err(|e| format!("動画を開けません: {e}"))?;
+        file.seek(std::io::SeekFrom::Start(0))
+            .map_err(|e| format!("動画を読めません: {e}"))?;
         let mut reader = BufReader::with_capacity(256 * 1024, file);
         let mkv = matroska_demuxer::MatroskaFile::open(&mut reader)
             .map_err(|e| format!("MKV を読めません: {e}"))?;
@@ -1348,6 +1368,7 @@ impl MkvStream {
 
     /// `seconds` の直前のキーフレームから読むようにする。戻り値は開始位置（秒）
     pub(crate) fn seek(&mut self, seconds: f64) -> std::io::Result<f64> {
+        self.abort_read.store(false, Ordering::Relaxed);
         self.audio_next = None;
         let keyframe_sec = match &mut self.source {
             StreamSource::Matroska(mkv) => mkv.seek(self.video.number, seconds)?,
@@ -1360,14 +1381,23 @@ impl MkvStream {
             tc.pending_audio.clear();
             tc.video_eof = false;
             tc.first_fragment = true;
+            tc.last_keyframe_sec = keyframe_sec;
             tc.transcoder.reset_for_seek();
             // 動画の末尾以降へのシークでは最後のキーフレームからそのまま再生する（通常リマックスと揃える）。
             // 途中のシークではキーフレームから目標時刻の 1 フレーム手前までを復号のみにしてエンコードを省き、
             // 最初の断片が必ず目標時刻（video.currentTime）を覆うようにして WebKit 側の二重シークを防ぐ
+            let video_end_bound = match &self.source {
+                StreamSource::Mp4(mp4) => match (mp4.max_video_pts_sec(), tc.duration) {
+                    (Some(v), Some(d)) => Some(v.min(d)),
+                    (Some(v), None) => Some(v),
+                    (None, d) => d,
+                },
+                StreamSource::Matroska(_) => tc.duration.map(|d| (d - 0.05).max(0.0)),
+            };
             let past_end = tc.duration.is_some_and(|d| seconds >= d);
             if !past_end {
-                let target = match tc.duration {
-                    Some(d) => seconds.min((d - 0.05).max(keyframe_sec)),
+                let target = match video_end_bound {
+                    Some(max_v) => seconds.min(max_v.max(keyframe_sec)),
                     None => seconds,
                 };
                 let target_pts = (target.max(0.0) * REMUX_VIDEO_TIMESCALE as f64).round() as i64;
@@ -1516,7 +1546,7 @@ impl MkvStream {
                 .zip(durations)
                 .map(|((_, keyframe, data), duration)| Sample {
                     data,
-                    duration: duration as u32,
+                    duration: duration.min(u32::MAX as i64) as u32,
                     composition_offset: 0,
                     keyframe,
                 })
@@ -1550,6 +1580,7 @@ impl MkvStream {
             TRANSCODE_FRAGMENT_SECONDS
         };
         let target_span = (span_sec * REMUX_VIDEO_TIMESCALE as f64) as i64;
+        let mut retried_tail = false;
 
         while !self
             .transcode
@@ -1558,6 +1589,9 @@ impl MkvStream {
             .transcoder
             .has_completed_fragment()
         {
+            if self.abort_read.load(Ordering::Relaxed) {
+                return Ok(Vec::new());
+            }
             if self.transcode.as_ref().unwrap().video_eof {
                 break;
             }
@@ -1585,11 +1619,39 @@ impl MkvStream {
                         TRANSCODE_FRAGMENT_MAX_FRAMES,
                         default_ticks,
                     )?;
+                    // 音声だけ映像より長い WebM 等で末尾付近へシークし、最終映像フレームまで
+                    // すべて skip_before_pts で飛ばされた場合は、直近キーフレームからスキップなしで出し直す
+                    if skip_before.is_some()
+                        && !tc.transcoder.has_started_fragment()
+                        && !retried_tail
+                    {
+                        retried_tail = true;
+                        let kf_sec = tc.last_keyframe_sec;
+                        tc.skip_before_pts = None;
+                        tc.video_eof = false;
+                        tc.pending_video.clear();
+                        tc.pending_audio.clear();
+                        tc.transcoder.reset_for_seek();
+                        self.audio_next = None;
+                        match &mut self.source {
+                            StreamSource::Matroska(mkv) => {
+                                let _ = mkv.seek(self.video.number, kf_sec);
+                            }
+                            StreamSource::Mp4(mp4) => {
+                                mp4.seek(kf_sec);
+                            }
+                        }
+                        continue;
+                    }
                     tc.skip_before_pts = None;
                     tc.video_eof = true;
                     break;
                 }
             }
+        }
+
+        if self.abort_read.load(Ordering::Relaxed) {
+            return Ok(Vec::new());
         }
 
         let tc = self.transcode.as_mut().unwrap();
@@ -1618,7 +1680,7 @@ impl MkvStream {
                 .zip(durations)
                 .map(|(frame, duration)| Sample {
                     data: frame.data,
-                    duration: duration as u32,
+                    duration: duration.min(u32::MAX as i64) as u32,
                     composition_offset: 0,
                     keyframe: frame.keyframe,
                 })

@@ -196,6 +196,10 @@ export interface TauriCommandMap {
     args: { id: number };
     result: RawBytes;
   };
+  mkv_cancel_read: {
+    args: { id: number };
+    result: undefined;
+  };
   mkv_close: {
     args: { id: number };
     result: undefined;

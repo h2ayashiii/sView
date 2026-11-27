@@ -352,6 +352,32 @@ pub(crate) fn target_h264_bitrate(width: u32, height: u32, fps: f64) -> i32 {
     bps.clamp(2_000_000.0, 60_000_000.0) as i32
 }
 
+/// H.264（4:2:0）ハードウェアエンコーダが安全に扱える出力解像度（偶数かつ長辺 4096 以下）に整える。
+/// 奇数解像度の画面収録は 1px パディングで偶数化し、5K / 8K 動画は縦横比を保って 4K 以下へ縮小する
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) const MAX_H264_DIMENSION: u32 = 4096;
+
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) fn h264_output_dimensions(width: usize, height: usize) -> (u32, u32) {
+    let w = width.max(2) as f64;
+    let h = height.max(2) as f64;
+    let max_dim = w.max(h);
+    let scale = if max_dim > MAX_H264_DIMENSION as f64 {
+        MAX_H264_DIMENSION as f64 / max_dim
+    } else {
+        1.0
+    };
+    let even = |v: f64| {
+        let n = if scale < 1.0 {
+            (v * scale).round() as u32
+        } else {
+            (v as u32).saturating_add(1)
+        };
+        (n & !1).clamp(2, MAX_H264_DIMENSION)
+    };
+    (even(w), even(h))
+}
+
 /// デコード済み映像フレームの画素配置
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -406,7 +432,7 @@ impl<'a> PlaneView<'a> {
 
     #[inline]
     pub(crate) fn row(&self, y: usize) -> &'a [u8] {
-        debug_assert!(y < self.height);
+        assert!(y < self.height);
         unsafe {
             let p = self.ptr.offset(y as isize * self.stride);
             std::slice::from_raw_parts(p, self.row_bytes)
@@ -458,8 +484,24 @@ pub(crate) fn copy_frame_to_nv12(
     dst_uv: &mut [u8],
     dst_uv_stride: usize,
 ) {
+    if dst_w == 0 || dst_h == 0 || frame.width == 0 || frame.height == 0 || frame.y.height == 0 {
+        return;
+    }
+    if frame.width > dst_w || frame.height > dst_h {
+        copy_frame_to_nv12_scaled(
+            frame,
+            dst_w,
+            dst_h,
+            dst_y,
+            dst_y_stride,
+            dst_uv,
+            dst_uv_stride,
+        );
+        return;
+    }
+
     let copy_w = frame.width.min(dst_w);
-    let copy_h = frame.height.min(dst_h);
+    let copy_h = frame.height.min(dst_h).min(frame.y.height);
     let pad_y = if frame.color.is_some_and(|c| c.full_range) {
         0u8
     } else {
@@ -510,6 +552,12 @@ pub(crate) fn copy_frame_to_nv12(
         }
         return;
     };
+    if u_plane.height == 0 || v_plane.height == 0 {
+        for row in 0..dst_uv_h {
+            dst_uv[row * dst_uv_stride..row * dst_uv_stride + dst_uv_w * 2].fill(128);
+        }
+        return;
+    }
 
     let (step_x, step_y) = match frame.layout {
         PixelLayout::I420 => (1usize, 1usize),
@@ -517,7 +565,7 @@ pub(crate) fn copy_frame_to_nv12(
         PixelLayout::I444 => (2usize, 2usize),
         PixelLayout::I400 => unreachable!(),
     };
-    let max_src_uv_y = u_plane.height.saturating_sub(1);
+    let max_src_uv_y = u_plane.height.min(v_plane.height).saturating_sub(1);
 
     if frame.bpc <= 8 {
         if step_x == 1 && step_y == 1 {
@@ -612,6 +660,97 @@ pub(crate) fn copy_frame_to_nv12(
     }
 }
 
+/// 5K / 8K などハードウェアエンコーダ上限（4096）を超えるフレームや途中での解像度拡大時に、
+/// 縦横比を保って NV12 バッファへ縮小コピーするフォールバック経路
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+fn copy_frame_to_nv12_scaled(
+    frame: &DecodedFrame<'_>,
+    dst_w: usize,
+    dst_h: usize,
+    dst_y: &mut [u8],
+    dst_y_stride: usize,
+    dst_uv: &mut [u8],
+    dst_uv_stride: usize,
+) {
+    let max_y = frame.y.height.min(frame.height).saturating_sub(1);
+    if frame.bpc <= 8 {
+        for row in 0..dst_h {
+            let sy = (row * frame.height / dst_h).min(max_y);
+            let src = frame.y.row(sy);
+            let max_x = src.len().min(frame.width).saturating_sub(1);
+            let dst = &mut dst_y[row * dst_y_stride..row * dst_y_stride + dst_w];
+            for (x, out) in dst.iter_mut().enumerate() {
+                *out = src[(x * frame.width / dst_w).min(max_x)];
+            }
+        }
+    } else {
+        let shift = (frame.bpc - 8) as u32;
+        let half = 1u32 << (shift - 1);
+        for row in 0..dst_h {
+            let sy = (row * frame.height / dst_h).min(max_y);
+            let src = frame.y.row(sy);
+            let max_x = (src.len() / 2).min(frame.width).saturating_sub(1);
+            let dst = &mut dst_y[row * dst_y_stride..row * dst_y_stride + dst_w];
+            for (x, out) in dst.iter_mut().enumerate() {
+                let sx = (x * frame.width / dst_w).min(max_x) * 2;
+                let raw = u16::from_le_bytes([src[sx], src[sx + 1]]) as u32;
+                *out = ((raw + half) >> shift).min(255) as u8;
+            }
+        }
+    }
+
+    let dst_uv_h = dst_h.div_ceil(2);
+    let dst_uv_w = dst_w.div_ceil(2);
+    let (Some(u_plane), Some(v_plane)) = (&frame.u, &frame.v) else {
+        for row in 0..dst_uv_h {
+            dst_uv[row * dst_uv_stride..row * dst_uv_stride + dst_uv_w * 2].fill(128);
+        }
+        return;
+    };
+    if u_plane.height == 0 || v_plane.height == 0 {
+        for row in 0..dst_uv_h {
+            dst_uv[row * dst_uv_stride..row * dst_uv_stride + dst_uv_w * 2].fill(128);
+        }
+        return;
+    }
+
+    let src_uv_h = u_plane.height.min(v_plane.height);
+    let max_uv_y = src_uv_h.saturating_sub(1);
+    if frame.bpc <= 8 {
+        for row in 0..dst_uv_h {
+            let sy = (row * src_uv_h / dst_uv_h).min(max_uv_y);
+            let u_row = u_plane.row(sy);
+            let v_row = v_plane.row(sy);
+            let src_uv_w = u_row.len().min(v_row.len());
+            let max_x = src_uv_w.saturating_sub(1);
+            let dst = &mut dst_uv[row * dst_uv_stride..row * dst_uv_stride + dst_uv_w * 2];
+            for x in 0..dst_uv_w {
+                let sx = (x * src_uv_w / dst_uv_w).min(max_x);
+                dst[x * 2] = u_row[sx];
+                dst[x * 2 + 1] = v_row[sx];
+            }
+        }
+    } else {
+        let shift = (frame.bpc - 8) as u32;
+        let half = 1u32 << (shift - 1);
+        for row in 0..dst_uv_h {
+            let sy = (row * src_uv_h / dst_uv_h).min(max_uv_y);
+            let u_row = u_plane.row(sy);
+            let v_row = v_plane.row(sy);
+            let src_uv_w = (u_row.len() / 2).min(v_row.len() / 2);
+            let max_x = src_uv_w.saturating_sub(1);
+            let dst = &mut dst_uv[row * dst_uv_stride..row * dst_uv_stride + dst_uv_w * 2];
+            for x in 0..dst_uv_w {
+                let sx = (x * src_uv_w / dst_uv_w).min(max_x) * 2;
+                let u_val = u16::from_le_bytes([u_row[sx], u_row[sx + 1]]) as u32;
+                let v_val = u16::from_le_bytes([v_row[sx], v_row[sx + 1]]) as u32;
+                dst[x * 2] = ((u_val + half) >> shift).min(255) as u8;
+                dst[x * 2 + 1] = ((v_val + half) >> shift).min(255) as u8;
+            }
+        }
+    }
+}
+
 // ---- rav1d ソフトウェアデコーダ & リアルタイム変換器（macOS 本番 + Linux テスト） ----
 
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
@@ -634,7 +773,10 @@ mod decoder {
         dav1d_get_picture, dav1d_open, dav1d_picture_unref, dav1d_send_data,
     };
 
-    use super::{ColorInfo, DecodedFrame, EncodedFrame, PixelLayout, PlaneView, VideoEncoder};
+    use super::{
+        ColorInfo, DecodedFrame, EncodedFrame, PixelLayout, PlaneView, VideoEncoder,
+        h264_output_dimensions,
+    };
 
     /// 異常な解像度の壊れたファイルで OOM しないための上限（8K × 8K）
     const MAX_FRAME_PIXELS: u32 = 8192 * 8192;
@@ -642,6 +784,14 @@ mod decoder {
     fn is_eagain(res: Dav1dResult) -> bool {
         res.0 < 0
             && std::io::Error::from_raw_os_error(-res.0).kind() == std::io::ErrorKind::WouldBlock
+    }
+
+    struct DataGuard(Dav1dData);
+
+    impl Drop for DataGuard {
+        fn drop(&mut self) {
+            unsafe { dav1d_data_unref(NonNull::new(&raw mut self.0)) };
+        }
     }
 
     struct PicGuard(Dav1dPicture);
@@ -668,14 +818,16 @@ mod decoder {
                 dav1d_default_settings(NonNull::new_unchecked(settings.as_mut_ptr()));
             }
             let mut settings = unsafe { settings.assume_init() };
-            // シーク時のキーフレーム〜目標時刻の復号も速く終わるよう論理コアの 3/4（最大 8）を使い、
-            // フレーム遅延は 2 に抑えてメモリと通常時のレイテンシを低く保つ（待機スレッドは Condvar で休む）
+            // 論理コアの 3/4（最大 8）を使い、max_frame_delay = 0（自動 = ceil(sqrt(threads))）で
+            // 1 タイル構成の 1080p 動画でもフレーム並列度を確保する（待機スレッドは Condvar で休む）。
+            // フィルムグレイン合成（apply_grain）は毎フレームの全画素ノイズ生成とバッファ複製を伴い、
+            // 後段の H.264 再エンコードでもビットレート浪費・ブロックノイズの原因になるため無効化する
             let threads = std::thread::available_parallelism()
                 .map_or(4, |n| (n.get() * 3 / 4).clamp(2, 8)) as c_int;
             settings.n_threads = threads;
-            settings.max_frame_delay = 2;
+            settings.max_frame_delay = 0;
             settings.frame_size_limit = MAX_FRAME_PIXELS;
-            settings.apply_grain = 1;
+            settings.apply_grain = 0;
             // 標準エラーへログを出さない
             settings.logger = unsafe { Dav1dLogger::new(None, None) };
 
@@ -699,8 +851,8 @@ mod decoder {
                 return Ok(());
             }
             let ctx = self.ctx.ok_or("AV1 デコーダは閉じています")?;
-            let mut data = Dav1dData::default();
-            let ptr = unsafe { dav1d_data_create(NonNull::new(&raw mut data), packet.len()) };
+            let mut data = DataGuard(Dav1dData::default());
+            let ptr = unsafe { dav1d_data_create(NonNull::new(&raw mut data.0), packet.len()) };
             if ptr.is_null() {
                 return Err("AV1 パケット用のメモリを確保できません".into());
             }
@@ -708,10 +860,10 @@ mod decoder {
                 std::ptr::copy_nonoverlapping(packet.as_ptr(), ptr, packet.len());
             }
             // 元の 90 kHz PTS をそのまま乗せ、出力ピクチャで取り戻す（VFR でも音ズレしない）
-            data.m.timestamp = pts;
+            data.0.m.timestamp = pts;
 
-            loop {
-                let res = unsafe { dav1d_send_data(Some(ctx), NonNull::new(&raw mut data)) };
+            for _ in 0..64 {
+                let res = unsafe { dav1d_send_data(Some(ctx), NonNull::new(&raw mut data.0)) };
                 if res.0 == 0 {
                     break;
                 }
@@ -720,8 +872,7 @@ mod decoder {
                     self.pull_one(on_frame)?;
                     continue;
                 }
-                unsafe { dav1d_data_unref(NonNull::new(&raw mut data)) };
-                // 壊れたパケットが 1 つ混ざっていても全体が即死しないよう読み飛ばす
+                // 壊れたパケットが 1 つ混ざっていても全体が即死しないよう読み飛ばす（DataGuard が解放）
                 return Ok(());
             }
             // 通常時は 1 パケット投入ごとに 1 回だけ取り出す。
@@ -1085,8 +1236,7 @@ mod decoder {
             completed_fragments: &mut VecDeque<(Vec<EncodedFrame>, i64)>,
         ) -> Result<(), String> {
             if encoder.is_none() {
-                let w = frame.width as u32;
-                let h = frame.height as u32;
+                let (w, h) = h264_output_dimensions(frame.width, frame.height);
                 let sdr_color = frame.color.and_then(ColorInfo::for_sdr_h264);
                 *encoder = Some(factory(w, h, fps, sdr_color)?);
                 *encoded_size = Some((w, h));

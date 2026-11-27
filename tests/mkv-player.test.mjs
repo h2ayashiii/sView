@@ -72,4 +72,50 @@ describe("MkvPlayer", () => {
     assert.equal(player.canContinueFromBuffer(12.5), false);
     assert.equal(player.canContinueFromBuffer(3.0), false);
   });
+
+  it("mkv_read 実行中にバッファ外へシークしたら mkv_cancel_read で中断し整合性を保つ", () => {
+    const canceled = [];
+    globalThis.window = /** @type {any} */ ({
+      __TAURI__: {
+        core: {
+          invoke(cmd, args) {
+            if (cmd === "mkv_cancel_read") canceled.push(args.id);
+            return Promise.resolve();
+          },
+        },
+      },
+    });
+    try {
+      const video = { currentTime: 40.0 };
+      const player = new MkvPlayer(video, "/tmp/sample.mp4");
+      player.id = 7;
+      player.info = { transcoded: true };
+      player.reading = true;
+      player.sourceBuffer = {
+        buffered: makeRanges([[0.0, 3.0]]),
+      };
+
+      player.onSeeking();
+      assert.deepEqual(canceled, [7]);
+      assert.equal(player.readCanceled, true);
+      // 中断した後は Rust 側のデコード位置が途中になるため、元のバッファ内へ戻っても再シークさせる
+      assert.equal(player.canContinueFromBuffer(1.5), false);
+    } finally {
+      delete globalThis.window;
+    }
+  });
+
+  it("先頭フレームが 0 秒より少し後ろにある短い動画のループ時に再変換せず先頭へ進める", async () => {
+    const video = { currentTime: 0.0 };
+    const player = new MkvPlayer(video, "/tmp/sample.mp4");
+    player.info = { transcoded: true };
+    player.eof = true;
+    player.sourceBuffer = {
+      buffered: makeRanges([[0.033, 5.0]]),
+    };
+
+    assert.equal(player.canContinueFromBuffer(0.0), true);
+    await player.seek(0.0);
+    assert.ok(Math.abs(video.currentTime - 0.034) < 1e-6);
+  });
 });

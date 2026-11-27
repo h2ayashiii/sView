@@ -42,6 +42,8 @@ export class MkvPlayer {
     this.nudgeTarget = null;
     // シークでバッファを空にした直後（最初の断片の頭まで再生位置を進めてよい）
     this.afterReset = false;
+    this.reading = false;
+    this.readCanceled = false;
     this.wakeUp = null;
     this.onEvent = () => this.notify();
     this.onSeeking = () => {
@@ -52,6 +54,10 @@ export class MkvPlayer {
       }
       this.nudgeTarget = null;
       this.seekTarget = t;
+      if (this.reading && this.id != null && !this.canContinueFromBuffer(t)) {
+        this.readCanceled = true;
+        window.__TAURI__.core.invoke("mkv_cancel_read", { id: this.id }).catch(() => {});
+      }
       this.notify();
     };
     this.onWaiting = () => {
@@ -192,7 +198,10 @@ export class MkvPlayer {
     this.video.addEventListener("seeking", this.onSeeking);
     this.video.addEventListener("waiting", this.onWaiting);
     const start = this.options.startTime ?? 0;
-    if (start > 0) this.video.currentTime = start;
+    if (start > 0) {
+      this.seekTarget = start;
+      this.video.currentTime = start;
+    }
   }
 
   // 読み込みのループ。閉じるまで回る
@@ -208,8 +217,18 @@ export class MkvPlayer {
           await this.idle();
           continue;
         }
-        const data = mkvBytes(await invoke("mkv_read", { id: this.id }));
+        this.reading = true;
+        let data;
+        try {
+          data = mkvBytes(await invoke("mkv_read", { id: this.id }));
+        } finally {
+          this.reading = false;
+        }
         if (this.closed) return;
+        if (this.readCanceled) {
+          if (this.seekTarget === null) this.seekTarget = this.video.currentTime;
+          continue;
+        }
         // 読んでいる間にバッファ外へのシークが来ていたら、この断片は捨ててシーク先から読み直す。
         // 続きを読めば追いつく範囲へのシークでは、Rust 側がすでに先へ進んでいるため捨てずに足す
         if (this.seekTarget !== null) {
@@ -234,10 +253,11 @@ export class MkvPlayer {
 
   // バッファを空にせず続きを読めば追いつけるシーク先かを返す
   canContinueFromBuffer(target) {
+    if (this.readCanceled) return false;
     const ranges = this.sourceBuffer?.buffered;
     if (!ranges?.length) return false;
     const last = ranges.length - 1;
-    if (target >= ranges.start(last) && target < ranges.end(last)) return true;
+    if (target >= ranges.start(last) - 0.1 && target < ranges.end(last)) return true;
     if (this.eof) return false;
     // 変換時は数秒先まで全部エンコードして待つよりシークし直した方が速いので 1 秒以内にする
     const maxAhead = this.info?.transcoded ? 1 : MKV_CONTINUE_S;
@@ -247,11 +267,13 @@ export class MkvPlayer {
   async seek(target) {
     this.seekTarget = null;
     if (this.canContinueFromBuffer(target)) {
+      this.nudgeGap(false);
       return;
     }
     await this.remove(0, Infinity);
     if (this.closed || this.seekTarget !== null) return;
     await window.__TAURI__.core.invoke("mkv_seek", { id: this.id, time: target });
+    this.readCanceled = false;
     this.eof = false;
     this.afterReset = true;
   }
@@ -306,17 +328,17 @@ export class MkvPlayer {
       await this.append(data);
     } catch (e) {
       if (e?.name !== "QuotaExceededError") throw e;
-      await this.evictBehind(1);
+      await this.evictBehind(1, true);
       await this.append(data);
     }
   }
 
-  async evictBehind(keep) {
+  async evictBehind(keep, force = false) {
     const ranges = this.sourceBuffer.buffered;
     if (!ranges.length) return;
     const end = this.video.currentTime - keep;
-    // 少しずつ消すと remove が多くなるので、余分が 5 秒たまってからまとめて消す
-    if (end - ranges.start(0) < 5) return;
+    // 少しずつ消すと remove が多くなるので、通常時は余分が 5 秒たまってからまとめて消す
+    if (!force && end - ranges.start(0) < 5) return;
     await this.remove(0, end);
   }
 
