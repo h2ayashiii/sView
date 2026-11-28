@@ -1802,8 +1802,9 @@ fn av1_video_detection_distinguishes_codecs_and_containers() {
     assert!(!is_av1_video(&mpeg4));
 }
 
-/// WebM 音声断片（Cluster 列）から各 Opus パケットの時刻（ms）と長さを読み出すテスト用ヘルパー
-fn parse_webm_audio_ms(data: &[u8]) -> Vec<(i64, usize)> {
+/// WebM 音声断片（Cluster 列）から各 Opus パケットの時刻（0.1 ms 単位）と長さを読み出すテスト用ヘルパー
+fn parse_webm_audio_ticks(data: &[u8]) -> Vec<(i64, usize)> {
+    assert_eq!(WEBM_TIMESTAMP_SCALE_NS, 100_000);
     let mut walker = MkvWalker::new(std::io::Cursor::new(data), vec![(1, 0)]);
     let mut out = Vec::new();
     while let Some(frame) = walker.next(true).unwrap() {
@@ -1852,7 +1853,7 @@ fn av1_mp4_and_webm_remux_and_fragmented_mp4_roundtrip() {
         let mut webm_audio = a_init.unwrap_or_default();
         let mut video = Vec::new();
         let mut audio_end: Option<i64> = None;
-        let mut webm_audio_end_ms: Option<i64> = None;
+        let mut webm_audio_end_ticks: Option<i64> = None;
         loop {
             let fragment = stream.read_fragment().unwrap();
             if fragment.is_empty() {
@@ -1872,18 +1873,19 @@ fn av1_mp4_and_webm_remux_and_fragmented_mp4_roundtrip() {
                 }
                 if !a_frag.is_empty() {
                     webm_audio.extend_from_slice(a_frag);
-                    let frames = parse_webm_audio_ms(a_frag);
+                    let frames = parse_webm_audio_ticks(a_frag);
                     assert!(!frames.is_empty());
-                    if let Some(end) = webm_audio_end_ms {
-                        assert!(
-                            (frames[0].0 - end).abs() <= 2,
+                    if let Some(end) = webm_audio_end_ticks {
+                        assert_eq!(
+                            frames[0].0, end,
                             "{name}: WebM 音声の継ぎ目 {} vs {end}",
                             frames[0].0
                         );
                     } else {
-                        assert!(frames[0].0 <= 50, "{name}: WebM 音声開始 {}", frames[0].0);
+                        // 先頭プライミング込みの最初のパケットが欠落せず時刻 0 から始まること
+                        assert_eq!(frames[0].0, 0, "{name}: WebM 音声開始 {}", frames[0].0);
                     }
-                    webm_audio_end_ms = Some(frames.last().unwrap().0 + 20);
+                    webm_audio_end_ticks = Some(frames.last().unwrap().0 + 200);
                 }
             } else {
                 if name == "av1.mp4" {
@@ -1909,18 +1911,19 @@ fn av1_mp4_and_webm_remux_and_fragmented_mp4_roundtrip() {
         }
         assert_eq!(video.len(), 48, "{name}: 映像フレーム数");
         if info.separate_audio {
-            // 組み立てた WebM（init + clusters）が MatroskaFile として正常に読めること
+            // 組み立てた WebM（init + clusters）が MatroskaFile として正常に読め、CodecDelay が保持されること
             let mkv = matroska_demuxer::MatroskaFile::open(std::io::Cursor::new(&webm_audio))
                 .expect("生成した WebM 音声がパースできること");
             assert_eq!(mkv.tracks().len(), 1);
             assert_eq!(mkv.tracks()[0].codec_id(), "A_OPUS");
+            assert_eq!(mkv.tracks()[0].codec_delay(), Some(6_500_000));
             assert!(
                 mkv.tracks()[0]
                     .codec_private()
                     .unwrap()
                     .starts_with(b"OpusHead")
             );
-            let audio_sec = webm_audio_end_ms.unwrap() as f64 / 1000.0;
+            let audio_sec = webm_audio_end_ticks.unwrap() as f64 / 10_000.0;
             assert!((audio_sec - 2.0).abs() < 0.12, "{name}: {audio_sec}");
         } else {
             let audio_sec = audio_end.unwrap() as f64 / 48_000.0;
@@ -2053,7 +2056,7 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
         let mut video = Vec::new();
         let mut video_end: Option<i64> = None;
         let mut audio_end: Option<i64> = None;
-        let mut webm_audio_end_ms: Option<i64> = None;
+        let mut webm_audio_end_ticks: Option<i64> = None;
         let mut fragments = 0usize;
         let mut first_frag_frames = 0usize;
         loop {
@@ -2085,17 +2088,17 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
             video.extend(v.iter().map(|s| s.pts));
             if let Some(a_bytes) = a_frag {
                 if !a_bytes.is_empty() {
-                    let frames = parse_webm_audio_ms(a_bytes);
-                    if let Some(end) = webm_audio_end_ms {
-                        assert!(
-                            (frames[0].0 - end).abs() <= 2,
+                    let frames = parse_webm_audio_ticks(a_bytes);
+                    if let Some(end) = webm_audio_end_ticks {
+                        assert_eq!(
+                            frames[0].0, end,
                             "{name}: WebM 音声の継ぎ目が途切れています {} vs {end}",
                             frames[0].0
                         );
                     } else {
-                        assert!(frames[0].0 <= 50, "{name}: WebM 音声開始 {}", frames[0].0);
+                        assert_eq!(frames[0].0, 0, "{name}: WebM 音声開始 {}", frames[0].0);
                     }
-                    webm_audio_end_ms = Some(frames.last().unwrap().0 + 20);
+                    webm_audio_end_ticks = Some(frames.last().unwrap().0 + 200);
                 }
             } else if let Some(a) = tracks.get(&2) {
                 if let Some(end) = audio_end {
@@ -2127,7 +2130,7 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
             assert!((p - exact).abs() <= 90, "{name}[{i}]: {p} != {exact}");
         }
         let audio_sec = if info.separate_audio {
-            webm_audio_end_ms.unwrap() as f64 / 1000.0
+            webm_audio_end_ticks.unwrap() as f64 / 10_000.0
         } else {
             audio_end.unwrap() as f64 / 48_000.0
         };
@@ -2146,7 +2149,7 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
         let mut seek_video_end: Option<i64> = None;
         let mut seek_audio_start: Option<f64> = None;
         let mut seek_audio_end: Option<i64> = None;
-        let mut seek_webm_end_ms: Option<i64> = None;
+        let mut seek_webm_end_ticks: Option<i64> = None;
         loop {
             let fragment = stream.read_fragment().unwrap();
             if fragment.is_empty() {
@@ -2172,17 +2175,18 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
             seek_video.extend(v.iter().map(|s| s.pts));
             if let Some(a_bytes) = a_frag {
                 if !a_bytes.is_empty() {
-                    let frames = parse_webm_audio_ms(a_bytes);
+                    let frames = parse_webm_audio_ticks(a_bytes);
                     if seek_audio_start.is_none() {
-                        seek_audio_start = Some(frames[0].0 as f64 / 1000.0);
+                        // WebM ワイヤ時刻から CodecDelay（6.5 ms = 65 ticks）を引いた実表示開始時刻
+                        seek_audio_start = Some((frames[0].0 as f64 - 65.0) / 10_000.0);
                     }
-                    if let Some(end) = seek_webm_end_ms {
-                        assert!(
-                            (frames[0].0 - end).abs() <= 2,
+                    if let Some(end) = seek_webm_end_ticks {
+                        assert_eq!(
+                            frames[0].0, end,
                             "{name}: シーク後の WebM 音声が途切れています"
                         );
                     }
-                    seek_webm_end_ms = Some(frames.last().unwrap().0 + 20);
+                    seek_webm_end_ticks = Some(frames.last().unwrap().0 + 200);
                 }
             } else if let Some(a) = tracks.get(&2) {
                 if seek_audio_start.is_none() {
@@ -2437,11 +2441,11 @@ fn vp9_mkv_is_remuxed_to_fragmented_mp4() {
     assert_eq!(vpcc_body[2] >> 4, 8); // 8-bit
     assert_eq!(&vpcc_body[3..6], &[1, 1, 1]); // BT.709
 
-    // 全断片を順に読み切って全 72 映像フレーム + WebM Opus 音声が連続して得られる
+    // 全断片を順に読み切って全 72 映像フレーム + WebM Opus 音声が 0 秒から連続して得られる
     let mut webm_audio = audio_init.to_vec();
     let mut video_count = 0usize;
     let mut video_end: Option<i64> = None;
-    let mut audio_end_ms: Option<i64> = None;
+    let mut audio_end_ticks: Option<i64> = None;
     let mut fragments = 0usize;
     loop {
         let fragment = stream.read_fragment().unwrap();
@@ -2465,18 +2469,21 @@ fn vp9_mkv_is_remuxed_to_fragmented_mp4() {
         }
         if !a_frag.is_empty() {
             webm_audio.extend_from_slice(a_frag);
-            let frames = parse_webm_audio_ms(a_frag);
-            if let Some(end) = audio_end_ms {
-                assert!((frames[0].0 - end).abs() <= 2);
+            let frames = parse_webm_audio_ticks(a_frag);
+            if let Some(end) = audio_end_ticks {
+                assert_eq!(frames[0].0, end);
+            } else {
+                assert_eq!(frames[0].0, 0);
             }
-            audio_end_ms = Some(frames.last().unwrap().0 + 20);
+            audio_end_ticks = Some(frames.last().unwrap().0 + 200);
         }
     }
     assert!(fragments >= 2);
     assert_eq!(video_count, 72);
-    assert!(audio_end_ms.unwrap() > 2000);
+    assert!(audio_end_ticks.unwrap() > 20_000);
     let mkv = matroska_demuxer::MatroskaFile::open(std::io::Cursor::new(&webm_audio)).unwrap();
     assert_eq!(mkv.tracks()[0].codec_id(), "A_OPUS");
+    assert_eq!(mkv.tracks()[0].codec_delay(), Some(6_500_000));
 
     // 途中（1.25 秒）へのシークは直前のキーフレーム（1.0 秒）から始まる
     let sought = stream.seek(1.25).unwrap();
@@ -2487,9 +2494,9 @@ fn vp9_mkv_is_remuxed_to_fragmented_mp4() {
     assert!(tracks[&1][0].keyframe);
     let first_sec = tracks[&1][0].pts as f64 / 90_000.0;
     assert!((first_sec - 1.0).abs() < 0.05, "first_sec={first_sec}");
-    let seek_audio = parse_webm_audio_ms(a_seek);
+    let seek_audio = parse_webm_audio_ticks(a_seek);
     assert!(!seek_audio.is_empty());
-    assert!((seek_audio[0].0 as f64 / 1000.0 - 1.0).abs() < 0.1);
+    assert!((seek_audio[0].0 as f64 / 10_000.0 - 1.0).abs() < 0.1);
 }
 
 #[test]
@@ -2497,6 +2504,7 @@ fn webm_opus_dops_roundtrip_and_cluster_splitting() {
     // OpusHead <-> dOps の往復変換（ステレオ・マルチチャンネル双方）
     let mut head = b"OpusHead".to_vec();
     head.extend([1, 2, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0x00, 0x00, 0]);
+    assert_eq!(opus_head_pre_skip(&head), 312);
     let dops = opus_dops(&head).unwrap();
     assert_eq!(dops_to_opus_head(&dops).unwrap(), head);
 
@@ -2507,27 +2515,37 @@ fn webm_opus_dops_roundtrip_and_cluster_splitting() {
     let dops6 = opus_dops(&surround).unwrap();
     assert_eq!(dops_to_opus_head(&dops6).unwrap(), surround);
     assert_eq!(dops_to_opus_head(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), None);
+    assert_eq!(
+        opus_dops(b"OpusHead\x01\x00\x00\x00\x80\xBB\x00\x00\x00\x00\x00"),
+        None
+    );
 
-    // 30 秒を超える長い音声断片でも i16 溢れせず複数 Cluster に分割される
+    // 2.5 ms（120 サンプル）の短フレーム精度と、3 秒超の長い断片での複数 Cluster 分割を両方検証
     let run = TrackRun {
         track_id: 2,
         base_decode_time: 0,
         samples: vec![
             Sample {
-                data: vec![0xF8, 0x01],
-                duration: 48_000 * 20, // 20s
+                data: vec![0xE0, 0x01],
+                duration: 120, // 2.5 ms = 25 ticks
                 composition_offset: 0,
                 keyframe: true,
             },
             Sample {
-                data: vec![0xF8, 0x02],
-                duration: 48_000 * 20, // +20s -> 20s
+                data: vec![0xE0, 0x02],
+                duration: 120, // +2.5 ms -> 5.0 ms = 50 ticks
                 composition_offset: 0,
                 keyframe: true,
             },
             Sample {
                 data: vec![0xF8, 0x03],
-                duration: 48_000 * 20, // +20s -> 40s (新 Cluster)
+                duration: 48_000 * 4, // +4.0 s -> 新 Cluster（40,050 ticks）
+                composition_offset: 0,
+                keyframe: true,
+            },
+            Sample {
+                data: vec![0xF8, 0x04],
+                duration: 960,
                 composition_offset: 0,
                 keyframe: true,
             },
@@ -2535,6 +2553,6 @@ fn webm_opus_dops_roundtrip_and_cluster_splitting() {
         has_composition_offsets: false,
     };
     let frag = build_webm_opus_fragment(&run);
-    let parsed = parse_webm_audio_ms(&frag);
-    assert_eq!(parsed, vec![(0, 2), (20_000, 2), (40_000, 2)]);
+    let parsed = parse_webm_audio_ticks(&frag);
+    assert_eq!(parsed, vec![(0, 2), (25, 2), (50, 2), (40_050, 2)]);
 }

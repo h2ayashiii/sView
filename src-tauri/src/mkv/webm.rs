@@ -6,12 +6,14 @@
 
 use super::fmp4::TrackRun;
 
-/// タイムスタンプの単位（1 ms = 1,000,000 ns。WebM の標準値）
-const WEBM_TIMESTAMP_SCALE_NS: u64 = 1_000_000;
+/// タイムスタンプの単位（0.1 ms = 100,000 ns = 10,000 Hz）。
+/// 10^9 の約数なので WebKit の CMTime 変換で端数が出ず、Opus の 2.5 ms / 5 ms / 20 ms フレームや
+/// 312 サンプル（6.5 ms）の境界もすべて整数ティックで表せる
+pub(crate) const WEBM_TIMESTAMP_SCALE_NS: u64 = 100_000;
 /// Opus のサンプリング周波数（RFC 6716 / WebM 仕様上常に 48 kHz）
 const OPUS_SAMPLE_RATE: u64 = 48_000;
-/// 1 つの Cluster 内に収める相対時刻の上限（ms）。SimpleBlock の相対時刻は i16（最大 32767 ms）
-const MAX_CLUSTER_SPAN_MS: u64 = 30_000;
+/// 1 つの Cluster 内に収める相対時刻の上限（3.0 秒 = 30,000 ティック）。SimpleBlock の相対時刻は i16（最大 32,767）
+const MAX_CLUSTER_SPAN_TICKS: u64 = 30_000;
 
 /// EBML の要素サイズを VINT として書き出す（全ビット 1 の不明サイズは避ける）
 fn push_ebml_size(out: &mut Vec<u8>, size: u64) {
@@ -32,30 +34,37 @@ fn push_ebml_size(out: &mut Vec<u8>, size: u64) {
     }
 }
 
-fn ebml_element(id: &[u8], body: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(id.len() + 8 + body.len());
+fn push_ebml_element(out: &mut Vec<u8>, id: &[u8], body: &[u8]) {
     out.extend_from_slice(id);
-    push_ebml_size(&mut out, body.len() as u64);
+    push_ebml_size(out, body.len() as u64);
     out.extend_from_slice(body);
-    out
 }
 
-fn ebml_uint(id: &[u8], val: u64) -> Vec<u8> {
+fn push_ebml_uint(out: &mut Vec<u8>, id: &[u8], val: u64) {
     let bytes = val.to_be_bytes();
     let first = bytes
         .iter()
         .position(|&b| b != 0)
         .unwrap_or(bytes.len() - 1);
-    ebml_element(id, &bytes[first..])
+    push_ebml_element(out, id, &bytes[first..]);
 }
 
-fn ebml_f64(id: &[u8], val: f64) -> Vec<u8> {
-    ebml_element(id, &val.to_be_bytes())
+fn push_ebml_f64(out: &mut Vec<u8>, id: &[u8], val: f64) {
+    push_ebml_element(out, id, &val.to_be_bytes());
+}
+
+/// `OpusHead` から先頭スキップ量（48 kHz サンプル数）を読む
+pub(crate) fn opus_head_pre_skip(opus_head: &[u8]) -> u16 {
+    if opus_head.len() >= 12 && &opus_head[..8] == b"OpusHead" {
+        u16::from_le_bytes([opus_head[10], opus_head[11]])
+    } else {
+        0
+    }
 }
 
 /// MP4 の `dOps` ボックスの中身（ビッグエンディアン）から WebM 用の `OpusHead`（リトルエンディアン）を作る
 pub(crate) fn dops_to_opus_head(dops: &[u8]) -> Option<Vec<u8>> {
-    if dops.len() < 11 {
+    if dops.len() < 11 || dops[0] != 0 {
         return None;
     }
     let channels = dops[1];
@@ -87,83 +96,108 @@ pub(crate) fn dops_to_opus_head(dops: &[u8]) -> Option<Vec<u8>> {
 
 /// WebM の初期化セグメント（EBML + Segment[不明サイズ] + Info + Tracks[A_OPUS]）を作る
 pub(crate) fn build_webm_opus_init(channels: u16, opus_head: &[u8]) -> Vec<u8> {
-    let mut ebml_body = Vec::new();
-    ebml_body.extend(ebml_uint(&[0x42, 0x86], 1)); // EBMLVersion
-    ebml_body.extend(ebml_uint(&[0x42, 0xF7], 1)); // EBMLReadVersion
-    ebml_body.extend(ebml_uint(&[0x42, 0xF2], 4)); // EBMLMaxIDLength
-    ebml_body.extend(ebml_uint(&[0x42, 0xF3], 8)); // EBMLMaxSizeLength
-    ebml_body.extend(ebml_element(&[0x42, 0x82], b"webm")); // DocType
-    ebml_body.extend(ebml_uint(&[0x42, 0x87], 4)); // DocTypeVersion
-    ebml_body.extend(ebml_uint(&[0x42, 0x85], 2)); // DocTypeReadVersion
+    let mut ebml_body = Vec::with_capacity(32);
+    push_ebml_uint(&mut ebml_body, &[0x42, 0x86], 1); // EBMLVersion
+    push_ebml_uint(&mut ebml_body, &[0x42, 0xF7], 1); // EBMLReadVersion
+    push_ebml_uint(&mut ebml_body, &[0x42, 0xF2], 4); // EBMLMaxIDLength
+    push_ebml_uint(&mut ebml_body, &[0x42, 0xF3], 8); // EBMLMaxSizeLength
+    push_ebml_element(&mut ebml_body, &[0x42, 0x82], b"webm"); // DocType
+    push_ebml_uint(&mut ebml_body, &[0x42, 0x87], 4); // DocTypeVersion
+    push_ebml_uint(&mut ebml_body, &[0x42, 0x85], 2); // DocTypeReadVersion
 
-    let mut info_body = Vec::new();
-    info_body.extend(ebml_uint(&[0x2A, 0xD7, 0xB1], WEBM_TIMESTAMP_SCALE_NS)); // TimestampScale
-    info_body.extend(ebml_element(&[0x4D, 0x80], b"sView")); // MuxingApp
-    info_body.extend(ebml_element(&[0x57, 0x41], b"sView")); // WritingApp
+    let mut info_body = Vec::with_capacity(24);
+    push_ebml_uint(&mut info_body, &[0x2A, 0xD7, 0xB1], WEBM_TIMESTAMP_SCALE_NS); // TimestampScale
+    push_ebml_element(&mut info_body, &[0x4D, 0x80], b"sView"); // MuxingApp
+    push_ebml_element(&mut info_body, &[0x57, 0x41], b"sView"); // WritingApp
 
-    let mut audio_body = Vec::new();
-    audio_body.extend(ebml_f64(&[0xB5], OPUS_SAMPLE_RATE as f64)); // SamplingFrequency
-    audio_body.extend(ebml_uint(&[0x9F], channels.max(1) as u64)); // Channels
+    let mut audio_body = Vec::with_capacity(16);
+    push_ebml_f64(&mut audio_body, &[0xB5], OPUS_SAMPLE_RATE as f64); // SamplingFrequency
+    push_ebml_uint(&mut audio_body, &[0x9F], channels.max(1) as u64); // Channels
 
-    let mut track_body = Vec::new();
-    track_body.extend(ebml_uint(&[0xD7], 1)); // TrackNumber
-    track_body.extend(ebml_uint(&[0x73, 0xC5], 1)); // TrackUID
-    track_body.extend(ebml_uint(&[0x83], 2)); // TrackType = Audio
-    track_body.extend(ebml_element(&[0x86], b"A_OPUS")); // CodecID
-    track_body.extend(ebml_element(&[0x63, 0xA2], opus_head)); // CodecPrivate (OpusHead)
-    // タイムスタンプは remux 側で CodecDelay 減算済みのため 0 にして二重シフトを防ぐ
-    track_body.extend(ebml_uint(&[0x56, 0xAA], 0)); // CodecDelay
-    track_body.extend(ebml_uint(&[0x56, 0xBB], 80_000_000)); // SeekPreRoll (80 ms)
-    track_body.extend(ebml_element(&[0xE1], &audio_body)); // Audio
+    let pre_skip = opus_head_pre_skip(opus_head) as u64;
+    let codec_delay_ns = (pre_skip * 1_000_000_000 + OPUS_SAMPLE_RATE / 2) / OPUS_SAMPLE_RATE;
 
-    let tracks = ebml_element(
-        &[0x16, 0x54, 0xAE, 0x6B],
-        &ebml_element(&[0xAE], &track_body),
-    );
+    let mut track_entry = Vec::with_capacity(64 + opus_head.len());
+    push_ebml_uint(&mut track_entry, &[0xD7], 1); // TrackNumber
+    push_ebml_uint(&mut track_entry, &[0x73, 0xC5], 1); // TrackUID
+    push_ebml_uint(&mut track_entry, &[0x83], 2); // TrackType = Audio
+    push_ebml_element(&mut track_entry, &[0x86], b"A_OPUS"); // CodecID
+    push_ebml_element(&mut track_entry, &[0x63, 0xA2], opus_head); // CodecPrivate (OpusHead)
+    push_ebml_uint(&mut track_entry, &[0x56, 0xAA], codec_delay_ns); // CodecDelay
+    push_ebml_uint(&mut track_entry, &[0x56, 0xBB], 80_000_000); // SeekPreRoll (80 ms)
+    push_ebml_element(&mut track_entry, &[0xE1], &audio_body); // Audio
 
-    let mut out = ebml_element(&[0x1A, 0x45, 0xDF, 0xA3], &ebml_body);
+    let mut tracks_body = Vec::with_capacity(track_entry.len() + 4);
+    push_ebml_element(&mut tracks_body, &[0xAE], &track_entry);
+
+    let mut out = Vec::with_capacity(160 + opus_head.len());
+    push_ebml_element(&mut out, &[0x1A, 0x45, 0xDF, A3_BYTE], &ebml_body);
     // Segment（長さ不明 = 8 バイト VINT の全ビット 1。後続の Cluster を順に append できる）
     out.extend_from_slice(&[0x18, 0x53, 0x80, 0x67]);
     out.extend_from_slice(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
-    out.extend(ebml_element(&[0x15, 0x49, 0xA9, 0x66], &info_body));
-    out.extend(tracks);
+    push_ebml_element(&mut out, &[0x15, 0x49, 0xA9, 0x66], &info_body);
+    push_ebml_element(&mut out, &[0x16, 0x54, 0xAE, 0x6B], &tracks_body);
     out
 }
 
-/// 48 kHz 単位の Opus TrackRun から WebM の Cluster 断片を作る
-pub(crate) fn build_webm_opus_fragment(run: &TrackRun) -> Vec<u8> {
+const A3_BYTE: u8 = 0xA3;
+
+/// 48 kHz 単位の Opus TrackRun から WebM の Cluster 断片を `out` に直接追記する（中間 Vec 確保なし）
+pub(crate) fn append_webm_opus_fragment(out: &mut Vec<u8>, run: &TrackRun) {
     if run.samples.is_empty() {
-        return Vec::new();
+        return;
     }
-    let ticks_to_ms = |ticks: u64| -> u64 {
-        ((ticks as u128 * 1000 + (OPUS_SAMPLE_RATE as u128 / 2)) / OPUS_SAMPLE_RATE as u128) as u64
+    let est_bytes: usize = run.samples.iter().map(|s| s.data.len() + 9).sum();
+    out.reserve(est_bytes + 32);
+
+    let samples_to_ticks = |samples: u64| -> u64 {
+        let ticks_per_sec = 1_000_000_000 / WEBM_TIMESTAMP_SCALE_NS;
+        ((samples as u128 * ticks_per_sec as u128 + (OPUS_SAMPLE_RATE as u128 / 2))
+            / OPUS_SAMPLE_RATE as u128) as u64
     };
-    let mut out = Vec::new();
-    let mut cur_ticks = run.base_decode_time;
-    let mut cluster_ts_ms = ticks_to_ms(cur_ticks);
-    let mut cluster_body = ebml_uint(&[0xE7], cluster_ts_ms);
+    let start_cluster = |out: &mut Vec<u8>, ts: u64| -> usize {
+        out.extend_from_slice(&[0x1F, 0x43, 0xB6, 0x75]); // Cluster ID
+        let size_pos = out.len();
+        out.extend_from_slice(&[0u8; 8]); // 8 バイト VINT サイズ予約枠
+        push_ebml_uint(out, &[0xE7], ts); // Timestamp
+        size_pos
+    };
+    let finish_cluster = |out: &mut Vec<u8>, size_pos: usize| {
+        let body_len = (out.len() - (size_pos + 8)) as u64;
+        let vint = 0x0100_0000_0000_0000 | (body_len & 0x00FF_FFFF_FFFF_FFFF);
+        out[size_pos..size_pos + 8].copy_from_slice(&vint.to_be_bytes());
+    };
+
+    let mut cur_samples = run.base_decode_time;
+    let mut cluster_ts = samples_to_ticks(cur_samples);
+    let mut size_pos = start_cluster(out, cluster_ts);
 
     for sample in &run.samples {
-        let pts_ms = ticks_to_ms(cur_ticks);
-        cur_ticks = cur_ticks.saturating_add(sample.duration as u64);
-        if pts_ms.saturating_sub(cluster_ts_ms) > MAX_CLUSTER_SPAN_MS {
-            out.extend(ebml_element(&[0x1F, 0x43, 0xB6, 0x75], &cluster_body));
-            cluster_ts_ms = pts_ms;
-            cluster_body = ebml_uint(&[0xE7], cluster_ts_ms);
+        let pts = samples_to_ticks(cur_samples);
+        cur_samples = cur_samples.saturating_add(sample.duration as u64);
+        if pts.saturating_sub(cluster_ts) > MAX_CLUSTER_SPAN_TICKS {
+            finish_cluster(out, size_pos);
+            cluster_ts = pts;
+            size_pos = start_cluster(out, cluster_ts);
         }
-        let rel =
-            (pts_ms as i64 - cluster_ts_ms as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+        let rel = (pts as i64 - cluster_ts as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
         // SimpleBlock: TrackNumber VINT (1 -> 0x81) + 相対時刻 (i16 BE) + flags (0x80 = keyframe) + payload
         let block_len = 4 + sample.data.len();
-        cluster_body.push(0xA3);
-        push_ebml_size(&mut cluster_body, block_len as u64);
-        cluster_body.push(0x81);
-        cluster_body.extend_from_slice(&rel.to_be_bytes());
-        cluster_body.push(0x80);
-        cluster_body.extend_from_slice(&sample.data);
+        out.push(0xA3);
+        push_ebml_size(out, block_len as u64);
+        out.push(0x81);
+        out.extend_from_slice(&rel.to_be_bytes());
+        out.push(0x80);
+        out.extend_from_slice(&sample.data);
     }
 
-    out.extend(ebml_element(&[0x1F, 0x43, 0xB6, 0x75], &cluster_body));
+    finish_cluster(out, size_pos);
+}
+
+#[cfg(test)]
+pub(crate) fn build_webm_opus_fragment(run: &TrackRun) -> Vec<u8> {
+    let mut out = Vec::new();
+    append_webm_opus_fragment(&mut out, run);
     out
 }
 

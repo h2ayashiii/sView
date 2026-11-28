@@ -419,6 +419,7 @@ struct ParsedTrack<'a> {
     enabled: bool,
     display: (u32, u32),
     edit: EditOffset,
+    has_elst: bool,
     stsd_entry: Option<([u8; 4], Vec<u8>)>,
     stbl: &'a [u8],
 }
@@ -507,7 +508,7 @@ fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrack<'_>> {
         if s.is_empty()
             || matches!(
                 s,
-                "SoundHandler" | "VideoHandler" | "Core Media Audio" | "Core Media Video"
+                "SoundHandler" | "Core Media Audio" | "VideoHandler" | "Core Media Video"
             )
         {
             None
@@ -524,6 +525,9 @@ fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrack<'_>> {
         .and_then(|entries| SliceBoxes::new(entries).next())
         .map(|(k, b)| (k, b.to_vec()));
 
+    let has_elst = find_box(trak, b"edts")
+        .and_then(|e| find_box(e, b"elst"))
+        .is_some();
     let edit = parse_elst(trak, movie_timescale, timescale);
 
     Some(ParsedTrack {
@@ -536,6 +540,7 @@ fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrack<'_>> {
         enabled,
         display: (disp_w, disp_h),
         edit,
+        has_elst,
         stsd_entry,
         stbl,
     })
@@ -1098,18 +1103,30 @@ impl Mp4Source {
             .filter(|_| audio_track.is_some())
             .map(|i| audio_traks[i]);
 
+        // Opus in ISOBMFF 仕様に従い、elst が無い Opus トラックは dOps の PreSkip 分を先頭オフセットとする
+        let audio_edit = selected_audio_trak.map_or(EditOffset::default(), |t| {
+            let mut edit = t.edit;
+            if !t.has_elst
+                && let Some(a) = &audio_track
+                && a.codec == RemuxAudioCodec::Opus
+            {
+                edit.media_offset =
+                    (a.output_pre_skip() as i128 * t.timescale as i128 / 48_000) as i64;
+            }
+            edit
+        });
+
         // 選ばれた映像・音声トラックだけサンプル表を構築する（不要トラックの展開や clone を省く）
         let (mut video_samples, mut video_stats) =
             parse_sample_table(video_trak.stbl, video_trak.edit);
         let mut audio_samples = selected_audio_trak
-            .map(|t| parse_sample_table(t.stbl, t.edit).0)
+            .map(|t| parse_sample_table(t.stbl, audio_edit).0)
             .unwrap_or_default();
 
         // 通常 MP4 のサンプルが空で fragmented MP4（moof + mdat）なら moof ヘッダを集める
         if video_samples.is_empty() {
             seek_to_pos(&mut reader, 0).map_err(|e| format!("MP4 を読めません: {e}"))?;
             let audio_id = selected_audio_trak.map(|t| t.track_id);
-            let audio_edit = selected_audio_trak.map_or(EditOffset::default(), |t| t.edit);
             let mut moof_stats = (0.0f64, 0usize, None);
             while let Some(bx) = read_box_header(&mut reader, file_len)
                 .map_err(|e| format!("MP4 を読めません: {e}"))?

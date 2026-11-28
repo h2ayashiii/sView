@@ -205,4 +205,25 @@ describe("MkvPlayer", () => {
       else globalThis.MediaSource = origMS;
     }
   });
+
+  it("分離音声モードでシーク直後に音声だけ数 ms 後ろから始まるとき共通区間の頭へ進める", () => {
+    const video = { currentTime: 5.0 };
+    const player = new MkvPlayer(video, "/tmp/sample.webm");
+    player.info = { separateAudio: true };
+    player.afterReset = true;
+    player.sourceBuffer = { buffered: makeRanges([[5.0, 10.0]]) };
+    player.audioBuffer = { buffered: makeRanges([[5.013, 10.0]]) };
+
+    // 映像だけ見れば 5.0 はバッファ内だが、音声が 5.013 からなので 5.014 へ進めて停止を防ぐ
+    player.nudgeGap(false);
+    assert.ok(Math.abs(video.currentTime - 5.014) < 1e-6);
+
+    // 映像が既に 0 秒からあるのに無音イントロで音声が 15 秒後から始まる場合は大ジャンプしない
+    video.currentTime = 2.0;
+    player.afterReset = true;
+    player.sourceBuffer = { buffered: makeRanges([[0.0, 30.0]]) };
+    player.audioBuffer = { buffered: makeRanges([[15.0, 30.0]]) };
+    player.nudgeGap(false);
+    assert.equal(video.currentTime, 2.0);
+  });
 });

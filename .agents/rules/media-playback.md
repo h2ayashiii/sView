@@ -54,12 +54,11 @@ globs: "src/main.js, src/mkv-player.js, src/viewer/*.js, src/index.html, src/sty
   derived per fragment: MKV has PTS only, so `video_decode_times` assigns the fragment's sorted PTS to the
   frames in decode order minus the reorder depth (`reorder`, probed from the first GOPs at open) so DTS ≤
   PTS; at the file start the negative DTS are squeezed into [0, first positive DTS). `trun` is version 1
-  (signed cts) in case a later GOP reorders deeper than probed. Audio timestamps subtract CodecDelay (or MP4 `elst` media_time), frames
+  (signed cts) in case a later GOP reorders deeper than probed. Audio timestamps subtract sample-accurate CodecDelay (or MP4 `elst` media_time; for WebM Opus, `CodecDelay` from `OpusHead` `pre_skip` is carried on the WebM `TrackEntry` so packet 0 stays at `0` with no priming gap), frames
   before 0 are dropped, and `audio_next` keeps fragment boundaries gapless (an overlap makes WebKit drop a
   frame). The JS side runs one loop (`run`) so `mkv_read` / `mkv_seek` never overlap: it keeps
   `aheadSeconds()` buffered ahead, `remove()`s everything older than `behindSeconds()`, and on `seeking` outside
-  `canContinueFromBuffer` cancels any in-flight `mkv_read` (`mkv_cancel_read`), clears the buffer, and calls `mkv_seek`. `nudgeGap` jumps small
-  gaps at the start of a range and records `nudgeTarget` so the resulting `seeking` event never discards an in-flight `mkv_read`.
+  `canContinueFromBuffer` cancels any in-flight `mkv_read` (`mkv_cancel_read`), clears the buffer, and calls `mkv_seek`. `nudgeGap` (and `canContinueFromBuffer`) uses the intersection of `sourceBuffer` and `audioBuffer` (`playableRanges`) so playback never stalls when audio starts a few ms after a video keyframe, and records `nudgeTarget` so the resulting `seeking` event never discards an in-flight `mkv_read`.
   `MediaSource.isTypeSupported` decides the audio (and triggers `transcode: true` fallback for AV1 if needed): unsupported tracks are `disabled` in the 「音声」 menu, and
   an unplayable default track falls back to another one or to no audio with a notice. CSP `media-src` needs
   `blob:` for the MediaSource URL.

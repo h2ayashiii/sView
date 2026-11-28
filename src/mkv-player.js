@@ -204,17 +204,22 @@ export class MkvPlayer {
     if (this.info.separateAudio) {
       const audioMime = MkvPlayer.audioMime(this.info.audioCodec);
       if (audioMime) {
-        this.audioBuffer = mediaSource.addSourceBuffer(audioMime);
-        this.audioBuffer.mode = "segments";
+        try {
+          this.audioBuffer = mediaSource.addSourceBuffer(audioMime);
+          this.audioBuffer.mode = "segments";
+        } catch {
+          this.audioBuffer = null;
+        }
       }
     }
     const init = mkvBytes(await invoke("mkv_init", { id: this.id }));
     if (this.closed) return;
     if (this.info.separateAudio) {
       const [vInit, aInit] = unpackDual(init);
-      if (vInit.length) await this.appendTo(this.sourceBuffer, vInit);
-      if (this.closed) return;
-      if (aInit.length && this.audioBuffer) await this.appendTo(this.audioBuffer, aInit);
+      await Promise.all([
+        vInit.length ? this.appendTo(this.sourceBuffer, vInit) : null,
+        aInit.length && this.audioBuffer ? this.appendTo(this.audioBuffer, aInit) : null,
+      ]);
     } else {
       await this.appendTo(this.sourceBuffer, init);
     }
@@ -279,17 +284,38 @@ export class MkvPlayer {
     }
   }
 
+  // 実際に再生を進められるバッファ区間（[{ start, end }]）を返す。
+  // 音声 SourceBuffer が別にあるときは映像・音声の共通区間を取り、シーク直後などで音声が映像より数 ms 後ろから
+  // 始まる場合も両方揃う位置で判定する（無音トラック等で共通区間が無いときは映像側を使う）
+  playableRanges() {
+    const v = toRangeList(this.sourceBuffer?.buffered);
+    if (!this.audioBuffer) return v;
+    const a = toRangeList(this.audioBuffer.buffered);
+    if (!a.length) return v;
+    const inter = [];
+    let i = 0;
+    let j = 0;
+    while (i < v.length && j < a.length) {
+      const start = Math.max(v[i].start, a[j].start);
+      const end = Math.min(v[i].end, a[j].end);
+      if (end > start) inter.push({ start, end });
+      if (v[i].end < a[j].end) i++;
+      else j++;
+    }
+    return inter.length ? inter : v;
+  }
+
   // バッファを空にせず続きを読めば追いつけるシーク先かを返す
   canContinueFromBuffer(target) {
     if (this.readCanceled) return false;
-    const ranges = this.sourceBuffer?.buffered;
-    if (!ranges?.length) return false;
-    const last = ranges.length - 1;
-    if (target >= ranges.start(last) - 0.1 && target < ranges.end(last)) return true;
+    const ranges = this.playableRanges();
+    if (!ranges.length) return false;
+    const last = ranges[ranges.length - 1];
+    if (target >= last.start - 0.1 && target < last.end) return true;
     if (this.eof) return false;
     // 変換時は数秒先まで全部エンコードして待つよりシークし直した方が速いので 1 秒以内にする
     const maxAhead = this.info?.transcoded ? 1 : MKV_CONTINUE_S;
-    return target >= ranges.start(last) - 0.1 && target <= ranges.end(last) + maxAhead;
+    return target >= last.start - 0.1 && target <= last.end + maxAhead;
   }
 
   async seek(target) {
@@ -320,28 +346,30 @@ export class MkvPlayer {
   // （映像の最初のフレームや音声の始まりが 0 秒やシーク先より少し後ろにあると、WebKit は止まったままになる）
   nudgeGap(stalled = false) {
     if (this.closed || !this.sourceBuffer) return;
-    const ranges = this.sourceBuffer.buffered;
+    const ranges = this.playableRanges();
+    const vBuffered = this.sourceBuffer.buffered;
+    const vStart = vBuffered.length ? vBuffered.start(0) : Infinity;
     const t = this.video.currentTime;
     for (let i = 0; i < ranges.length; i++) {
-      if (t >= ranges.start(i) && t < ranges.end(i)) {
+      if (t >= ranges[i].start && t < ranges[i].end) {
         this.afterReset = false;
         // 範囲の末尾直前で waiting になり、すぐ後ろに次の範囲があるときは微小な隙間を飛び越す
         if (
           stalled &&
           i + 1 < ranges.length &&
-          ranges.end(i) - t < 0.05 &&
-          ranges.start(i + 1) - ranges.end(i) <= MKV_GAP_JUMP_S
+          ranges[i].end - t < 0.05 &&
+          ranges[i + 1].start - ranges[i].end <= MKV_GAP_JUMP_S
         ) {
-          const next = ranges.start(i + 1) + 0.001;
+          const next = ranges[i + 1].start + 0.001;
           this.nudgeTarget = next;
           this.video.currentTime = next;
         }
         return;
       }
-      const gap = ranges.start(i) - t;
-      if (gap > 0 && (gap <= MKV_GAP_JUMP_S || this.afterReset)) {
+      const gap = ranges[i].start - t;
+      if (gap > 0 && (gap <= MKV_GAP_JUMP_S || (this.afterReset && t < vStart))) {
         this.afterReset = false;
-        const next = ranges.start(i) + 0.001;
+        const next = ranges[i].start + 0.001;
         this.nudgeTarget = next;
         this.video.currentTime = next;
         return;
@@ -353,11 +381,12 @@ export class MkvPlayer {
   async appendWithRoom(data) {
     if (this.info?.separateAudio) {
       const [vData, aData] = unpackDual(data);
-      if (vData.length) await this.appendBufferWithRoom(this.sourceBuffer, vData);
-      if (this.closed) return;
-      if (aData.length && this.audioBuffer) {
-        await this.appendBufferWithRoom(this.audioBuffer, aData);
-      }
+      await Promise.all([
+        vData.length ? this.appendBufferWithRoom(this.sourceBuffer, vData) : null,
+        aData.length && this.audioBuffer
+          ? this.appendBufferWithRoom(this.audioBuffer, aData)
+          : null,
+      ]);
       return;
     }
     await this.appendBufferWithRoom(this.sourceBuffer, data);
@@ -390,9 +419,10 @@ export class MkvPlayer {
   }
 
   async remove(start, end) {
-    await this.removeFrom(this.sourceBuffer, start, end);
-    if (this.closed) return;
-    if (this.audioBuffer) await this.removeFrom(this.audioBuffer, start, end);
+    await Promise.all([
+      this.removeFrom(this.sourceBuffer, start, end),
+      this.audioBuffer ? this.removeFrom(this.audioBuffer, start, end) : null,
+    ]);
   }
 
   removeFrom(sb, start, end) {
@@ -475,6 +505,15 @@ export class MkvPlayer {
     this.close(this.id);
     this.id = null;
   }
+}
+
+function toRangeList(ranges) {
+  if (!ranges?.length) return [];
+  const out = [];
+  for (let i = 0; i < ranges.length; i++) {
+    out.push({ start: ranges.start(i), end: ranges.end(i) });
+  }
+  return out;
 }
 
 // 分離音声パック `[video_len: u32 BE][video][audio]` を映像・音声の Uint8Array に分ける
