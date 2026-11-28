@@ -57,7 +57,7 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 - **フォルダの変更に追従** — 開いているフォルダにファイルを追加・削除すると、開き直さずに一覧へ反映されます
 - **ゴミ箱へ移動** — 表示中のファイルを OS のゴミ箱へ移動できます（完全削除はしません）
 - **右クリックメニューと設定** — 右クリックでメニュー、`⌘ ,`（Windows は `Ctrl` + `,`）で設定ウィンドウが開きます
-- **対応形式** — 画像: avif / bmp / gif / ico / jfif / jpe / jpeg / jpg / png / svg / tif / tiff / webp、動画: mp4 / m4v / webm / mov / mkv、音楽: mp3 / m4a / aac / flac / wav / ogg / opus、圧縮フォルダ: zip / cbz（中の画像のみ）
+- **対応形式** — 画像: avif / bmp / gif / ico / jfif / jpe / jpeg / jpg / png / svg / tif / tiff / webp（macOS で Safari 17 以降の環境では heic / heif も対応）、動画: mp4 / m4v / webm / mov / mkv、音楽: mp3 / m4a / aac / flac / wav / ogg / opus、圧縮フォルダ: zip / cbz（中の画像のみ）
 - **対応 OS** — Windows 10/11・macOS 10.15 以降（Apple Silicon）
 
 ## 使い方

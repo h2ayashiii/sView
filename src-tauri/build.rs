@@ -59,12 +59,18 @@ fn generate_media_exts() {
         .unwrap_or_else(|e| panic!("{} を読めません: {e}", formats_path.display()));
 
     let image = extract_exts(&json, "image", '{', '}');
+    let macos_only_image = extract_exts(&json, "macosImage", '{', '}');
+    let mut macos_image = image.clone();
+    macos_image.extend(macos_only_image);
+    macos_image.sort();
+    macos_image.dedup();
     let video = extract_exts(&json, "video", '[', ']');
     let audio = extract_exts(&json, "audio", '[', ']');
     let archive = extract_exts(&json, "archive", '[', ']');
 
     let mut out = String::from("// media-formats.json から build.rs が自動生成\n");
-    out.push_str(&format_const("IMAGE_EXTS", &image));
+    out.push_str(&format_const("COMMON_IMAGE_EXTS", &image));
+    out.push_str(&format_const("MACOS_IMAGE_EXTS", &macos_image));
     out.push_str(&format_const("VIDEO_EXTS", &video));
     out.push_str(&format_const("AUDIO_EXTS", &audio));
     out.push_str(&format_const("ARCHIVE_EXTS", &archive));

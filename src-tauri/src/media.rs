@@ -8,6 +8,14 @@ use std::path::Path;
 // mkv_open などで fragmented MP4 に詰め直して流す
 include!(concat!(env!("OUT_DIR"), "/media_exts.rs"));
 
+/// OS に応じて有効な画像拡張子を切り替える。
+/// macOS は WKWebView（Safari 17+）で表示できる HEIC / HEIF を含める。
+/// Windows の WebView2 は HEIC に非対応のため含めない
+#[cfg(target_os = "macos")]
+pub(crate) const IMAGE_EXTS: &[&str] = MACOS_IMAGE_EXTS;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const IMAGE_EXTS: &[&str] = COMMON_IMAGE_EXTS;
+
 /// 音楽ファイルと同じフォルダに置かれたジャケット画像とみなすファイル名（拡張子を除く・小文字）。
 /// 埋め込みのアートワークが無いときだけ使う
 pub(crate) const COVER_STEMS: &[&str] = &["cover", "folder", "front", "album", "albumart"];

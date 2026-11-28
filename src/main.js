@@ -15,6 +15,7 @@ import {
   IMAGE_EXT_FILTER,
   isAudioPath,
   isVideoPath,
+  MACOS_IMAGE_EXT_FILTER,
   toBytes,
   VIDEO_EXT_FILTER,
 } from "./viewer/media-types.js";
@@ -1451,19 +1452,20 @@ async function deleteCurrent() {
 
 async function openDialog() {
   try {
+    const imageExts = IS_MAC ? MACOS_IMAGE_EXT_FILTER : IMAGE_EXT_FILTER;
     const selected = await dialog.open({
       multiple: false,
       filters: [
         {
           name: "画像・動画・音楽・圧縮フォルダ",
           extensions: [
-            ...IMAGE_EXT_FILTER,
+            ...imageExts,
             ...VIDEO_EXT_FILTER,
             ...AUDIO_EXT_FILTER,
             ...ARCHIVE_EXT_FILTER,
           ],
         },
-        { name: "画像", extensions: IMAGE_EXT_FILTER },
+        { name: "画像", extensions: imageExts },
         { name: "動画", extensions: VIDEO_EXT_FILTER },
         { name: "音楽", extensions: AUDIO_EXT_FILTER },
         { name: "圧縮フォルダ (zip / cbz)", extensions: ARCHIVE_EXT_FILTER },
