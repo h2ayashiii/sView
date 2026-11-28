@@ -18,6 +18,7 @@ use super::subtitles::{
     BlockDecode, MKV_BLOCK, MKV_BLOCK_GROUP, MKV_CLUSTER, MKV_SIMPLE_BLOCK, MKV_TIMESTAMP,
     block_decoders, decode_block, read_ebml_uint, read_ebml_vint,
 };
+use super::webm::{build_webm_opus_fragment, build_webm_opus_init, pack_dual_payload};
 
 // ---- MKV / WebM / MP4 のリマックスと AV1 変換（macOS） ----
 // macOS の WKWebView は MKV コンテナを再生できず、M1 / M2 世代では AV1 も再生できない。
@@ -561,6 +562,8 @@ pub(crate) struct RemuxAudio {
     pub(crate) codec: RemuxAudioCodec,
     /// AAC は AudioSpecificConfig、Opus は dOps の中身
     pub(crate) config: Vec<u8>,
+    /// Opus 用の OpusHead（WebM 音声 SourceBuffer の CodecPrivate に使う）
+    pub(crate) opus_head: Option<Vec<u8>>,
     pub(crate) codec_string: String,
     pub(crate) channels: u16,
     /// 音声の時間の単位（サンプリング周波数）
@@ -592,8 +595,10 @@ pub(crate) struct MkvOpened {
     pub(crate) id: u64,
     /// 映像の MP4 の codecs 文字列
     pub(crate) video_codec: String,
-    /// 鳴らす音声の MP4 の codecs 文字列（音声なしなら None）
+    /// 鳴らす音声の codecs 文字列（音声なしなら None）
     pub(crate) audio_codec: Option<String>,
+    /// 音声を映像とは別の WebM SourceBuffer（audio/webm; codecs="opus"）で流すか
+    pub(crate) separate_audio: bool,
     /// 長さ（秒）。分からなければ None
     pub(crate) duration: Option<f64>,
     pub(crate) audio_tracks: Vec<RemuxAudioTrack>,
@@ -1227,12 +1232,14 @@ pub(crate) fn remux_audio_track(track: &matroska_demuxer::TrackEntry) -> Option<
     let number = track.track_number().get();
     let codec_id = track.codec_id();
     if codec_id == "A_OPUS" {
-        let config = opus_dops(track.codec_private()?)?;
+        let raw_head = track.codec_private()?;
+        let config = opus_dops(raw_head)?;
         return Some(RemuxAudio {
             number,
             codec: RemuxAudioCodec::Opus,
             channels: config[1] as u16,
             config,
+            opus_head: Some(raw_head.to_vec()),
             codec_string: "opus".into(),
             timescale: 48000,
             frame_samples: 960,
@@ -1252,6 +1259,7 @@ pub(crate) fn remux_audio_track(track: &matroska_demuxer::TrackEntry) -> Option<
         number,
         codec: RemuxAudioCodec::Aac,
         config,
+        opus_head: None,
         codec_string: format!("mp4a.40.{object}"),
         channels,
         timescale: core_rate,
@@ -1641,10 +1649,12 @@ impl MkvStream {
         let can_transcode =
             !transcoded && video.codec == RemuxVideoCodec::Av1 && can_transcode_av1();
 
+        let separate_audio = stream.separate_audio();
         let opened = MkvOpened {
             id: 0,
             video_codec: video.codec_string.clone(),
             audio_codec: audio_track.as_ref().map(|a| a.codec_string.clone()),
+            separate_audio,
             duration,
             audio_tracks,
             audio: chosen_audio,
@@ -1855,12 +1865,40 @@ impl MkvStream {
         Ok(keyframe_sec)
     }
 
-    /// 初期化セグメント（ftyp + moov）
+    /// 音声を映像と別の WebM SourceBuffer（audio/webm; codecs="opus"）で流すか
+    fn separate_audio(&self) -> bool {
+        self.audio
+            .as_ref()
+            .is_some_and(|a| a.codec == RemuxAudioCodec::Opus && a.opus_head.is_some())
+    }
+
+    /// 初期化セグメント。
+    /// 通常は fMP4（ftyp + moov）、Opus 分離時は `[video_len: u32 BE][video_fmp4][audio_webm]`
     pub(crate) fn init_segment(&self) -> Vec<u8> {
+        if self.separate_audio() {
+            let video_init = build_init_segment(&self.video, None);
+            let audio = self.audio.as_ref().unwrap();
+            let audio_init =
+                build_webm_opus_init(audio.channels, audio.opus_head.as_deref().unwrap_or(&[]));
+            return pack_dual_payload(&video_init, &audio_init);
+        }
         build_init_segment(&self.video, self.audio.as_ref())
     }
 
-    /// 次の断片（moof + mdat）。終わりまで読んだら空
+    fn pack_fragment(&self, video_run: Option<&TrackRun>, audio_run: Option<&TrackRun>) -> Vec<u8> {
+        if self.separate_audio() {
+            let video_bytes = if video_run.is_some() {
+                build_fragment(self.sequence, video_run, None)
+            } else {
+                Vec::new()
+            };
+            let audio_bytes = audio_run.map(build_webm_opus_fragment).unwrap_or_default();
+            return pack_dual_payload(&video_bytes, &audio_bytes);
+        }
+        build_fragment(self.sequence, video_run, audio_run)
+    }
+
+    /// 次の断片（moof + mdat、または分離音声パック）。終わりまで読んだら空
     pub(crate) fn read_fragment(&mut self) -> std::io::Result<Vec<u8>> {
         #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
         if self.transcode.is_some() {
@@ -1914,11 +1952,7 @@ impl MkvStream {
         let video_samples = self.video_samples_matroska(video, next_keyframe);
         let audio_samples = self.audio_samples_matroska(audio);
         self.sequence += 1;
-        Ok(build_fragment(
-            self.sequence,
-            video_samples.as_ref(),
-            audio_samples.as_ref(),
-        ))
+        Ok(self.pack_fragment(video_samples.as_ref(), audio_samples.as_ref()))
     }
 
     /// MP4 の無変換リマックス（M3+ での AV1 無変換テスト・フォールバック用）
@@ -1993,11 +2027,7 @@ impl MkvStream {
         };
         let audio_run = self.audio_samples_units(raw_audio);
         self.sequence += 1;
-        Ok(build_fragment(
-            self.sequence,
-            Some(&video_run),
-            audio_run.as_ref(),
-        ))
+        Ok(self.pack_fragment(Some(&video_run), audio_run.as_ref()))
     }
 
     /// AV1 リアルタイム変換（rav1d → VideoToolbox H.264）で次の 1 断片を作る。
@@ -2131,11 +2161,7 @@ impl MkvStream {
             self.collect_transcode_audio(first_video_pts, video_end_pts, is_final_fragment)?;
 
         self.sequence += 1;
-        Ok(build_fragment(
-            self.sequence,
-            Some(&video_run),
-            audio_run.as_ref(),
-        ))
+        Ok(self.pack_fragment(Some(&video_run), audio_run.as_ref()))
     }
 
     /// 変換用: コンテナから次の AV1 映像パケット 1 つを読む。

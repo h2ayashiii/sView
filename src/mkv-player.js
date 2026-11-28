@@ -35,10 +35,11 @@ export class MkvPlayer {
     this.info = null;
     this.mediaSource = null;
     this.sourceBuffer = null;
+    this.audioBuffer = null;
     this.eof = false;
     // シークの目標（null = なし）
     this.seekTarget = null;
-    // nudgeGap が自ら currentTime を微調整した値（その seeking イベントで再シークしない）
+    // nudgeGap が自ら進めた currentTime の seeking イベントで再シークしない
     this.nudgeTarget = null;
     // シークでバッファを空にした直後（最初の断片の頭まで再生位置を進めてよい）
     this.afterReset = false;
@@ -75,6 +76,11 @@ export class MkvPlayer {
     return `video/mp4; codecs="${codecs}"`;
   }
 
+  // macOS の WebKit は MP4 内の Opus に非対応のため、Opus のみ別 WebM SourceBuffer で流す
+  static audioMime(audioCodec) {
+    return audioCodec === "opus" ? 'audio/webm; codecs="opus"' : null;
+  }
+
   aheadSeconds() {
     return this.info?.transcoded ? TRANSCODE_AHEAD_S : MKV_AHEAD_S;
   }
@@ -102,9 +108,10 @@ export class MkvPlayer {
   }
 
   audioPlayable(track) {
-    return (
-      !!track.codecString &&
-      MediaSource.isTypeSupported(MkvPlayer.mime(this.info.videoCodec, track.codecString))
+    if (!track.codecString) return false;
+    const sep = MkvPlayer.audioMime(track.codecString);
+    return MediaSource.isTypeSupported(
+      sep ?? MkvPlayer.mime(this.info.videoCodec, track.codecString)
     );
   }
 
@@ -137,7 +144,12 @@ export class MkvPlayer {
         throw new Error(`この ${this.mediaLabel()} の映像は、この Mac では再生できません`);
       }
     }
-    if (!MediaSource.isTypeSupported(MkvPlayer.mime(info.videoCodec, info.audioCodec))) {
+    const audioMime = info.audioCodec
+      ? info.separateAudio
+        ? MkvPlayer.audioMime(info.audioCodec)
+        : MkvPlayer.mime(info.videoCodec, info.audioCodec)
+      : null;
+    if (audioMime && !MediaSource.isTypeSupported(audioMime)) {
       // Rust はリマックスできても WebView が鳴らせない音声。鳴らせる別の音声か、音声なしで開き直す
       this.info = info;
       const alt = info.audioTracks.findIndex((t) => this.audioPlayable(t));
@@ -184,12 +196,28 @@ export class MkvPlayer {
     await opened;
     URL.revokeObjectURL(url);
     if (this.closed) return;
-    const mime = MkvPlayer.mime(this.info.videoCodec, this.info.audioCodec);
-    this.sourceBuffer = mediaSource.addSourceBuffer(mime);
+    const videoMime = this.info.separateAudio
+      ? MkvPlayer.mime(this.info.videoCodec, null)
+      : MkvPlayer.mime(this.info.videoCodec, this.info.audioCodec);
+    this.sourceBuffer = mediaSource.addSourceBuffer(videoMime);
     this.sourceBuffer.mode = "segments";
+    if (this.info.separateAudio) {
+      const audioMime = MkvPlayer.audioMime(this.info.audioCodec);
+      if (audioMime) {
+        this.audioBuffer = mediaSource.addSourceBuffer(audioMime);
+        this.audioBuffer.mode = "segments";
+      }
+    }
     const init = mkvBytes(await invoke("mkv_init", { id: this.id }));
     if (this.closed) return;
-    await this.append(init);
+    if (this.info.separateAudio) {
+      const [vInit, aInit] = unpackDual(init);
+      if (vInit.length) await this.appendTo(this.sourceBuffer, vInit);
+      if (this.closed) return;
+      if (aInit.length && this.audioBuffer) await this.appendTo(this.audioBuffer, aInit);
+    } else {
+      await this.appendTo(this.sourceBuffer, init);
+    }
     if (this.closed) return;
     if (this.info.duration > 0) mediaSource.duration = this.info.duration;
     for (const type of ["timeupdate", "play", "playing"]) {
@@ -323,42 +351,62 @@ export class MkvPlayer {
 
   // 断片を足す。入りきらなければ（QuotaExceededError）再生位置より前を手放してから入れ直す
   async appendWithRoom(data) {
-    await this.evictBehind(this.behindSeconds());
+    if (this.info?.separateAudio) {
+      const [vData, aData] = unpackDual(data);
+      if (vData.length) await this.appendBufferWithRoom(this.sourceBuffer, vData);
+      if (this.closed) return;
+      if (aData.length && this.audioBuffer) {
+        await this.appendBufferWithRoom(this.audioBuffer, aData);
+      }
+      return;
+    }
+    await this.appendBufferWithRoom(this.sourceBuffer, data);
+  }
+
+  async appendBufferWithRoom(sb, data) {
+    await this.evictBehind(sb, this.behindSeconds());
+    if (this.closed) return;
     try {
-      await this.append(data);
+      await this.appendTo(sb, data);
     } catch (e) {
       if (e?.name !== "QuotaExceededError") throw e;
-      await this.evictBehind(1, true);
-      await this.append(data);
+      await this.evictBehind(sb, 1, true);
+      if (this.closed) return;
+      await this.appendTo(sb, data);
     }
   }
 
-  async evictBehind(keep, force = false) {
-    const ranges = this.sourceBuffer.buffered;
+  async evictBehind(sb, keep, force = false) {
+    const ranges = sb.buffered;
     if (!ranges.length) return;
     const end = this.video.currentTime - keep;
     // 少しずつ消すと remove が多くなるので、通常時は余分が 5 秒たまってからまとめて消す
     if (!force && end - ranges.start(0) < 5) return;
-    await this.remove(0, end);
+    await this.removeFrom(sb, 0, end);
   }
 
-  append(data) {
-    return this.whenUpdated(() => this.sourceBuffer.appendBuffer(data));
+  appendTo(sb, data) {
+    return this.whenUpdated(sb, () => sb.appendBuffer(data));
   }
 
-  remove(start, end) {
-    const ranges = this.sourceBuffer.buffered;
+  async remove(start, end) {
+    await this.removeFrom(this.sourceBuffer, start, end);
+    if (this.closed) return;
+    if (this.audioBuffer) await this.removeFrom(this.audioBuffer, start, end);
+  }
+
+  removeFrom(sb, start, end) {
+    const ranges = sb.buffered;
     if (!ranges.length) return Promise.resolve();
     const until = Math.min(end, ranges.end(ranges.length - 1));
     if (until <= start) return Promise.resolve();
-    return this.whenUpdated(() => this.sourceBuffer.remove(start, until));
+    return this.whenUpdated(sb, () => sb.remove(start, until));
   }
 
   // SourceBuffer の操作をして、終わる（updateend）まで待つ
   /** @returns {Promise<void>} */
-  whenUpdated(action) {
+  whenUpdated(sb, action) {
     return new Promise((resolve, reject) => {
-      const sb = this.sourceBuffer;
       const done = () => {
         sb.removeEventListener("updateend", done);
         sb.removeEventListener("error", failed);
@@ -382,7 +430,13 @@ export class MkvPlayer {
   }
 
   endOfStream() {
-    if (this.mediaSource.readyState !== "open" || this.sourceBuffer.updating) return;
+    if (
+      this.mediaSource.readyState !== "open" ||
+      this.sourceBuffer.updating ||
+      this.audioBuffer?.updating
+    ) {
+      return;
+    }
     try {
       this.mediaSource.endOfStream();
     } catch {
@@ -421,6 +475,15 @@ export class MkvPlayer {
     this.close(this.id);
     this.id = null;
   }
+}
+
+// 分離音声パック `[video_len: u32 BE][video][audio]` を映像・音声の Uint8Array に分ける
+export function unpackDual(bytes) {
+  if (bytes.byteLength < 4) throw new Error("動画のデータを読み込めませんでした");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const vLen = view.getUint32(0, false);
+  if (4 + vLen > bytes.byteLength) throw new Error("動画のデータを読み込めませんでした");
+  return [bytes.subarray(4, 4 + vLen), bytes.subarray(4 + vLen)];
 }
 
 // invoke が返した生のバイト列（ArrayBuffer）を Uint8Array にする

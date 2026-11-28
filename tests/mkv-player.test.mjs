@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { MkvPlayer } from "../src/mkv-player.js";
+import { MkvPlayer, unpackDual } from "../src/mkv-player.js";
 
 function makeRanges(pairs) {
   return {
@@ -11,6 +11,36 @@ function makeRanges(pairs) {
     },
     end(i) {
       return pairs[i][1];
+    },
+  };
+}
+
+function makeFakeSourceBuffer() {
+  const listeners = new Map();
+  const appended = [];
+  const removed = [];
+  const emit = (type) => {
+    for (const fn of [...(listeners.get(type) ?? [])]) fn();
+  };
+  return {
+    buffered: makeRanges([]),
+    updating: false,
+    appended,
+    removed,
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      listeners.get(type)?.delete(fn);
+    },
+    appendBuffer(data) {
+      appended.push(Array.from(data));
+      queueMicrotask(() => emit("updateend"));
+    },
+    remove(start, end) {
+      removed.push([start, end]);
+      queueMicrotask(() => emit("updateend"));
     },
   };
 }
@@ -117,5 +147,62 @@ describe("MkvPlayer", () => {
     assert.equal(player.canContinueFromBuffer(0.0), true);
     await player.seek(0.0);
     assert.ok(Math.abs(video.currentTime - 0.034) < 1e-6);
+  });
+
+  it("Opus 音声は audio/webm で判定し、分離パックを映像・音声それぞれの SourceBuffer に投入・削除する", async () => {
+    assert.equal(MkvPlayer.audioMime("opus"), 'audio/webm; codecs="opus"');
+    assert.equal(MkvPlayer.audioMime("mp4a.40.2"), null);
+
+    const probed = [];
+    const origMS = globalThis.MediaSource;
+    globalThis.MediaSource = /** @type {any} */ ({
+      isTypeSupported(mime) {
+        probed.push(mime);
+        return (
+          mime === 'audio/webm; codecs="opus"' ||
+          mime === 'video/mp4; codecs="avc1.64001F,mp4a.40.2"'
+        );
+      },
+    });
+    try {
+      const video = { currentTime: 0.0 };
+      const player = new MkvPlayer(video, "/tmp/sample.webm");
+      player.info = {
+        videoCodec: "avc1.64001F",
+        audioCodec: "opus",
+        separateAudio: true,
+      };
+      assert.equal(player.audioPlayable({ codecString: "opus" }), true);
+      assert.equal(player.audioPlayable({ codecString: "mp4a.40.2" }), true);
+      assert.equal(player.audioPlayable({ codecString: null }), false);
+      assert.deepEqual(probed, [
+        'audio/webm; codecs="opus"',
+        'video/mp4; codecs="avc1.64001F,mp4a.40.2"',
+      ]);
+
+      // [video_len=3][1,2,3][4,5] の分離パックを展開して 2 本の SourceBuffer へ振り分ける
+      const packed = new Uint8Array([0, 0, 0, 3, 1, 2, 3, 4, 5]);
+      const [v, a] = unpackDual(packed);
+      assert.deepEqual(Array.from(v), [1, 2, 3]);
+      assert.deepEqual(Array.from(a), [4, 5]);
+
+      const vBuf = makeFakeSourceBuffer();
+      const aBuf = makeFakeSourceBuffer();
+      player.sourceBuffer = vBuf;
+      player.audioBuffer = aBuf;
+
+      await player.appendWithRoom(packed);
+      assert.deepEqual(vBuf.appended, [[1, 2, 3]]);
+      assert.deepEqual(aBuf.appended, [[4, 5]]);
+
+      vBuf.buffered = makeRanges([[0, 5]]);
+      aBuf.buffered = makeRanges([[0, 5]]);
+      await player.remove(0, Infinity);
+      assert.deepEqual(vBuf.removed, [[0, 5]]);
+      assert.deepEqual(aBuf.removed, [[0, 5]]);
+    } finally {
+      if (origMS === undefined) delete globalThis.MediaSource;
+      else globalThis.MediaSource = origMS;
+    }
   });
 });

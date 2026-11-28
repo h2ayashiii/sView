@@ -1802,16 +1802,29 @@ fn av1_video_detection_distinguishes_codecs_and_containers() {
     assert!(!is_av1_video(&mpeg4));
 }
 
+/// WebM 音声断片（Cluster 列）から各 Opus パケットの時刻（ms）と長さを読み出すテスト用ヘルパー
+fn parse_webm_audio_ms(data: &[u8]) -> Vec<(i64, usize)> {
+    let mut walker = MkvWalker::new(std::io::Cursor::new(data), vec![(1, 0)]);
+    let mut out = Vec::new();
+    while let Some(frame) = walker.next(true).unwrap() {
+        assert_eq!(frame.track, 1);
+        assert!(frame.keyframe);
+        out.push((frame.timestamp, frame.data.len()));
+    }
+    out
+}
+
 #[test]
 fn av1_mp4_and_webm_remux_and_fragmented_mp4_roundtrip() {
     let mut fmp4_bytes = Vec::new();
-    for (name, expected_audio_codec, sample_step) in [
-        ("av1.mp4", "mp4a.40.2", 1024i64),
-        ("av1.webm", "opus", 960i64),
+    for (name, expected_audio_codec, expected_separate, sample_step) in [
+        ("av1.mp4", "mp4a.40.2", false, 1024i64),
+        ("av1.webm", "opus", true, 960i64),
     ] {
         let (mut stream, info) =
             MkvStream::open_with_options(&remux_testdata(name), None, Some(false)).unwrap();
         assert!(!info.transcoded);
+        assert_eq!(info.separate_audio, expected_separate, "{name}");
         assert!(
             info.video_codec.starts_with("av01."),
             "{name}: {}",
@@ -1821,45 +1834,98 @@ fn av1_mp4_and_webm_remux_and_fragmented_mp4_roundtrip() {
         assert!((info.duration.unwrap() - 2.0).abs() < 0.15, "{name}");
 
         let init = stream.init_segment();
-        let has = |needle: &[u8]| init.windows(needle.len()).any(|w| w == needle);
+        let (v_init, a_init) = if info.separate_audio {
+            let (v, a) = unpack_dual_payload(&init).unwrap();
+            (v.to_vec(), Some(a.to_vec()))
+        } else {
+            (init.clone(), None)
+        };
+        let has = |needle: &[u8]| v_init.windows(needle.len()).any(|w| w == needle);
         assert!(
             has(b"av01") && has(b"av1C"),
             "{name}: av01/av1C がありません"
         );
         if name == "av1.mp4" {
-            fmp4_bytes.extend_from_slice(&init);
+            fmp4_bytes.extend_from_slice(&v_init);
         }
 
+        let mut webm_audio = a_init.unwrap_or_default();
         let mut video = Vec::new();
         let mut audio_end: Option<i64> = None;
+        let mut webm_audio_end_ms: Option<i64> = None;
         loop {
             let fragment = stream.read_fragment().unwrap();
             if fragment.is_empty() {
                 break;
             }
-            if name == "av1.mp4" {
-                fmp4_bytes.extend_from_slice(&fragment);
-            }
-            let tracks = parse_fragment(&fragment);
-            let v = &tracks[&1];
-            assert!(v[0].keyframe, "{name}: 断片はキーフレームから始めます");
-            video.extend(v.iter().map(|s| (s.dts, s.pts, s.keyframe)));
-            if let Some(a) = tracks.get(&2) {
-                if let Some(end) = audio_end {
-                    assert_eq!(a[0].dts, end, "{name}: 音声の継ぎ目が途切れています");
-                } else {
+            if info.separate_audio {
+                let (v_frag, a_frag) = unpack_dual_payload(&fragment).unwrap();
+                if !v_frag.is_empty() {
+                    let tracks = parse_fragment(v_frag);
                     assert!(
-                        a[0].dts <= 2400,
-                        "{name}: 音声の開始が遅れています {}",
-                        a[0].dts
+                        !tracks.contains_key(&2),
+                        "{name}: 分離モードで fMP4 に音声あり"
                     );
+                    let v = &tracks[&1];
+                    assert!(v[0].keyframe, "{name}: 断片はキーフレームから始めます");
+                    video.extend(v.iter().map(|s| (s.dts, s.pts, s.keyframe)));
                 }
-                audio_end = Some(a.last().unwrap().dts + sample_step);
+                if !a_frag.is_empty() {
+                    webm_audio.extend_from_slice(a_frag);
+                    let frames = parse_webm_audio_ms(a_frag);
+                    assert!(!frames.is_empty());
+                    if let Some(end) = webm_audio_end_ms {
+                        assert!(
+                            (frames[0].0 - end).abs() <= 2,
+                            "{name}: WebM 音声の継ぎ目 {} vs {end}",
+                            frames[0].0
+                        );
+                    } else {
+                        assert!(frames[0].0 <= 50, "{name}: WebM 音声開始 {}", frames[0].0);
+                    }
+                    webm_audio_end_ms = Some(frames.last().unwrap().0 + 20);
+                }
+            } else {
+                if name == "av1.mp4" {
+                    fmp4_bytes.extend_from_slice(&fragment);
+                }
+                let tracks = parse_fragment(&fragment);
+                let v = &tracks[&1];
+                assert!(v[0].keyframe, "{name}: 断片はキーフレームから始めます");
+                video.extend(v.iter().map(|s| (s.dts, s.pts, s.keyframe)));
+                if let Some(a) = tracks.get(&2) {
+                    if let Some(end) = audio_end {
+                        assert_eq!(a[0].dts, end, "{name}: 音声の継ぎ目が途切れています");
+                    } else {
+                        assert!(
+                            a[0].dts <= 2400,
+                            "{name}: 音声の開始が遅れています {}",
+                            a[0].dts
+                        );
+                    }
+                    audio_end = Some(a.last().unwrap().dts + sample_step);
+                }
             }
         }
         assert_eq!(video.len(), 48, "{name}: 映像フレーム数");
-        let audio_sec = audio_end.unwrap() as f64 / 48_000.0;
-        assert!((audio_sec - 2.0).abs() < 0.12, "{name}: {audio_sec}");
+        if info.separate_audio {
+            // 組み立てた WebM（init + clusters）が MatroskaFile として正常に読めること
+            let mkv = matroska_demuxer::MatroskaFile::open(std::io::Cursor::new(&webm_audio))
+                .expect("生成した WebM 音声がパースできること");
+            assert_eq!(mkv.tracks().len(), 1);
+            assert_eq!(mkv.tracks()[0].codec_id(), "A_OPUS");
+            assert!(
+                mkv.tracks()[0]
+                    .codec_private()
+                    .unwrap()
+                    .starts_with(b"OpusHead")
+            );
+            let audio_sec = webm_audio_end_ms.unwrap() as f64 / 1000.0;
+            assert!((audio_sec - 2.0).abs() < 0.12, "{name}: {audio_sec}");
+        } else {
+            let audio_sec = audio_end.unwrap() as f64 / 48_000.0;
+            assert!((audio_sec - 2.0).abs() < 0.12, "{name}: {audio_sec}");
+        }
     }
 
     // 書き出した fMP4（moov + mvex + moof/mdat）をそのまま fragmented MP4 として読み戻せること
@@ -1956,11 +2022,14 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
         }
     };
 
-    for (name, sample_step) in [("av1.mp4", 1024i64), ("av1.webm", 960i64)] {
+    for (name, expected_separate, sample_step) in
+        [("av1.mp4", false, 1024i64), ("av1.webm", true, 960i64)]
+    {
         let path = remux_testdata(name);
         let (mut stream, info) = open_transcode(&path).unwrap();
         assert!(info.transcoded, "{name}: 変換モードになっていること");
         assert!(!info.can_transcode);
+        assert_eq!(info.separate_audio, expected_separate, "{name}");
         assert!(
             info.video_codec.starts_with("avc1."),
             "{name}: {}",
@@ -1968,7 +2037,12 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
         );
 
         let init = stream.init_segment();
-        let has = |needle: &[u8]| init.windows(needle.len()).any(|w| w == needle);
+        let v_init = if info.separate_audio {
+            unpack_dual_payload(&init).unwrap().0
+        } else {
+            &init
+        };
+        let has = |needle: &[u8]| v_init.windows(needle.len()).any(|w| w == needle);
         assert!(
             has(b"avc1") && has(b"avcC"),
             "{name}: avc1/avcC がありません"
@@ -1979,6 +2053,7 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
         let mut video = Vec::new();
         let mut video_end: Option<i64> = None;
         let mut audio_end: Option<i64> = None;
+        let mut webm_audio_end_ms: Option<i64> = None;
         let mut fragments = 0usize;
         let mut first_frag_frames = 0usize;
         loop {
@@ -1987,7 +2062,13 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
                 break;
             }
             fragments += 1;
-            let tracks = parse_fragment(&fragment);
+            let (v_frag, a_frag) = if info.separate_audio {
+                let (v, a) = unpack_dual_payload(&fragment).unwrap();
+                (v, Some(a))
+            } else {
+                (fragment.as_slice(), None)
+            };
+            let tracks = parse_fragment(v_frag);
             let v = &tracks[&1];
             if fragments == 1 {
                 first_frag_frames = v.len();
@@ -2002,7 +2083,21 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
             let v_last = v.last().unwrap();
             video_end = Some(v_last.dts + v_last.duration);
             video.extend(v.iter().map(|s| s.pts));
-            if let Some(a) = tracks.get(&2) {
+            if let Some(a_bytes) = a_frag {
+                if !a_bytes.is_empty() {
+                    let frames = parse_webm_audio_ms(a_bytes);
+                    if let Some(end) = webm_audio_end_ms {
+                        assert!(
+                            (frames[0].0 - end).abs() <= 2,
+                            "{name}: WebM 音声の継ぎ目が途切れています {} vs {end}",
+                            frames[0].0
+                        );
+                    } else {
+                        assert!(frames[0].0 <= 50, "{name}: WebM 音声開始 {}", frames[0].0);
+                    }
+                    webm_audio_end_ms = Some(frames.last().unwrap().0 + 20);
+                }
+            } else if let Some(a) = tracks.get(&2) {
                 if let Some(end) = audio_end {
                     assert_eq!(a[0].dts, end, "{name}: 音声の継ぎ目が途切れています");
                 } else {
@@ -2031,7 +2126,11 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
             let exact = i as i64 * 90_000 / 24;
             assert!((p - exact).abs() <= 90, "{name}[{i}]: {p} != {exact}");
         }
-        let audio_sec = audio_end.unwrap() as f64 / 48_000.0;
+        let audio_sec = if info.separate_audio {
+            webm_audio_end_ms.unwrap() as f64 / 1000.0
+        } else {
+            audio_end.unwrap() as f64 / 48_000.0
+        };
         assert!(
             (audio_sec - 2.0).abs() < 0.12,
             "{name}: 音声長さ {audio_sec}"
@@ -2047,12 +2146,19 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
         let mut seek_video_end: Option<i64> = None;
         let mut seek_audio_start: Option<f64> = None;
         let mut seek_audio_end: Option<i64> = None;
+        let mut seek_webm_end_ms: Option<i64> = None;
         loop {
             let fragment = stream.read_fragment().unwrap();
             if fragment.is_empty() {
                 break;
             }
-            let tracks = parse_fragment(&fragment);
+            let (v_frag, a_frag) = if info.separate_audio {
+                let (v, a) = unpack_dual_payload(&fragment).unwrap();
+                (v, Some(a))
+            } else {
+                (fragment.as_slice(), None)
+            };
+            let tracks = parse_fragment(v_frag);
             let v = &tracks[&1];
             assert!(v[0].keyframe);
             if let Some(end) = seek_video_end {
@@ -2064,7 +2170,21 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
             let v_last = v.last().unwrap();
             seek_video_end = Some(v_last.dts + v_last.duration);
             seek_video.extend(v.iter().map(|s| s.pts));
-            if let Some(a) = tracks.get(&2) {
+            if let Some(a_bytes) = a_frag {
+                if !a_bytes.is_empty() {
+                    let frames = parse_webm_audio_ms(a_bytes);
+                    if seek_audio_start.is_none() {
+                        seek_audio_start = Some(frames[0].0 as f64 / 1000.0);
+                    }
+                    if let Some(end) = seek_webm_end_ms {
+                        assert!(
+                            (frames[0].0 - end).abs() <= 2,
+                            "{name}: シーク後の WebM 音声が途切れています"
+                        );
+                    }
+                    seek_webm_end_ms = Some(frames.last().unwrap().0 + 20);
+                }
+            } else if let Some(a) = tracks.get(&2) {
                 if seek_audio_start.is_none() {
                     seek_audio_start = Some(a[0].dts as f64 / 48_000.0);
                 }
@@ -2094,7 +2214,12 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
         let back = stream.seek(0.55).unwrap();
         assert!((0.49..=0.55).contains(&back), "{name}: {back}");
         let back_frag = stream.read_fragment().unwrap();
-        let back_tracks = parse_fragment(&back_frag);
+        let back_v = if info.separate_audio {
+            unpack_dual_payload(&back_frag).unwrap().0
+        } else {
+            &back_frag
+        };
+        let back_tracks = parse_fragment(back_v);
         let back_first_sec = back_tracks[&1][0].pts as f64 / 90_000.0;
         assert!(
             (0.49..=0.55).contains(&back_first_sec),
@@ -2109,7 +2234,12 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
             !tail_frag.is_empty(),
             "{name}: 末尾以降のシークで断片が空です"
         );
-        let tail_tracks = parse_fragment(&tail_frag);
+        let tail_v = if info.separate_audio {
+            unpack_dual_payload(&tail_frag).unwrap().0
+        } else {
+            &tail_frag
+        };
+        let tail_tracks = parse_fragment(tail_v);
         assert!(tail_tracks[&1][0].keyframe);
 
         // 5. シーク連打の中断フラグで read_fragment が即座に打ち切られ、次の seek で復帰できる
@@ -2285,11 +2415,13 @@ fn vp9_mkv_is_remuxed_to_fragmented_mp4() {
     let (mut stream, opened) = MkvStream::open(&path, None).unwrap();
     assert_eq!(opened.video_codec, "vp09.00.10.08");
     assert_eq!(opened.audio_codec.as_deref(), Some("opus"));
+    assert!(opened.separate_audio);
     assert!(!opened.transcoded);
     assert!(!opened.can_transcode);
 
-    // 初期化セグメントに vp09 と FullBox の vpcC（version=1, flags=0, BT.709）および colr（nclx）が入る
-    let init = stream.init_segment();
+    // 初期化セグメントは映像 fMP4（vp09 + FullBox vpcC + colr）と音声 WebM（A_OPUS）に分かれる
+    let init_packed = stream.init_segment();
+    let (init, audio_init) = unpack_dual_payload(&init_packed).unwrap();
     assert!(init.windows(4).any(|w| w == b"vp09"));
     assert!(init.windows(4).any(|w| w == b"colr"));
     let vpcc_pos = init
@@ -2305,10 +2437,11 @@ fn vp9_mkv_is_remuxed_to_fragmented_mp4() {
     assert_eq!(vpcc_body[2] >> 4, 8); // 8-bit
     assert_eq!(&vpcc_body[3..6], &[1, 1, 1]); // BT.709
 
-    // 全断片を順に読み切って全 72 映像フレーム + 音声が連続して得られる
+    // 全断片を順に読み切って全 72 映像フレーム + WebM Opus 音声が連続して得られる
+    let mut webm_audio = audio_init.to_vec();
     let mut video_count = 0usize;
     let mut video_end: Option<i64> = None;
-    let mut audio_end: Option<i64> = None;
+    let mut audio_end_ms: Option<i64> = None;
     let mut fragments = 0usize;
     loop {
         let fragment = stream.read_fragment().unwrap();
@@ -2316,34 +2449,92 @@ fn vp9_mkv_is_remuxed_to_fragmented_mp4() {
             break;
         }
         fragments += 1;
-        let tracks = parse_fragment(&fragment);
-        let v = &tracks[&1];
-        assert!(v[0].keyframe);
-        assert!(v.iter().all(|s| s.pts == s.dts));
-        if let Some(end) = video_end {
-            assert_eq!(v[0].dts, end);
-        }
-        let v_last = v.last().unwrap();
-        video_end = Some(v_last.dts + v_last.duration);
-        video_count += v.len();
-        if let Some(a) = tracks.get(&2) {
-            if let Some(end) = audio_end {
-                assert_eq!(a[0].dts, end);
+        let (v_frag, a_frag) = unpack_dual_payload(&fragment).unwrap();
+        if !v_frag.is_empty() {
+            let tracks = parse_fragment(v_frag);
+            assert!(!tracks.contains_key(&2));
+            let v = &tracks[&1];
+            assert!(v[0].keyframe);
+            assert!(v.iter().all(|s| s.pts == s.dts));
+            if let Some(end) = video_end {
+                assert_eq!(v[0].dts, end);
             }
-            let a_last = a.last().unwrap();
-            audio_end = Some(a_last.dts + a_last.duration);
+            let v_last = v.last().unwrap();
+            video_end = Some(v_last.dts + v_last.duration);
+            video_count += v.len();
+        }
+        if !a_frag.is_empty() {
+            webm_audio.extend_from_slice(a_frag);
+            let frames = parse_webm_audio_ms(a_frag);
+            if let Some(end) = audio_end_ms {
+                assert!((frames[0].0 - end).abs() <= 2);
+            }
+            audio_end_ms = Some(frames.last().unwrap().0 + 20);
         }
     }
     assert!(fragments >= 2);
     assert_eq!(video_count, 72);
-    assert!(audio_end.unwrap() > 96_000);
+    assert!(audio_end_ms.unwrap() > 2000);
+    let mkv = matroska_demuxer::MatroskaFile::open(std::io::Cursor::new(&webm_audio)).unwrap();
+    assert_eq!(mkv.tracks()[0].codec_id(), "A_OPUS");
 
     // 途中（1.25 秒）へのシークは直前のキーフレーム（1.0 秒）から始まる
     let sought = stream.seek(1.25).unwrap();
     assert!((sought - 1.0).abs() < 0.05, "sought={sought}");
     let after_seek = stream.read_fragment().unwrap();
-    let tracks = parse_fragment(&after_seek);
+    let (v_seek, a_seek) = unpack_dual_payload(&after_seek).unwrap();
+    let tracks = parse_fragment(v_seek);
     assert!(tracks[&1][0].keyframe);
     let first_sec = tracks[&1][0].pts as f64 / 90_000.0;
     assert!((first_sec - 1.0).abs() < 0.05, "first_sec={first_sec}");
+    let seek_audio = parse_webm_audio_ms(a_seek);
+    assert!(!seek_audio.is_empty());
+    assert!((seek_audio[0].0 as f64 / 1000.0 - 1.0).abs() < 0.1);
+}
+
+#[test]
+fn webm_opus_dops_roundtrip_and_cluster_splitting() {
+    // OpusHead <-> dOps の往復変換（ステレオ・マルチチャンネル双方）
+    let mut head = b"OpusHead".to_vec();
+    head.extend([1, 2, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0x00, 0x00, 0]);
+    let dops = opus_dops(&head).unwrap();
+    assert_eq!(dops_to_opus_head(&dops).unwrap(), head);
+
+    let mut surround = b"OpusHead".to_vec();
+    surround.extend([
+        1, 6, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0, 0, 1, 4, 2, 0, 4, 1, 2, 3, 5,
+    ]);
+    let dops6 = opus_dops(&surround).unwrap();
+    assert_eq!(dops_to_opus_head(&dops6).unwrap(), surround);
+    assert_eq!(dops_to_opus_head(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), None);
+
+    // 30 秒を超える長い音声断片でも i16 溢れせず複数 Cluster に分割される
+    let run = TrackRun {
+        track_id: 2,
+        base_decode_time: 0,
+        samples: vec![
+            Sample {
+                data: vec![0xF8, 0x01],
+                duration: 48_000 * 20, // 20s
+                composition_offset: 0,
+                keyframe: true,
+            },
+            Sample {
+                data: vec![0xF8, 0x02],
+                duration: 48_000 * 20, // +20s -> 20s
+                composition_offset: 0,
+                keyframe: true,
+            },
+            Sample {
+                data: vec![0xF8, 0x03],
+                duration: 48_000 * 20, // +20s -> 40s (新 Cluster)
+                composition_offset: 0,
+                keyframe: true,
+            },
+        ],
+        has_composition_offsets: false,
+    };
+    let frag = build_webm_opus_fragment(&run);
+    let parsed = parse_webm_audio_ms(&frag);
+    assert_eq!(parsed, vec![(0, 2), (20_000, 2), (40_000, 2)]);
 }

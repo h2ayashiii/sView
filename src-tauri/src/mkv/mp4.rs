@@ -815,6 +815,7 @@ fn parse_mp4_audio_track(trak: &ParsedTrack<'_>) -> Option<RemuxAudio> {
                 number: trak.track_id as u64,
                 codec: RemuxAudioCodec::Aac,
                 config: asc,
+                opus_head: None,
                 codec_string: format!("mp4a.40.{object}"),
                 channels,
                 timescale: core_rate,
@@ -825,13 +826,12 @@ fn parse_mp4_audio_track(trak: &ParsedTrack<'_>) -> Option<RemuxAudio> {
         }
         b"Opus" => {
             let dops = find_box(children, b"dOps")?;
-            if dops.len() < 11 {
-                return None;
-            }
+            let opus_head = super::webm::dops_to_opus_head(dops)?;
             Some(RemuxAudio {
                 number: trak.track_id as u64,
                 codec: RemuxAudioCodec::Opus,
                 config: dops.to_vec(),
+                opus_head: Some(opus_head),
                 codec_string: "opus".into(),
                 channels: dops[1] as u16,
                 timescale: 48000,
