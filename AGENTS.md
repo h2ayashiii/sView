@@ -24,7 +24,7 @@ npm run build        # tauri build
 npm run lint         # Biome lint + format check (src/, scripts/, tests/)
 npm run format       # Biome format --write
 npm run typecheck    # JSDoc + tsc --noEmit (src/ + src/types.d.ts)
-npm run sync:formats # Sync src/viewer/media-formats.js and tauri.conf.json from media-formats.json
+npm run sync:formats # Sync src/viewer/media-formats.js and tauri*.conf.json from media-formats.json
 npm test             # Node.js built-in unit tests (tests/*.test.mjs)
 
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
@@ -93,11 +93,12 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   under the gitignored `src-tauri/gen/`, which does not exist until a build has run.
 - `MIN_WINDOW_SIZE` in `src-tauri/src/window.rs` must stay in sync with `minWidth` / `minHeight`
   in `tauri.conf.json`.
-- Supported extensions live in `media-formats.json` (single source of truth). Rust reads it at
-  compile time via `src-tauri/build.rs`, and `npm run sync:formats` updates
-  `src/viewer/media-formats.js` and `fileAssociations` in `src-tauri/tauri.conf.json`. Both
-  `npm run check:formats` and `supported_extensions_stay_in_sync` in `src-tauri/src/tests.rs` fail
-  when they drift. Archives (`archive`) are deliberately **not** file-associated.
+- Supported extensions live in `media-formats.json` (single source of truth, including
+  macOS-only `macosImage`). Rust reads it at compile time via `src-tauri/build.rs`, and
+  `npm run sync:formats` updates `src/viewer/media-formats.js` and `fileAssociations` in
+  `src-tauri/tauri.conf.json` / `src-tauri/tauri.macos.conf.json`. Both `npm run check:formats`
+  and `supported_extensions_stay_in_sync` in `src-tauri/src/tests.rs` fail when they drift.
+  Archives (`archive`) are deliberately **not** file-associated.
 - No patent-encumbered codec is bundled: videos and audio play with the OS WebView's decoders,
   so don't add formats the WebViews can't handle. The only exception is `rav1d` (royalty-free
   AV1 decoder) bundled on macOS for Macs without HW AV1 decode (M1/M2), where frames are

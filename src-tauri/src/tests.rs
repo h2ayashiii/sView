@@ -32,6 +32,16 @@ fn association_exts_are_validated_and_normalized() {
     assert!(normalize_association_exts(&["zip".into()]).is_err());
     assert!(normalize_association_exts(&["cbz".into()]).is_err());
     assert!(normalize_association_exts(&["exe".into()]).is_err());
+    // HEIC / HEIF は macOS のみ対象
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            normalize_association_exts(&[".HEIC".into(), "heif".into()]).unwrap(),
+            vec!["heic", "heif"]
+        );
+    } else {
+        assert!(normalize_association_exts(&["heic".into()]).is_err());
+        assert!(normalize_association_exts(&["heif".into()]).is_err());
+    }
 }
 
 #[test]
@@ -664,6 +674,14 @@ fn natural_sort_handles_leading_zeros_and_plain_names() {
 fn image_extension_detection() {
     assert!(is_image(Path::new("/x/photo.JPG")));
     assert!(is_image(Path::new("/x/photo.webp")));
+    assert_eq!(
+        is_image(Path::new("/x/photo.HEIC")),
+        cfg!(target_os = "macos")
+    );
+    assert_eq!(
+        is_image(Path::new("/x/photo.heif")),
+        cfg!(target_os = "macos")
+    );
     assert!(!is_image(Path::new("/x/notes.txt")));
     assert!(!is_image(Path::new("/x/noext")));
 }
@@ -991,7 +1009,7 @@ fn dialog_text_loses_quotes_and_newlines() {
     assert!(!text.contains('\n'));
 }
 
-/// 対応拡張子の一覧は lib.rs / main.js / tauri.conf.json にあり、手で揃えるしかない。ずれたらここで落として気付けるようにする
+/// 対応拡張子の一覧（build.rs 生成定数 / media-formats.js / tauri.conf.json / tauri.macos.conf.json）がずれたらここで気付けるようにする
 #[test]
 fn supported_extensions_stay_in_sync() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1007,10 +1025,11 @@ fn supported_extensions_stay_in_sync() {
         .unwrap_or_else(|_| panic!("{name} が JSON として壊れています"))
     };
     let conf = read_conf("tauri.conf.json");
+    let mac_conf = read_conf("tauri.macos.conf.json");
 
     // fileAssociations から、指定した name の ext を取り出す
-    let association = |name: &str| -> Vec<String> {
-        conf["bundle"]["fileAssociations"]
+    let association = |c: &serde_json::Value, name: &str| -> Vec<String> {
+        c["bundle"]["fileAssociations"]
             .as_array()
             .expect("fileAssociations がありません")
             .iter()
@@ -1023,26 +1042,46 @@ fn supported_extensions_stay_in_sync() {
             .collect()
     };
 
-    let images = sorted(IMAGE_EXTS.to_vec());
+    let common_images = sorted(COMMON_IMAGE_EXTS.to_vec());
+    let macos_images = sorted(MACOS_IMAGE_EXTS.to_vec());
     assert_eq!(
         sorted(quoted_items(
             &media_types_js,
             "const IMAGE_EXT_FILTER = [",
             ']'
         )),
-        images,
-        "main.js の IMAGE_EXT_FILTER が IMAGE_EXTS とずれています"
+        common_images,
+        "media-formats.js の IMAGE_EXT_FILTER が COMMON_IMAGE_EXTS とずれています"
+    );
+    assert_eq!(
+        sorted(quoted_items(
+            &media_types_js,
+            "const MACOS_IMAGE_EXT_FILTER = [",
+            ']'
+        )),
+        macos_images,
+        "media-formats.js の MACOS_IMAGE_EXT_FILTER が MACOS_IMAGE_EXTS とずれています"
     );
     assert_eq!(
         sorted(object_keys(&media_types_js, "const MIME = {", '}')),
-        images,
-        "main.js の MIME が IMAGE_EXTS とずれています"
+        macos_images,
+        "media-formats.js の MIME が MACOS_IMAGE_EXTS とずれています"
     );
     assert_eq!(
-        sorted(association("Image")),
-        images,
-        "tauri.conf.json の fileAssociations が IMAGE_EXTS とずれています"
+        sorted(association(&conf, "Image")),
+        common_images,
+        "tauri.conf.json の fileAssociations が COMMON_IMAGE_EXTS とずれています"
     );
+    assert_eq!(
+        sorted(association(&mac_conf, "Image")),
+        macos_images,
+        "tauri.macos.conf.json の fileAssociations が MACOS_IMAGE_EXTS とずれています"
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(sorted(IMAGE_EXTS.to_vec()), macos_images);
+    } else {
+        assert_eq!(sorted(IMAGE_EXTS.to_vec()), common_images);
+    }
 
     let videos = sorted(VIDEO_EXTS.to_vec());
     assert_eq!(
@@ -1052,12 +1091,17 @@ fn supported_extensions_stay_in_sync() {
             ']'
         )),
         videos,
-        "main.js の VIDEO_EXT_FILTER が VIDEO_EXTS とずれています"
+        "media-formats.js の VIDEO_EXT_FILTER が VIDEO_EXTS とずれています"
     );
     assert_eq!(
-        sorted(association("Video")),
+        sorted(association(&conf, "Video")),
         videos,
         "tauri.conf.json の fileAssociations が VIDEO_EXTS とずれています"
+    );
+    assert_eq!(
+        sorted(association(&mac_conf, "Video")),
+        videos,
+        "tauri.macos.conf.json の fileAssociations が VIDEO_EXTS とずれています"
     );
     let audios = sorted(AUDIO_EXTS.to_vec());
     assert_eq!(
@@ -1067,12 +1111,17 @@ fn supported_extensions_stay_in_sync() {
             ']'
         )),
         audios,
-        "main.js の AUDIO_EXT_FILTER が AUDIO_EXTS とずれています"
+        "media-formats.js の AUDIO_EXT_FILTER が AUDIO_EXTS とずれています"
     );
     assert_eq!(
-        sorted(association("Audio")),
+        sorted(association(&conf, "Audio")),
         audios,
         "tauri.conf.json の fileAssociations が AUDIO_EXTS とずれています"
+    );
+    assert_eq!(
+        sorted(association(&mac_conf, "Audio")),
+        audios,
+        "tauri.macos.conf.json の fileAssociations が AUDIO_EXTS とずれています"
     );
 
     let archives = sorted(ARCHIVE_EXTS.to_vec());
@@ -1083,7 +1132,7 @@ fn supported_extensions_stay_in_sync() {
             ']'
         )),
         archives,
-        "main.js の ARCHIVE_EXT_FILTER が ARCHIVE_EXTS とずれています"
+        "media-formats.js の ARCHIVE_EXT_FILTER が ARCHIVE_EXTS とずれています"
     );
     // 書庫は開けるが OS には関連付けない（ドラッグ＆ドロップと O キーで開く）。
     // 関連付けは画像・動画・音楽の 3 件だけ
@@ -1093,6 +1142,13 @@ fn supported_extensions_stay_in_sync() {
             .map(|a| a.len()),
         Some(3),
         "tauri.conf.json の fileAssociations は画像・動画・音楽の 3 件だけにします"
+    );
+    assert_eq!(
+        mac_conf["bundle"]["fileAssociations"]
+            .as_array()
+            .map(|a| a.len()),
+        Some(3),
+        "tauri.macos.conf.json の fileAssociations は画像・動画・音楽の 3 件だけにします"
     );
 }
 

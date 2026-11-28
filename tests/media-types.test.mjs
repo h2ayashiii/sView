@@ -6,8 +6,11 @@ import {
   extOf,
   formatTime,
   hexToRgba,
+  IMAGE_EXT_FILTER,
   isAudioPath,
   isVideoPath,
+  MACOS_IMAGE_EXT_FILTER,
+  MIME,
   toBytes,
 } from "../src/viewer/media-types.js";
 
@@ -18,6 +21,15 @@ describe("media-types", () => {
     assert.equal(extOf("C:\\dir.v1\\clip.MKV"), "mkv");
     assert.equal(extOf("README"), "");
     assert.equal(extOf("dir.with.dot/noext"), "");
+  });
+
+  it("IMAGE_EXT_FILTER と MACOS_IMAGE_EXT_FILTER で macOS 限定の HEIC/HEIF が分かれている", () => {
+    assert.equal(IMAGE_EXT_FILTER.includes("heic"), false);
+    assert.equal(IMAGE_EXT_FILTER.includes("heif"), false);
+    assert.equal(MACOS_IMAGE_EXT_FILTER.includes("heic"), true);
+    assert.equal(MACOS_IMAGE_EXT_FILTER.includes("heif"), true);
+    assert.equal(MIME.heic, "image/heic");
+    assert.equal(MIME.heif, "image/heif");
   });
 
   it("isVideoPath / isAudioPath が拡張子を大文字小文字問わず判定する", () => {

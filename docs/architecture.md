@@ -54,6 +54,7 @@ sView/
 │   │   ├── platform/        # OS 固有実装（windows.rs: レジストリ関連付け・WM_SIZING / macos.rs: LaunchServices・NSTrackingArea 等）
 │   │   └── tests.rs         # ユニットテスト
 │   ├── tauri.conf.json      # ウィンドウ設定（フレームレス等）・CSP・バンドル設定・関連付け
+│   ├── tauri.macos.conf.json # macOS ビルド時に上書きする関連付け設定（HEIC / HEIF を含む）
 │   ├── testdata/            # テストで読むファイル（字幕・リマックス・AV1 変換を確かめる小さな動画）
 │   ├── capabilities/        # ウィンドウごとにフロントエンドへ許可する API の定義
 │   ├── installer-hooks.nsh  # Windows インストーラ（NSIS）のフック。旧ユーザー単位インストールの後始末
