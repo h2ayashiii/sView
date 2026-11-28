@@ -306,12 +306,16 @@ pub(crate) fn mp4_traf(run: &TrackRun, data_offset: u32) -> Vec<u8> {
     mp4_box(b"traf", &[tfhd, tfdt, trun].concat())
 }
 
-pub(crate) fn build_fragment(
+pub(crate) fn append_fragment(
+    out: &mut Vec<u8>,
     sequence: u32,
     video: Option<&TrackRun>,
     audio: Option<&TrackRun>,
-) -> Vec<u8> {
+) {
     let runs: Vec<&TrackRun> = [video, audio].into_iter().flatten().collect();
+    if runs.is_empty() {
+        return;
+    }
     let moof = |offsets: &[u32]| {
         let mut body = mp4_full_box(b"mfhd", 0, 0, &sequence.to_be_bytes());
         for (run, offset) in runs.iter().zip(offsets) {
@@ -321,14 +325,16 @@ pub(crate) fn build_fragment(
     };
     // data_offset の値で moof の大きさは変わらないので、一度作って大きさを測る
     let moof_size = moof(&vec![0; runs.len()]).len() as u32;
-    let mut offsets = Vec::new();
+    let mut offsets = Vec::with_capacity(runs.len());
     let mut offset = moof_size + 8;
     for run in &runs {
         offsets.push(offset);
         offset += run.samples.iter().map(|s| s.data.len() as u32).sum::<u32>();
     }
-    let mut out = moof(&offsets);
+    let moof_bytes = moof(&offsets);
     let mdat_size = offset - moof_size;
+    out.reserve(moof_bytes.len() + mdat_size as usize);
+    out.extend_from_slice(&moof_bytes);
     out.extend_from_slice(&mdat_size.to_be_bytes());
     out.extend_from_slice(b"mdat");
     for run in &runs {
@@ -336,5 +342,14 @@ pub(crate) fn build_fragment(
             out.extend_from_slice(&s.data);
         }
     }
+}
+
+pub(crate) fn build_fragment(
+    sequence: u32,
+    video: Option<&TrackRun>,
+    audio: Option<&TrackRun>,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    append_fragment(&mut out, sequence, video, audio);
     out
 }

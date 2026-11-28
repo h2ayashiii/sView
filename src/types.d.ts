@@ -66,6 +66,7 @@ export interface MkvOpened {
   id: number;
   videoCodec: string;
   audioCodec: string | null;
+  separateAudio: boolean;
   duration: number | null;
   audioTracks: RemuxAudioTrack[];
   audio: number | null;

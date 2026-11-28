@@ -12,11 +12,15 @@ use super::av1::{
     BitReader, ColorInfo, av1_codec_string, av1c_from_obu_stream, can_transcode_av1,
     hw_av1_decode_supported,
 };
-use super::fmp4::{Sample, TrackRun, build_fragment, build_init_segment};
+use super::fmp4::{Sample, TrackRun, append_fragment, build_fragment, build_init_segment};
 use super::mp4::{Mp4Source, is_mp4_av1_file, looks_like_mp4};
 use super::subtitles::{
     BlockDecode, MKV_BLOCK, MKV_BLOCK_GROUP, MKV_CLUSTER, MKV_SIMPLE_BLOCK, MKV_TIMESTAMP,
     block_decoders, decode_block, read_ebml_uint, read_ebml_vint,
+};
+use super::webm::{
+    append_webm_opus_fragment, build_webm_opus_init, dops_to_opus_head, opus_head_pre_skip,
+    pack_dual_payload,
 };
 
 // ---- MKV / WebM / MP4 のリマックスと AV1 変換（macOS） ----
@@ -561,15 +565,31 @@ pub(crate) struct RemuxAudio {
     pub(crate) codec: RemuxAudioCodec,
     /// AAC は AudioSpecificConfig、Opus は dOps の中身
     pub(crate) config: Vec<u8>,
+    /// Opus 用の OpusHead（WebM 音声 SourceBuffer の CodecPrivate に使う）
+    pub(crate) opus_head: Option<Vec<u8>>,
     pub(crate) codec_string: String,
     pub(crate) channels: u16,
     /// 音声の時間の単位（サンプリング周波数）
     pub(crate) timescale: u32,
     /// 1 フレームのサンプル数（AAC。Opus はフレームごとに TOC から求める）
     pub(crate) frame_samples: u32,
-    /// デコーダの遅れ（CodecDelay、Matroska の単位）。ブロックの時刻からこれを引いた時刻に鳴らす
+    /// Matroska のブロック時刻から引く遅れ（Matroska の単位 = 入力 CodecDelay − 出力側 CodecDelay）
     pub(crate) delay_ticks: i64,
     pub(crate) decoders: Vec<BlockDecode>,
+}
+
+impl RemuxAudio {
+    /// 出力ストリーム側（WebM の CodecDelay）が引き受ける先頭スキップ量（サンプル単位）。
+    /// fMP4（AAC）は 0、分離 WebM（Opus）は OpusHead の pre_skip
+    pub(crate) fn output_pre_skip(&self) -> i64 {
+        if self.codec == RemuxAudioCodec::Opus
+            && let Some(head) = &self.opus_head
+        {
+            opus_head_pre_skip(head) as i64
+        } else {
+            0
+        }
+    }
 }
 
 /// フロントエンドに渡す音声トラックの情報（コンテナに入っている順）
@@ -592,8 +612,10 @@ pub(crate) struct MkvOpened {
     pub(crate) id: u64,
     /// 映像の MP4 の codecs 文字列
     pub(crate) video_codec: String,
-    /// 鳴らす音声の MP4 の codecs 文字列（音声なしなら None）
+    /// 鳴らす音声の codecs 文字列（音声なしなら None）
     pub(crate) audio_codec: Option<String>,
+    /// 音声を映像とは別の WebM SourceBuffer（audio/webm; codecs="opus"）で流すか
+    pub(crate) separate_audio: bool,
     /// 長さ（秒）。分からなければ None
     pub(crate) duration: Option<f64>,
     pub(crate) audio_tracks: Vec<RemuxAudioTrack>,
@@ -1066,10 +1088,13 @@ pub(crate) fn legacy_aac_config(codec_id: &str, rate: u32, channels: u16) -> Opt
 
 /// OpusHead（MKV の CodecPrivate、リトルエンディアン）を dOps の中身（ビッグエンディアン）にする
 pub(crate) fn opus_dops(head: &[u8]) -> Option<Vec<u8>> {
-    if head.len() < 19 || &head[..8] != b"OpusHead" {
+    if head.len() < 19 || &head[..8] != b"OpusHead" || (head[8] >> 4) != 0 {
         return None;
     }
     let channels = head[9];
+    if channels == 0 {
+        return None;
+    }
     let family = head[18];
     let mut out = vec![0, channels];
     out.extend_from_slice(&u16::from_le_bytes([head[10], head[11]]).to_be_bytes());
@@ -1100,7 +1125,7 @@ pub(crate) fn opus_packet_samples(packet: &[u8]) -> Option<u32> {
         1 | 2 => 2,
         _ => (*packet.get(1)? & 0x3F) as u32,
     };
-    Some(frame * count)
+    (count > 0).then_some(frame * count)
 }
 
 /// 映像トラックをリマックス・変換できる形に読む。できなければ理由（コーデック名）を返す
@@ -1227,12 +1252,15 @@ pub(crate) fn remux_audio_track(track: &matroska_demuxer::TrackEntry) -> Option<
     let number = track.track_number().get();
     let codec_id = track.codec_id();
     if codec_id == "A_OPUS" {
-        let config = opus_dops(track.codec_private()?)?;
+        let raw_head = track.codec_private()?;
+        let config = opus_dops(raw_head)?;
+        let opus_head = dops_to_opus_head(&config)?;
         return Some(RemuxAudio {
             number,
             codec: RemuxAudioCodec::Opus,
             channels: config[1] as u16,
             config,
+            opus_head: Some(opus_head),
             codec_string: "opus".into(),
             timescale: 48000,
             frame_samples: 960,
@@ -1252,6 +1280,7 @@ pub(crate) fn remux_audio_track(track: &matroska_demuxer::TrackEntry) -> Option<
         number,
         codec: RemuxAudioCodec::Aac,
         config,
+        opus_head: None,
         codec_string: format!("mp4a.40.{object}"),
         channels,
         timescale: core_rate,
@@ -1367,20 +1396,34 @@ impl MatroskaSource {
         for start in starts {
             self.walker.seek_to(start, 0)?;
             let mut best: Option<(u64, i64, i64)> = None;
+            let mut saw_video = false;
             while let Some(frame) = self.walker.next(false)? {
                 if frame.track != video_track {
                     continue;
                 }
                 if frame.keyframe && frame.timestamp <= target {
-                    best = Some((frame.pos, frame.cluster_timestamp, frame.timestamp));
+                    // Cluster 内の最初の映像フレームなら、その直前に置かれた先頭音声ブロックも
+                    // 取りこぼさないよう Cluster の頭（start）から読み始める
+                    let (resume_pos, resume_cluster_ts) = if !saw_video {
+                        (start, 0)
+                    } else {
+                        (frame.pos, frame.cluster_timestamp)
+                    };
+                    best = Some((resume_pos, resume_cluster_ts, frame.timestamp));
                 } else if frame.timestamp > target {
                     if best.is_none() && frame.keyframe && fallback.is_none() {
-                        fallback = Some((frame.pos, frame.cluster_timestamp, frame.timestamp));
+                        let (resume_pos, resume_cluster_ts) = if !saw_video {
+                            (start, 0)
+                        } else {
+                            (frame.pos, frame.cluster_timestamp)
+                        };
+                        fallback = Some((resume_pos, resume_cluster_ts, frame.timestamp));
                     }
                     if best.is_some() || fallback.is_some() {
                         break;
                     }
                 }
+                saw_video = true;
             }
             if let Some(found) = best {
                 return self.start_at(found);
@@ -1641,10 +1684,12 @@ impl MkvStream {
         let can_transcode =
             !transcoded && video.codec == RemuxVideoCodec::Av1 && can_transcode_av1();
 
+        let separate_audio = stream.separate_audio();
         let opened = MkvOpened {
             id: 0,
             video_codec: video.codec_string.clone(),
             audio_codec: audio_track.as_ref().map(|a| a.codec_string.clone()),
+            separate_audio,
             duration,
             audio_tracks,
             audio: chosen_audio,
@@ -1725,7 +1770,12 @@ impl MkvStream {
         };
         let audio_track = chosen.and_then(|i| {
             let mut track = remuxable[i].clone()?;
-            track.delay_ticks = audio_entries[i].codec_delay().map_or(0, ns_to_ticks);
+            let out_delay_ns = (track.output_pre_skip() as u64 * 1_000_000_000
+                + track.timescale as u64 / 2)
+                / track.timescale as u64;
+            let src_delay_ns = audio_entries[i].codec_delay().unwrap_or(out_delay_ns);
+            let round_ticks = |ns: u64| ((ns + scale_ns / 2) / scale_ns) as i64;
+            track.delay_ticks = round_ticks(src_delay_ns) - round_ticks(out_delay_ns);
             Some(track)
         });
         let lace_step = audio_track.as_ref().map_or(0, |a| {
@@ -1855,12 +1905,57 @@ impl MkvStream {
         Ok(keyframe_sec)
     }
 
-    /// 初期化セグメント（ftyp + moov）
+    /// 音声を映像と別の WebM SourceBuffer（audio/webm; codecs="opus"）で流すか
+    fn separate_audio(&self) -> bool {
+        self.audio
+            .as_ref()
+            .is_some_and(|a| a.codec == RemuxAudioCodec::Opus && a.opus_head.is_some())
+    }
+
+    /// 初期化セグメント。
+    /// 通常は fMP4（ftyp + moov）、Opus 分離時は `[video_len: u32 BE][video_fmp4][audio_webm]`
     pub(crate) fn init_segment(&self) -> Vec<u8> {
+        if self.separate_audio() {
+            let video_init = build_init_segment(&self.video, None);
+            let audio = self.audio.as_ref().unwrap();
+            let audio_init =
+                build_webm_opus_init(audio.channels, audio.opus_head.as_deref().unwrap_or(&[]));
+            return pack_dual_payload(&video_init, &audio_init);
+        }
         build_init_segment(&self.video, self.audio.as_ref())
     }
 
-    /// 次の断片（moof + mdat）。終わりまで読んだら空
+    fn pack_fragment(&self, video_run: Option<&TrackRun>, audio_run: Option<&TrackRun>) -> Vec<u8> {
+        if self.separate_audio() {
+            let has_v = video_run.is_some_and(|r| !r.samples.is_empty());
+            let has_a = audio_run.is_some_and(|r| !r.samples.is_empty());
+            if !has_v && !has_a {
+                return Vec::new();
+            }
+            let est_v = video_run.map_or(0, |r| {
+                128 + r.samples.iter().map(|s| s.data.len() + 16).sum::<usize>()
+            });
+            let est_a = audio_run.map_or(0, |r| {
+                32 + r.samples.iter().map(|s| s.data.len() + 9).sum::<usize>()
+            });
+            let mut out = Vec::with_capacity(4 + est_v + est_a);
+            out.extend_from_slice(&[0u8; 4]);
+            if has_v {
+                append_fragment(&mut out, self.sequence, video_run, None);
+            }
+            let v_len = (out.len() - 4) as u32;
+            out[0..4].copy_from_slice(&v_len.to_be_bytes());
+            if let Some(a_run) = audio_run
+                && has_a
+            {
+                append_webm_opus_fragment(&mut out, a_run);
+            }
+            return out;
+        }
+        build_fragment(self.sequence, video_run, audio_run)
+    }
+
+    /// 次の断片（moof + mdat、または分離音声パック）。終わりまで読んだら空
     pub(crate) fn read_fragment(&mut self) -> std::io::Result<Vec<u8>> {
         #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
         if self.transcode.is_some() {
@@ -1879,46 +1974,47 @@ impl MkvStream {
 
     /// Matroska / WebM の無変換リマックス（H.264 / HEVC / VP9 / M3+ AV1）
     fn read_matroska_remux_fragment(&mut self) -> std::io::Result<Vec<u8>> {
-        let StreamSource::Matroska(mkv) = &mut self.source else {
-            unreachable!();
-        };
-        let min_span = (REMUX_FRAGMENT_SECONDS * 1e9 / mkv.scale_ns as f64) as i64;
-        let mut video: Vec<MkvFrame> = Vec::new();
-        let mut audio: Vec<MkvFrame> = Vec::new();
-        let mut bytes = 0usize;
-        let mut next_keyframe = None;
-        while let Some(frame) = mkv.walker.next(true)? {
-            if frame.track == self.video.number {
-                if frame.keyframe && !video.is_empty() {
-                    let first = video[0].timestamp;
-                    let last = video.iter().map(|f| f.timestamp).max().unwrap_or(first);
-                    if last - first >= min_span || bytes >= REMUX_FRAGMENT_SOFT_BYTES {
-                        next_keyframe = Some(frame.timestamp);
-                        mkv.walker.push_back(frame);
-                        break;
+        loop {
+            let StreamSource::Matroska(mkv) = &mut self.source else {
+                unreachable!();
+            };
+            let min_span = (REMUX_FRAGMENT_SECONDS * 1e9 / mkv.scale_ns as f64) as i64;
+            let mut video: Vec<MkvFrame> = Vec::new();
+            let mut audio: Vec<MkvFrame> = Vec::new();
+            let mut bytes = 0usize;
+            let mut next_keyframe = None;
+            while let Some(frame) = mkv.walker.next(true)? {
+                if frame.track == self.video.number {
+                    if frame.keyframe && !video.is_empty() {
+                        let first = video[0].timestamp;
+                        let last = video.iter().map(|f| f.timestamp).max().unwrap_or(first);
+                        if last - first >= min_span || bytes >= REMUX_FRAGMENT_SOFT_BYTES {
+                            next_keyframe = Some(frame.timestamp);
+                            mkv.walker.push_back(frame);
+                            break;
+                        }
                     }
+                    bytes += frame.data.len();
+                    video.push(frame);
+                } else {
+                    bytes += frame.data.len();
+                    audio.push(frame);
                 }
-                bytes += frame.data.len();
-                video.push(frame);
-            } else {
-                bytes += frame.data.len();
-                audio.push(frame);
+                if bytes >= REMUX_FRAGMENT_MAX_BYTES {
+                    break;
+                }
             }
-            if bytes >= REMUX_FRAGMENT_MAX_BYTES {
-                break;
+            if video.is_empty() && audio.is_empty() {
+                return Ok(Vec::new());
             }
+            let video_samples = self.video_samples_matroska(video, next_keyframe);
+            let audio_samples = self.audio_samples_matroska(audio);
+            if video_samples.is_none() && audio_samples.is_none() {
+                continue;
+            }
+            self.sequence += 1;
+            return Ok(self.pack_fragment(video_samples.as_ref(), audio_samples.as_ref()));
         }
-        if video.is_empty() && audio.is_empty() {
-            return Ok(Vec::new());
-        }
-        let video_samples = self.video_samples_matroska(video, next_keyframe);
-        let audio_samples = self.audio_samples_matroska(audio);
-        self.sequence += 1;
-        Ok(build_fragment(
-            self.sequence,
-            video_samples.as_ref(),
-            audio_samples.as_ref(),
-        ))
     }
 
     /// MP4 の無変換リマックス（M3+ での AV1 無変換テスト・フォールバック用）
@@ -1973,7 +2069,13 @@ impl MkvStream {
             Some(end_pts as f64 / REMUX_VIDEO_TIMESCALE as f64)
         };
         let raw_audio = match &self.audio {
-            Some(a) => mp4.read_audio_until(until_sec, a.timescale)?,
+            Some(a) => {
+                let pre_skip = a.output_pre_skip();
+                mp4.read_audio_until(until_sec, a.timescale)?
+                    .into_iter()
+                    .map(|(pts, data)| (pts + pre_skip, data))
+                    .collect()
+            }
             None => Vec::new(),
         };
         let video_run = TrackRun {
@@ -1993,11 +2095,7 @@ impl MkvStream {
         };
         let audio_run = self.audio_samples_units(raw_audio);
         self.sequence += 1;
-        Ok(build_fragment(
-            self.sequence,
-            Some(&video_run),
-            audio_run.as_ref(),
-        ))
+        Ok(self.pack_fragment(Some(&video_run), audio_run.as_ref()))
     }
 
     /// AV1 リアルタイム変換（rav1d → VideoToolbox H.264）で次の 1 断片を作る。
@@ -2131,11 +2229,7 @@ impl MkvStream {
             self.collect_transcode_audio(first_video_pts, video_end_pts, is_final_fragment)?;
 
         self.sequence += 1;
-        Ok(build_fragment(
-            self.sequence,
-            Some(&video_run),
-            audio_run.as_ref(),
-        ))
+        Ok(self.pack_fragment(Some(&video_run), audio_run.as_ref()))
     }
 
     /// 変換用: コンテナから次の AV1 映像パケット 1 つを読む。
@@ -2195,10 +2289,12 @@ impl MkvStream {
             return Ok(None);
         };
         let timescale = audio.timescale as i64;
+        let pre_skip = audio.output_pre_skip();
         let end_units = if is_final_fragment {
             i64::MAX
         } else {
             ((video_end_pts as i128 * timescale as i128) / REMUX_VIDEO_TIMESCALE as i128) as i64
+                + pre_skip
         };
 
         // コンテナから video_end_pts までの音声を補充する
@@ -2209,7 +2305,11 @@ impl MkvStream {
                 let more = mp4
                     .read_audio_until(until_sec, audio.timescale)
                     .map_err(|e| format!("音声を読めません: {e}"))?;
-                self.transcode.as_mut().unwrap().pending_audio.extend(more);
+                self.transcode
+                    .as_mut()
+                    .unwrap()
+                    .pending_audio
+                    .extend(more.into_iter().map(|(pts, data)| (pts + pre_skip, data)));
             }
             StreamSource::Matroska(mkv) => {
                 // WebM / MKV で音声ブロックが映像ブロックより後ろにインターリーブされていても取りこぼさないよう、
@@ -2270,7 +2370,7 @@ impl MkvStream {
             let v_in_audio = ((first_video_pts as i128 * timescale as i128)
                 / REMUX_VIDEO_TIMESCALE as i128) as i64;
             let frame_dur = audio.frame_samples.max(960) as i64;
-            (v_in_audio - frame_dur).max(0)
+            (v_in_audio - frame_dur).max(0) + pre_skip
         } else {
             0
         };
@@ -2330,26 +2430,25 @@ impl MkvStream {
         })
     }
 
-    /// Matroska の音声フレームを MP4 のサンプルにする
-    fn audio_samples_matroska(&mut self, mut frames: Vec<MkvFrame>) -> Option<TrackRun> {
+    /// Matroska の音声フレームを出力 TrackRun にする
+    fn audio_samples_matroska(&mut self, frames: Vec<MkvFrame>) -> Option<TrackRun> {
         let audio = self.audio.clone()?;
         let StreamSource::Matroska(mkv) = &self.source else {
             return None;
         };
-        // CodecDelay を引いて 0 秒より前になるフレーム（AAC のプライミングなど）は捨てる。
-        // 0 に寄せると音声全体が遅れる
-        for frame in &mut frames {
-            frame.timestamp -= audio.delay_ticks;
-        }
-        frames.retain(|f| f.timestamp >= 0);
         let timescale = audio.timescale as u64;
+        // 出力ストリームの実効開始より前になるフレーム（AAC のプライミングなど）は捨てる。
+        // Opus 分離出力では WebM 側の CodecDelay が pre_skip を引き受けるため先頭パケット（時刻 0）が残る
         let units: Vec<(i64, Vec<u8>)> = frames
             .into_iter()
-            .map(|frame| {
-                let ts = mkv.ticks_to_units(frame.timestamp, timescale);
+            .filter_map(|frame| {
+                let ts = frame.timestamp - audio.delay_ticks;
+                if ts < 0 {
+                    return None;
+                }
                 let data = decode_block(frame.data, &audio.decoders, REMUX_MAX_FRAME_BYTES)
                     .unwrap_or_default();
-                (ts, data)
+                Some((mkv.ticks_to_units(ts, timescale), data))
             })
             .collect();
         self.audio_samples_units(units)
