@@ -44,6 +44,11 @@ globs: "src-tauri/src/lib.rs, src-tauri/src/platform/*.rs, src-tauri/src/logging
   jumped to the cursor. `main.js` catches drag-region presses in a capture listener (`isDragRegion`, a copy
   of Tauri's `drag.js` check) and leaves double clicks to Tauri; the video press-and-move path calls
   `startWindowDrag()` too.
+- macOS: viewer windows (`setup_viewer_window`) call `window.set_shadow(false)` before `show()`.
+  With `transparent: true` + `decorations: false` + `hasShadow = true`, macOS WindowServer paints
+  a full-strength dark outline and drop shadow around the window's alpha silhouette (even at low
+  `backgroundOpacity`, and with rough corner-radius edges). Opaque auxiliary windows (`settings`,
+  `shortcuts`, `info`) keep the default OS shadow.
 - macOS: a file opened from Finder/Dock arrives via `RunEvent::Opened`, not argv. `open_in_viewer` opens it
   in a viewer window that has shown nothing yet (`KindState.shown` is `None` and not `claimed` — e.g. `main`
   right after launch), otherwise in a **new** viewer window (`create_viewer_window`: label `viewer-N`, built
