@@ -299,9 +299,11 @@ fn sample_stats(stbl: &[u8]) -> (u64, u64) {
     let total = stsz
         .get(12..)
         .unwrap_or_default()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .take(count as usize)
-        .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]) as u64)
+        .map(|c| u32::from_be_bytes(*c) as u64)
         .sum();
     (count, total)
 }
@@ -513,8 +515,10 @@ fn mp4_sections(path: &Path, file: File) -> Result<Vec<InfoSection>, String> {
         .iter()
         .filter_map(|t| find_box(find_box(t, b"tref")?, b"chap"))
         .flat_map(|chap| {
-            chap.chunks_exact(4)
-                .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+            chap.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_be_bytes(*c))
         })
         .collect();
     let traks: Vec<ParsedTrack<'_>> = raw_traks
