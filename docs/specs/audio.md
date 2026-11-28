@@ -3,7 +3,7 @@
 音楽ファイル（mp3 / m4a / aac / flac / wav / ogg / opus）を開くと、同じフォルダの音楽ファイルだけが自然順で並びます（画像・動画は飛ばします。並び方は [files.md](files.md) を参照）。音楽を表示している間は、ウィンドウにアートワークを出し、その下の帯に曲名・アーティスト・アルバム名を出します。
 
 > [!NOTE]
-> 動画と同じく、再生は PC / OS に内蔵の WebView（Windows: WebView2 / macOS: WKWebView）に任せていて、コーデックは同梱していません。
+> 動画と同じく、再生は PC / OS に内蔵の WebView（Windows: WebView2 / macOS: WKWebView）に任せていて、音声コーデックは同梱していません（macOS の AV1 映像非対応機向け例外は [video.md](video.md) を参照）。
 > **再生できるのはその PC / OS 自体が再生できる形式に限られます**（再生できないファイルはエラーを表示します）。
 
 - 形式ごとの目安は次のとおりです
