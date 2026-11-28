@@ -282,7 +282,7 @@ pub(crate) fn forget_window(window: &tauri::Window) {
     app.state::<WindowKind>().remove(label);
     app.state::<AspectLock>().remove(label);
     app.state::<FolderWatcher>().remove(label);
-    app.state::<MkvStreams>().0.remove(label);
+    app.state::<MkvStreams>().remove_window(label);
     #[cfg(target_os = "macos")]
     mac_sizing::uninstall(window);
 }
@@ -399,10 +399,12 @@ pub fn run() {
             audio::audio_info,
             audio::audio_artwork,
             mkv::subtitles::video_subtitles,
+            mkv::video_needs_stream,
             mkv::mkv_open,
             mkv::mkv_init,
             mkv::mkv_seek,
             mkv::mkv_read,
+            mkv::mkv_cancel_read,
             mkv::mkv_close,
             watcher::watch_folder,
             assoc::file_association_status,

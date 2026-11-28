@@ -1,17 +1,20 @@
-// MKV を MSE（Media Source Extensions）で再生する（macOS 用）。
-// macOS の WKWebView は MKV を再生できないので、Rust 側（lib.rs の mkv_open / mkv_read など）が
-// MKV の映像・音声を再エンコードせずに fragmented MP4 へ詰め直し、ここで SourceBuffer に流す。
-// デコードは WebView 任せ（コーデックは同梱しない）。対応は映像 H.264 / HEVC、音声 AAC / Opus。
-// Windows の WebView2 は MKV をそのまま再生できるので、この経路は使わない。
+// MKV / AV1 動画を MSE（Media Source Extensions）で再生する（macOS 用）。
+// - MKV（H.264 / HEVC、および M3 以降の AV1）は再エンコードせずに fragmented MP4 へ詰め直す。
+// - AV1 ハードウェアデコーダが無い Mac（M1 / M2 世代など）では、Rust 側が rav1d でデコードし
+//   VideoToolbox（H.264）へリアルタイム変換した fragmented MP4 を流す。
+// Windows の WebView2 は MKV も AV1 もそのまま再生できるので、この経路は使わない。
 //
 // 読み込みは 1 本のループ（run）で順に行う: シークの要求があればバッファを空にして
-// Rust 側を目標の直前のキーフレームへ移し、なければ再生位置の先 MKV_AHEAD_S 秒まで断片を足す。
+// Rust 側を目標の直前のキーフレームへ移し、なければ再生位置の先まで断片を足す。
 // Rust 側の読み取りは前へ進むだけなので、要求が重ならないよう同時には 1 つしか出さない
 
-// 再生位置より先に読んでおく長さ（秒）
+// 無変換リマックス時に再生位置より先に読んでおく長さ（秒）
 const MKV_AHEAD_S = 20;
-// 再生位置より前に残しておく長さ（秒）。これより前は SourceBuffer.remove() で手放す
+// 無変換リマックス時に再生位置より前に残しておく長さ（秒）
 const MKV_BEHIND_S = 10;
+// AV1 変換時の先読み・保持の長さ（秒）。先読みを短く保ち CPU 負荷・発熱・切り替え時の無駄を抑える
+const TRANSCODE_AHEAD_S = 6;
+const TRANSCODE_BEHIND_S = 6;
 // 再生位置が映像・音声の始まりより少し手前にあって止まっているとき、飛び越す隙間の上限（秒）
 const MKV_GAP_JUMP_S = 1;
 // シーク先が読み込み済みの範囲の終わりからこれ以内なら、空にせず続きを読んで追いつく（秒）
@@ -20,7 +23,7 @@ const MKV_CONTINUE_S = 3;
 const MKV_IDLE_MS = 500;
 
 export class MkvPlayer {
-  // video: 再生する <video>。path: MKV のパス。
+  // video: 再生する <video>。path: 動画のパス。
   // options: audio（鳴らす音声の番号。省略で既定）、startTime（始める位置・秒）、
   //   play（再生を始める関数。src を入れた後に呼ぶ）、onError（読めないとき）、onNotice（知らせ）
   constructor(video, path, options = {}) {
@@ -35,16 +38,30 @@ export class MkvPlayer {
     this.eof = false;
     // シークの目標（null = なし）
     this.seekTarget = null;
+    // nudgeGap が自ら currentTime を微調整した値（その seeking イベントで再シークしない）
+    this.nudgeTarget = null;
     // シークでバッファを空にした直後（最初の断片の頭まで再生位置を進めてよい）
     this.afterReset = false;
+    this.reading = false;
+    this.readCanceled = false;
     this.wakeUp = null;
     this.onEvent = () => this.notify();
     this.onSeeking = () => {
-      this.seekTarget = this.video.currentTime;
+      const t = this.video.currentTime;
+      if (this.nudgeTarget !== null && Math.abs(t - this.nudgeTarget) < 0.05) {
+        this.nudgeTarget = null;
+        return;
+      }
+      this.nudgeTarget = null;
+      this.seekTarget = t;
+      if (this.reading && this.id != null && !this.canContinueFromBuffer(t)) {
+        this.readCanceled = true;
+        window.__TAURI__.core.invoke("mkv_cancel_read", { id: this.id }).catch(() => {});
+      }
       this.notify();
     };
     this.onWaiting = () => {
-      this.nudgeGap();
+      this.nudgeGap(true);
       this.notify();
     };
   }
@@ -56,6 +73,18 @@ export class MkvPlayer {
   static mime(videoCodec, audioCodec) {
     const codecs = audioCodec ? `${videoCodec},${audioCodec}` : videoCodec;
     return `video/mp4; codecs="${codecs}"`;
+  }
+
+  aheadSeconds() {
+    return this.info?.transcoded ? TRANSCODE_AHEAD_S : MKV_AHEAD_S;
+  }
+
+  behindSeconds() {
+    return this.info?.transcoded ? TRANSCODE_BEHIND_S : MKV_BEHIND_S;
+  }
+
+  mediaLabel() {
+    return this.path.toLowerCase().endsWith(".mkv") ? "MKV" : "動画";
   }
 
   // 音声トラックの一覧（右クリックメニューの「音声」に出す）。
@@ -91,21 +120,30 @@ export class MkvPlayer {
     }
   }
 
-  // Rust 側で MKV を開き、WebView が再生できる組み合わせ（映像・音声）を決める
+  // Rust 側で動画を開き、WebView が再生できる組み合わせ（映像・音声）を決める
   async open(audio) {
     const { invoke } = window.__TAURI__.core;
-    let info = await invoke("mkv_open", { path: this.path, audio: audio ?? null });
+    let info = await invoke("mkv_open", { path: this.path, audio: audio ?? null, transcode: null });
     if (this.closed) return this.close(info.id);
     if (!MediaSource.isTypeSupported(MkvPlayer.mime(info.videoCodec, null))) {
-      this.close(info.id);
-      throw new Error("この MKV の映像は、この Mac では再生できません");
+      // M3 以降でも WebView が再生できない AV1 プロファイルなら変換モードへフォールバックする
+      if (info.canTranscode) {
+        this.close(info.id);
+        info = await invoke("mkv_open", { path: this.path, audio: audio ?? null, transcode: true });
+        if (this.closed) return this.close(info.id);
+      }
+      if (!MediaSource.isTypeSupported(MkvPlayer.mime(info.videoCodec, null))) {
+        this.close(info.id);
+        throw new Error(`この ${this.mediaLabel()} の映像は、この Mac では再生できません`);
+      }
     }
     if (!MediaSource.isTypeSupported(MkvPlayer.mime(info.videoCodec, info.audioCodec))) {
       // Rust はリマックスできても WebView が鳴らせない音声。鳴らせる別の音声か、音声なしで開き直す
       this.info = info;
       const alt = info.audioTracks.findIndex((t) => this.audioPlayable(t));
+      const transcode = info.transcoded ? true : null;
       this.close(info.id);
-      info = await invoke("mkv_open", { path: this.path, audio: alt });
+      info = await invoke("mkv_open", { path: this.path, audio: alt, transcode });
       if (this.closed) return this.close(info.id);
     }
     this.id = info.id;
@@ -119,10 +157,11 @@ export class MkvPlayer {
     if (!tracks.length) return;
     const wanted = tracks.find((t) => t.default) ?? tracks[0];
     if (this.audioPlayable(wanted)) return;
+    const kind = this.mediaLabel();
     this.options.onNotice?.(
       this.info.audio == null
-        ? `この MKV の音声（${wanted.codec}）には対応していないため、音声なしで再生します`
-        : `この MKV の既定の音声（${wanted.codec}）には対応していないため、別の音声で再生します`
+        ? `この ${kind} の音声（${wanted.codec}）には対応していないため、音声なしで再生します`
+        : `この ${kind} の既定の音声（${wanted.codec}）には対応していないため、別の音声で再生します`
     );
   }
 
@@ -159,7 +198,10 @@ export class MkvPlayer {
     this.video.addEventListener("seeking", this.onSeeking);
     this.video.addEventListener("waiting", this.onWaiting);
     const start = this.options.startTime ?? 0;
-    if (start > 0) this.video.currentTime = start;
+    if (start > 0) {
+      this.seekTarget = start;
+      this.video.currentTime = start;
+    }
   }
 
   // 読み込みのループ。閉じるまで回る
@@ -171,21 +213,35 @@ export class MkvPlayer {
           await this.seek(this.seekTarget);
           continue;
         }
-        if (this.eof || this.bufferedAhead() >= MKV_AHEAD_S) {
+        if (this.eof || this.bufferedAhead() >= this.aheadSeconds()) {
           await this.idle();
           continue;
         }
-        const data = mkvBytes(await invoke("mkv_read", { id: this.id }));
+        this.reading = true;
+        let data;
+        try {
+          data = mkvBytes(await invoke("mkv_read", { id: this.id }));
+        } finally {
+          this.reading = false;
+        }
         if (this.closed) return;
-        // 読んでいる間にシークされたら、この断片は捨てる（シーク先から読み直す）
-        if (this.seekTarget !== null) continue;
+        if (this.readCanceled) {
+          if (this.seekTarget === null) this.seekTarget = this.video.currentTime;
+          continue;
+        }
+        // 読んでいる間にバッファ外へのシークが来ていたら、この断片は捨ててシーク先から読み直す。
+        // 続きを読めば追いつく範囲へのシークでは、Rust 側がすでに先へ進んでいるため捨てずに足す
+        if (this.seekTarget !== null) {
+          if (!this.canContinueFromBuffer(this.seekTarget)) continue;
+          this.seekTarget = null;
+        }
         if (!data.length) {
           this.eof = true;
           this.endOfStream();
           continue;
         }
         await this.appendWithRoom(data);
-        this.nudgeGap();
+        this.nudgeGap(false);
       } catch (e) {
         if (this.closed) return;
         this.closed = true;
@@ -195,20 +251,29 @@ export class MkvPlayer {
     }
   }
 
+  // バッファを空にせず続きを読めば追いつけるシーク先かを返す
+  canContinueFromBuffer(target) {
+    if (this.readCanceled) return false;
+    const ranges = this.sourceBuffer?.buffered;
+    if (!ranges?.length) return false;
+    const last = ranges.length - 1;
+    if (target >= ranges.start(last) - 0.1 && target < ranges.end(last)) return true;
+    if (this.eof) return false;
+    // 変換時は数秒先まで全部エンコードして待つよりシークし直した方が速いので 1 秒以内にする
+    const maxAhead = this.info?.transcoded ? 1 : MKV_CONTINUE_S;
+    return target >= ranges.start(last) - 0.1 && target <= ranges.end(last) + maxAhead;
+  }
+
   async seek(target) {
     this.seekTarget = null;
-    const ranges = this.sourceBuffer.buffered;
-    if (ranges.length) {
-      // 読み込み済みの範囲（先頭側は捨てているので、最後の範囲が今読み足している所）の中か、
-      // その少し先なら、そのまま続きを読めば追いつく
-      const last = ranges.length - 1;
-      if (target >= ranges.start(last) - 0.1 && target <= ranges.end(last) + MKV_CONTINUE_S) {
-        return;
-      }
+    if (this.canContinueFromBuffer(target)) {
+      this.nudgeGap(false);
+      return;
     }
     await this.remove(0, Infinity);
     if (this.closed || this.seekTarget !== null) return;
     await window.__TAURI__.core.invoke("mkv_seek", { id: this.id, time: target });
+    this.readCanceled = false;
     this.eof = false;
     this.afterReset = true;
   }
@@ -225,19 +290,32 @@ export class MkvPlayer {
 
   // 再生位置が読み込み済みの範囲の少し手前で止まっていたら、範囲の頭へ進める
   // （映像の最初のフレームや音声の始まりが 0 秒やシーク先より少し後ろにあると、WebKit は止まったままになる）
-  nudgeGap() {
+  nudgeGap(stalled = false) {
     if (this.closed || !this.sourceBuffer) return;
     const ranges = this.sourceBuffer.buffered;
     const t = this.video.currentTime;
     for (let i = 0; i < ranges.length; i++) {
       if (t >= ranges.start(i) && t < ranges.end(i)) {
         this.afterReset = false;
+        // 範囲の末尾直前で waiting になり、すぐ後ろに次の範囲があるときは微小な隙間を飛び越す
+        if (
+          stalled &&
+          i + 1 < ranges.length &&
+          ranges.end(i) - t < 0.05 &&
+          ranges.start(i + 1) - ranges.end(i) <= MKV_GAP_JUMP_S
+        ) {
+          const next = ranges.start(i + 1) + 0.001;
+          this.nudgeTarget = next;
+          this.video.currentTime = next;
+        }
         return;
       }
       const gap = ranges.start(i) - t;
       if (gap > 0 && (gap <= MKV_GAP_JUMP_S || this.afterReset)) {
         this.afterReset = false;
-        this.video.currentTime = ranges.start(i) + 0.001;
+        const next = ranges.start(i) + 0.001;
+        this.nudgeTarget = next;
+        this.video.currentTime = next;
         return;
       }
     }
@@ -245,22 +323,22 @@ export class MkvPlayer {
 
   // 断片を足す。入りきらなければ（QuotaExceededError）再生位置より前を手放してから入れ直す
   async appendWithRoom(data) {
-    await this.evictBehind(MKV_BEHIND_S);
+    await this.evictBehind(this.behindSeconds());
     try {
       await this.append(data);
     } catch (e) {
       if (e?.name !== "QuotaExceededError") throw e;
-      await this.evictBehind(1);
+      await this.evictBehind(1, true);
       await this.append(data);
     }
   }
 
-  async evictBehind(keep) {
+  async evictBehind(keep, force = false) {
     const ranges = this.sourceBuffer.buffered;
     if (!ranges.length) return;
     const end = this.video.currentTime - keep;
-    // 少しずつ消すと remove が多くなるので、余分が 5 秒たまってからまとめて消す
-    if (end - ranges.start(0) < 5) return;
+    // 少しずつ消すと remove が多くなるので、通常時は余分が 5 秒たまってからまとめて消す
+    if (!force && end - ranges.start(0) < 5) return;
     await this.remove(0, end);
   }
 

@@ -88,8 +88,18 @@ pub(crate) fn video_sample_entry(video: &RemuxVideo) -> Vec<u8> {
         RemuxVideoCodec::Avc => (b"avc1", b"avcC"),
         // hev1 では再生できない WebKit があるので hvc1 にする
         RemuxVideoCodec::Hevc => (b"hvc1", b"hvcC"),
+        RemuxVideoCodec::Av1 => (b"av01", b"av1C"),
     };
     body.extend(mp4_box(config, &video.config));
+    if let Some(color) = video.color {
+        let mut colr = Vec::with_capacity(11);
+        colr.extend_from_slice(b"nclx");
+        colr.extend_from_slice(&color.primaries.to_be_bytes());
+        colr.extend_from_slice(&color.transfer.to_be_bytes());
+        colr.extend_from_slice(&color.matrix.to_be_bytes());
+        colr.push(if color.full_range { 0x80 } else { 0x00 });
+        body.extend(mp4_box(b"colr", &colr));
+    }
     let (dw, dh) = video.display;
     if (dw, dh) != (video.width, video.height) && dw > 0 && dh > 0 {
         // 画素の縦横比 = 表示の縦横比 / 画素数の縦横比

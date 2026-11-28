@@ -43,26 +43,24 @@ globs: "src/main.js, src/mkv-player.js, src/viewer/*.js, src/index.html, src/sty
   menu opens; `selectAudioTrack` enables just the chosen one) — there is deliberately no control on the card.
   WebView2 exposes `audioTracks` only behind the experimental Blink feature `AudioVideoTracks`, switched on
   through `WEBVIEW2_BROWSER_ARGS` (see `platform.md`); where it is absent the item is greyed out.
-  MKV on macOS (`usesMkvPlayer`: `IS_MAC` + `.mkv`): WKWebView can't demux MKV, so `MkvPlayer`
-  (`src/mkv-player.js`) plays it through MSE. Rust (`MkvStream`, commands `mkv_open` / `mkv_init` /
-  `mkv_seek` / `mkv_read` / `mkv_close`, one stream per window in `MkvStreams`, dropped in `forget_window`)
-  remuxes to fragmented MP4 without re-encoding: video H.264 / HEVC (CodecPrivate used as avcC / hvcC; HEVC
-  as `hvc1`, `hev1` fails in WebKit), audio AAC / Opus (one track per stream; switching audio re-opens at
-  the current time via `switchMkvAudio`). Bytes go back as `tauri::ipc::Response` (raw, never JSON arrays).
-  `matroska-demuxer` only reads track info; Cluster blocks are walked by our own `MkvWalker` (lacing,
+  MKV / AV1 on macOS (`usesMkvPlayer` for `.mkv`, `video_needs_stream` for `.mp4`/`.m4v`/`.mov`/`.webm` when HW AV1 decode is absent): WKWebView can't demux MKV and M1/M2 Macs lack HW AV1 decode, so `MkvPlayer` (`src/mkv-player.js`) plays them through MSE. Rust (`MkvStream`, commands `video_needs_stream` / `mkv_open` / `mkv_init` / `mkv_seek` / `mkv_read` / `mkv_cancel_read` / `mkv_close`, one stream per window in `MkvStreams`, dropped in `forget_window`) handles:
+  - Remuxing MKV (H.264 / HEVC, and AV1 on M3+ where `VTIsHardwareDecodeSupported('av01')` is true) to fragmented MP4 without re-encoding (`avcC` / `hvcC` / `av1C`; HEVC as `hvc1`, `hev1` fails in WebKit), audio AAC / Opus (one track per stream; switching audio re-opens at the current time via `switchMkvAudio`).
+  - Transcoding AV1 (MP4 / M4V / MOV via `src-tauri/src/mkv/mp4.rs`, WebM / MKV via Matroska) on macOS machines without HW AV1 decode (or when `MkvPlayer` falls back via `canTranscode` + `transcode: true`): `rav1d` software decode (`n_threads` `(cores * 3 / 4).clamp(2, 8)`, `max_frame_delay = 0`, `apply_grain = 0`, arm64 NEON/dotprod/i8mm asm without SVE2; macOS-only in shipped builds so Windows stays lean) directly into NV12 `CVPixelBuffer` (`src-tauri/src/mkv/vt.rs`, even-rounded and capped to 4096 on the long edge), burst-encoded by VideoToolbox H.264 (`RealTime = false`, `PrioritizeEncodingSpeedOverQuality = true`, `AllowFrameReordering = false` so no B-frames → PTS == DTS, `AllowOpenGOP = false`, `ForceKeyFrame = true` at every fragment start). The first fragment after open/seek is short (`TRANSCODE_INITIAL_FRAGMENT_SECONDS = 0.25`) for quick resume and subsequent fragments are ~1 s, sealed at the exact PTS of the next fragment's first frame (0-tick gap even on VFR/WebM). Seek starts encoding 1 frame before `target` so the first buffered range covers `video.currentTime` without a second seek. MP4 `elst` priming delay / empty edit offsets are applied to keep A/V sync, and `Mp4Source` uses separate video/audio `BufReader`s so interleaved reads never invalidate each other's buffer. When `transcoded: true`, `MkvPlayer` uses a shorter buffer window (`TRANSCODE_AHEAD_S = 6`, `TRANSCODE_BEHIND_S = 6`) to save CPU and battery.
+  Bytes go back as `tauri::ipc::Response` (raw, never JSON arrays).
+  `matroska-demuxer` only reads track info (supports both `matroska` and `webm`); Cluster blocks are walked by our own `MkvWalker` (lacing,
   BlockGroup keyframes via ReferenceBlock) and Cues by `read_mkv_layout` (the crate keeps Cues private and its
   `seek` stops at any frame, not a keyframe); without Cues, `scan_cluster_index` builds a cluster index on
-  the first seek. Fragments are cut only at video keyframes (≥ `REMUX_FRAGMENT_SECONDS`), because DTS is
+  the first seek. For remuxed MKV, fragments are cut only at video keyframes (≥ `REMUX_FRAGMENT_SECONDS`), because DTS is
   derived per fragment: MKV has PTS only, so `video_decode_times` assigns the fragment's sorted PTS to the
   frames in decode order minus the reorder depth (`reorder`, probed from the first GOPs at open) so DTS ≤
   PTS; at the file start the negative DTS are squeezed into [0, first positive DTS). `trun` is version 1
-  (signed cts) in case a later GOP reorders deeper than probed. Audio timestamps subtract CodecDelay, frames
+  (signed cts) in case a later GOP reorders deeper than probed. Audio timestamps subtract CodecDelay (or MP4 `elst` media_time), frames
   before 0 are dropped, and `audio_next` keeps fragment boundaries gapless (an overlap makes WebKit drop a
   frame). The JS side runs one loop (`run`) so `mkv_read` / `mkv_seek` never overlap: it keeps
-  `MKV_AHEAD_S` buffered ahead, `remove()`s everything older than `MKV_BEHIND_S`, and on `seeking` outside
-  the last buffered range clears the buffer and calls `mkv_seek` (previous keyframe). `nudgeGap` jumps small
-  gaps at the start of a range (WebKit stalls when currentTime sits just before the first frame).
-  `MediaSource.isTypeSupported` decides the audio: unsupported tracks are `disabled` in the 「音声」 menu, and
+  `aheadSeconds()` buffered ahead, `remove()`s everything older than `behindSeconds()`, and on `seeking` outside
+  `canContinueFromBuffer` cancels any in-flight `mkv_read` (`mkv_cancel_read`), clears the buffer, and calls `mkv_seek`. `nudgeGap` jumps small
+  gaps at the start of a range and records `nudgeTarget` so the resulting `seeking` event never discards an in-flight `mkv_read`.
+  `MediaSource.isTypeSupported` decides the audio (and triggers `transcode: true` fallback for AV1 if needed): unsupported tracks are `disabled` in the 「音声」 menu, and
   an unplayable default track falls back to another one or to no audio with a notice. CSP `media-src` needs
   `blob:` for the MediaSource URL.
   MKV text subtitles: Chromium never exposes in-band MKV subtitles (and the macOS remux drops them), so
