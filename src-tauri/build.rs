@@ -45,7 +45,7 @@ fn extract_exts(json: &str, key: &str, open: char, close: char) -> Vec<String> {
 fn format_const(name: &str, exts: &[String]) -> String {
     let items: Vec<String> = exts.iter().map(|e| format!("{e:?}")).collect();
     format!(
-        "pub(crate) const {name}: &[&str] = &[{}];\n",
+        "#[allow(dead_code)]\npub(crate) const {name}: &[&str] = &[{}];\n",
         items.join(", ")
     )
 }
