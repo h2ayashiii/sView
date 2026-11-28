@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 use super::av1::{Av1Transcoder, EncoderFactory};
 use super::av1::{
-    ColorInfo, av1_codec_string, av1c_from_obu_stream, can_transcode_av1, hw_av1_decode_supported,
+    BitReader, ColorInfo, av1_codec_string, av1c_from_obu_stream, can_transcode_av1,
+    hw_av1_decode_supported,
 };
 use super::fmp4::{Sample, TrackRun, build_fragment, build_init_segment};
 use super::mp4::{Mp4Source, is_mp4_av1_file, looks_like_mp4};
@@ -20,7 +21,7 @@ use super::subtitles::{
 
 // ---- MKV / WebM / MP4 のリマックスと AV1 変換（macOS） ----
 // macOS の WKWebView は MKV コンテナを再生できず、M1 / M2 世代では AV1 も再生できない。
-// - MKV（H.264 / HEVC、および M3 以降の AV1）は再エンコードせず fragmented MP4 へ詰め直す。
+// - MKV（H.264 / HEVC / VP9、および M3 以降の AV1）は再エンコードせず fragmented MP4 へ詰め直す。
 // - AV1（MP4 / WebM / MKV）でハードウェアデコードできない環境では、rav1d でデコードして
 //   VideoToolbox の H.264 ハードウェアエンコーダ（B フレームなし）でリアルタイム変換し、
 //   音声はそのままリマックスして MSE（mkv-player.js）へ流す。
@@ -205,18 +206,26 @@ impl<R: BufRead + Seek> MkvWalker<R> {
         }
     }
 
+    /// 現在の読み取り位置と属している Cluster の時刻を返す
+    pub(crate) fn position(&mut self) -> std::io::Result<(u64, i64)> {
+        Ok((self.r.stream_position()?, self.cluster_timestamp))
+    }
+
     /// 要素の頭 `pos` から読み直す（`cluster_timestamp` はその位置が属する Cluster の時刻）
     pub(crate) fn seek_to(&mut self, pos: u64, cluster_timestamp: i64) -> std::io::Result<()> {
-        self.r.seek(std::io::SeekFrom::Start(pos))?;
+        self.move_to(pos)?;
         self.cluster_timestamp = cluster_timestamp;
         self.queue.clear();
         Ok(())
     }
 
-    /// `pos` へ移る。BufReader の seek は読み込み済みの分を捨てるので、近くなら seek_relative で動く
+    /// `pos` へ移る。BufReader の seek は読み込み済みの分を捨てるので、seek_relative でバッファを保つ
     pub(crate) fn move_to(&mut self, pos: u64) -> std::io::Result<()> {
         let here = self.r.stream_position()?;
-        self.r.seek_relative(pos as i64 - here as i64)
+        match i64::try_from(pos as i128 - here as i128) {
+            Ok(rel) => self.r.seek_relative(rel),
+            Err(_) => self.r.seek(std::io::SeekFrom::Start(pos)).map(|_| ()),
+        }
     }
 
     /// 読み過ぎたフレームを戻す（次の next で最初に返る）
@@ -516,6 +525,7 @@ pub(crate) fn scan_cluster_index<R: Read + Seek>(r: &mut R, first_cluster: u64) 
 pub(crate) enum RemuxVideoCodec {
     Avc,
     Hevc,
+    Vp9,
     Av1,
 }
 
@@ -530,7 +540,7 @@ pub(crate) enum RemuxAudioCodec {
 pub(crate) struct RemuxVideo {
     pub(crate) number: u64,
     pub(crate) codec: RemuxVideoCodec,
-    /// avcC / hvcC / av1C の中身（MKV の CodecPrivate や MP4 の設定ボックス）
+    /// avcC / hvcC / vpcC / av1C の中身（MKV の CodecPrivate や MP4 の設定ボックス）
     pub(crate) config: Vec<u8>,
     pub(crate) codec_string: String,
     pub(crate) width: u32,
@@ -655,6 +665,354 @@ pub(crate) fn hevc_codec_string(hvcc: &[u8]) -> Option<String> {
     Some(out)
 }
 
+/// VP9 仕様で定義されている規格レベル値か判定する
+pub(crate) fn is_valid_vp9_level(level: u8) -> bool {
+    matches!(
+        level,
+        10 | 11 | 20 | 21 | 30 | 31 | 40 | 41 | 50 | 51 | 52 | 60 | 61 | 62
+    )
+}
+
+/// vpcC（VPCodecConfigurationRecord、8 バイト）から codecs 文字列（`vp09.PP.LL.DD`）を作る
+pub(crate) fn vp9_codec_string(vpcc: &[u8]) -> Option<String> {
+    if vpcc.len() < 8 {
+        return None;
+    }
+    let profile = vpcc[0];
+    let level = vpcc[1];
+    let bit_depth = vpcc[2] >> 4;
+    if profile > 3 || !is_valid_vp9_level(level) || !matches!(bit_depth, 8 | 10 | 12) {
+        return None;
+    }
+    Some(format!("vp09.{profile:02}.{level:02}.{bit_depth:02}"))
+}
+
+/// MKV の `V_VP9` の `CodecPrivate`（TLV 形式）から (profile, level, bit_depth, chroma_subsampling) を読む
+pub(crate) fn parse_mkv_vp9_private(
+    private: &[u8],
+) -> (Option<u8>, Option<u8>, Option<u8>, Option<u8>) {
+    let (mut profile, mut level, mut bit_depth, mut subsampling) = (None, None, None, None);
+    let mut pos = 0;
+    while pos + 2 <= private.len() {
+        let id = private[pos];
+        let len = private[pos + 1] as usize;
+        pos += 2;
+        if pos + len > private.len() {
+            break;
+        }
+        if len == 1 {
+            let val = private[pos];
+            match id {
+                1 if val <= 3 => profile = Some(val),
+                2 if is_valid_vp9_level(val) => level = Some(val),
+                3 if matches!(val, 8 | 10 | 12) => bit_depth = Some(val),
+                4 if val <= 3 => subsampling = Some(val),
+                _ => {}
+            }
+        }
+        pos += len;
+    }
+    (profile, level, bit_depth, subsampling)
+}
+
+/// 解像度とフレームレートから VP9 の規格レベル（10〜60）を求める。
+/// WebKit の VP9 デコーダ判定（Level 6 = 60 が上限）で弾かれないよう推定値の上限は 60 とする
+pub(crate) fn vp9_level_for(width: u32, height: u32, fps: f64) -> u8 {
+    // VP9 Levels（max_luma_sample_rate, max_luma_picture_size, level）
+    const LEVELS: &[(u64, u64, u8)] = &[
+        (829_440, 36_864, 10),
+        (2_764_800, 73_728, 11),
+        (4_608_000, 122_880, 20),
+        (9_216_000, 245_760, 21),
+        (20_736_000, 552_960, 30),
+        (36_864_000, 983_040, 31),
+        (83_558_400, 2_228_224, 40),
+        (160_432_128, 2_228_224, 41),
+        (311_951_360, 8_912_896, 50),
+        (588_251_136, 8_912_896, 51),
+        (1_176_502_272, 8_912_896, 52),
+        (1_176_502_272, 35_651_584, 60),
+    ];
+    let pic_size = (width as u64).saturating_mul(height as u64);
+    let rate = (pic_size as f64 * fps.clamp(1.0, 120.0)).ceil() as u64;
+    for &(max_rate, max_pic, level) in LEVELS {
+        if rate <= max_rate && pic_size <= max_pic {
+            return level;
+        }
+    }
+    60
+}
+
+/// VP9 キーフレームの非圧縮ヘッダから読み取った情報
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Vp9FrameHeader {
+    pub(crate) profile: u8,
+    pub(crate) bit_depth: u8,
+    /// 0 = 4:2:0、2 = 4:2:2、3 = 4:4:4
+    pub(crate) chroma_subsampling: u8,
+    pub(crate) full_range: bool,
+    pub(crate) primaries: u8,
+    pub(crate) transfer: u8,
+    pub(crate) matrix: u8,
+}
+
+/// VP9 の 1 パケット（スーパーフレーム含む）からキーフレームの非圧縮ヘッダを読む
+pub(crate) fn parse_vp9_frame_header(packet: &[u8]) -> Option<Vp9FrameHeader> {
+    if let Some(hdr) = parse_vp9_uncompressed_keyframe(packet) {
+        return Some(hdr);
+    }
+    // スーパーフレームの末尾インデックスを検証して中のキーフレームを探す
+    let &marker = packet.last()?;
+    if (marker & 0xE0) != 0xC0 {
+        return None;
+    }
+    let bytes_per_size = ((marker >> 3) & 0x03) as usize + 1;
+    let frame_count = (marker & 0x07) as usize + 1;
+    let index_size = 2 + frame_count * bytes_per_size;
+    if packet.len() < index_size || packet[packet.len() - index_size] != marker {
+        return None;
+    }
+    let sizes_start = packet.len() - index_size + 1;
+    let payload_end = packet.len() - index_size;
+    let mut sizes = [0usize; 8];
+    let mut total = 0usize;
+    for (i, slot) in sizes.iter_mut().take(frame_count).enumerate() {
+        let mut sz = 0usize;
+        for b in 0..bytes_per_size {
+            sz |= (packet[sizes_start + i * bytes_per_size + b] as usize) << (b * 8);
+        }
+        if sz == 0 {
+            return None;
+        }
+        total = total.checked_add(sz)?;
+        *slot = sz;
+    }
+    if total != payload_end {
+        return None;
+    }
+    let mut off = 0usize;
+    for &sz in sizes.iter().take(frame_count) {
+        let end = off + sz;
+        if let Some(hdr) = parse_vp9_uncompressed_keyframe(&packet[off..end]) {
+            return Some(hdr);
+        }
+        off = end;
+    }
+    None
+}
+
+/// VP9 非圧縮ヘッダ（仕様 §6.2）からキーフレームの profile / bit_depth / 色空間を読む
+fn parse_vp9_uncompressed_keyframe(frame: &[u8]) -> Option<Vp9FrameHeader> {
+    let mut br = BitReader::new(frame);
+    if br.read_bits(2)? != 2 {
+        return None; // frame_marker != 0b10
+    }
+    let profile_low = br.read_bits(1)?;
+    let profile_high = br.read_bits(1)?;
+    let profile = ((profile_high << 1) | profile_low) as u8;
+    if profile == 3 && br.read_bits(1)? != 0 {
+        return None; // reserved_zero
+    }
+    if br.read_bit()? {
+        return None; // show_existing_frame == 1
+    }
+    let frame_type = br.read_bits(1)?;
+    let _show_frame = br.read_bit()?;
+    let _error_resilient = br.read_bit()?;
+    if frame_type != 0 {
+        return None; // KEY_FRAME のみ color_config を持つ
+    }
+    // frame_sync_code: 0x49 0x83 0x42
+    if br.read_bits(8)? != 0x49 || br.read_bits(8)? != 0x83 || br.read_bits(8)? != 0x42 {
+        return None;
+    }
+    let bit_depth = if profile >= 2 {
+        if br.read_bit()? { 12 } else { 10 }
+    } else {
+        8
+    };
+    let color_space = br.read_bits(3)?;
+    let (primaries, transfer, matrix) = match color_space {
+        1 | 3 => (6, 6, 6), // BT.601 / SMPTE 170M
+        2 => (1, 1, 1),     // BT.709
+        4 => (7, 7, 7),     // SMPTE 240M
+        5 => {
+            let trc = match bit_depth {
+                12 => 15,
+                10 => 14,
+                _ => 1,
+            };
+            (9, trc, 9) // BT.2020
+        }
+        7 => (1, 13, 0), // sRGB
+        _ => (2, 2, 2),  // Unspecified
+    };
+    let (full_range, chroma_subsampling) = if color_space != 7 {
+        let range = br.read_bit()?;
+        let subsampling = if profile == 1 || profile == 3 {
+            let sub_x = br.read_bit()?;
+            let sub_y = br.read_bit()?;
+            let _reserved = br.read_bit()?;
+            match (sub_x, sub_y) {
+                (true, true) => 0,
+                (true, false) => 2,
+                (false, false) => 3,
+                (false, true) => 0,
+            }
+        } else {
+            0
+        };
+        (range, subsampling)
+    } else {
+        if profile == 1 || profile == 3 {
+            let _reserved = br.read_bit()?;
+        }
+        (true, 3)
+    };
+    Some(Vp9FrameHeader {
+        profile,
+        bit_depth,
+        chroma_subsampling,
+        full_range,
+        primaries,
+        transfer,
+        matrix,
+    })
+}
+
+/// Matroska の Video.Colour から vpcC 用の色空間・ビット深度・サブサンプリングを取り出す
+fn mkv_vp9_colour(colour: &matroska_demuxer::Colour) -> (Option<u8>, Option<u8>, bool, u8, u8, u8) {
+    use matroska_demuxer::{
+        ChromaSitingHorz, ChromaSitingVert, MatrixCoefficients, Primaries, Range,
+        TransferCharacteristics,
+    };
+    let bit_depth = colour
+        .bits_per_channel()
+        .and_then(|b| matches!(b, 8 | 10 | 12).then_some(b as u8));
+    let colocated = colour.chroma_sitting_horz() == Some(ChromaSitingHorz::LeftCollated)
+        && colour.chroma_sitting_vert() == Some(ChromaSitingVert::LeftCollated);
+    let subsampling = match (
+        colour.chroma_subsampling_horz(),
+        colour.chroma_subsampling_vert(),
+    ) {
+        (Some(1), Some(1)) => Some(if colocated { 1 } else { 0 }),
+        (Some(1), Some(0)) => Some(2),
+        (Some(0), Some(0)) => Some(3),
+        _ if colocated => Some(1),
+        _ => None,
+    };
+    let full_range = colour.range() == Some(Range::Full);
+    let primaries = match colour.primaries() {
+        Some(Primaries::Bt709) => 1,
+        Some(Primaries::Bt470m) => 4,
+        Some(Primaries::Bt601) => 5,
+        Some(Primaries::Smpte170) => 6,
+        Some(Primaries::Smpte240) => 7,
+        Some(Primaries::Film) => 8,
+        Some(Primaries::Bt2020) => 9,
+        Some(Primaries::SmpteSt428_1) => 10,
+        Some(Primaries::SmpteRp432_2) => 11,
+        Some(Primaries::SmpteEg432_2) => 12,
+        Some(Primaries::JedecP22) => 22,
+        _ => 2,
+    };
+    let transfer = match colour.transfer_characteristics() {
+        Some(TransferCharacteristics::Bt709) => 1,
+        Some(TransferCharacteristics::Bt407m) => 4,
+        Some(TransferCharacteristics::Bt407bg) => 5,
+        Some(TransferCharacteristics::Smpte170) => 6,
+        Some(TransferCharacteristics::Smpte240) => 7,
+        Some(TransferCharacteristics::Linear) => 8,
+        Some(TransferCharacteristics::Log) => 9,
+        Some(TransferCharacteristics::LogSqrt) => 10,
+        Some(TransferCharacteristics::Iec61966_2_4) => 11,
+        Some(TransferCharacteristics::Bt1361) => 12,
+        Some(TransferCharacteristics::Iec61966_2_1) => 13,
+        Some(TransferCharacteristics::Bt220_10) => 14,
+        Some(TransferCharacteristics::Bt220_12) => 15,
+        Some(TransferCharacteristics::Bt2100) => 16,
+        Some(TransferCharacteristics::SmpteSt428_1) => 17,
+        Some(TransferCharacteristics::Hlg) => 18,
+        _ => 2,
+    };
+    let matrix = match colour.matrix_coefficients() {
+        Some(MatrixCoefficients::Identity) => 0,
+        Some(MatrixCoefficients::Bt709) => 1,
+        Some(MatrixCoefficients::Fcc73682) => 4,
+        Some(MatrixCoefficients::Bt470bg) => 5,
+        Some(MatrixCoefficients::Smpte170) => 6,
+        Some(MatrixCoefficients::Smpte240) => 7,
+        Some(MatrixCoefficients::YCoCg) => 8,
+        Some(MatrixCoefficients::Bt2020Ncl) => 9,
+        Some(MatrixCoefficients::Bt2020Cl) => 10,
+        Some(MatrixCoefficients::SmpteSt2085) => 11,
+        Some(MatrixCoefficients::ChromaDerivedNcl) => 12,
+        Some(MatrixCoefficients::ChromaDerivedCl) => 13,
+        Some(MatrixCoefficients::Bt2100) => 14,
+        _ => 2,
+    };
+    (
+        bit_depth,
+        subsampling,
+        full_range,
+        primaries,
+        transfer,
+        matrix,
+    )
+}
+
+/// 8 バイトの vpcC ペイロードに先頭キーフレームから得た実際のビットストリーム情報を反映する。
+/// Matroska の Video.Colour で指定済みの HDR 色空間（PQ / HLG 等）や 4:2:0 配置は上書きしない
+pub(crate) fn merge_vp9_header_into_vpcc(vpcc: &mut [u8], hdr: Vp9FrameHeader) {
+    if vpcc.len() < 8 {
+        return;
+    }
+    vpcc[0] = hdr.profile;
+    let existing_sub = (vpcc[2] >> 1) & 0x07;
+    let existing_full = (vpcc[2] & 0x01) != 0;
+    let raw_sub = if hdr.chroma_subsampling == 0 && existing_sub == 1 {
+        1
+    } else {
+        hdr.chroma_subsampling
+    };
+    let subsampling = if matches!(hdr.profile, 0 | 2) && raw_sub > 1 {
+        0
+    } else {
+        raw_sub
+    };
+    let full_range = existing_full || hdr.full_range;
+    vpcc[2] = ((hdr.bit_depth & 0x0F) << 4) | ((subsampling & 0x07) << 1) | u8::from(full_range);
+    if vpcc[3] == 2 {
+        vpcc[3] = hdr.primaries;
+    }
+    if vpcc[4] == 2 {
+        vpcc[4] = hdr.transfer;
+    }
+    if vpcc[5] == 2 {
+        vpcc[5] = hdr.matrix;
+    }
+}
+
+/// vpcC ペイロードから fMP4 の `colr`（nclx）ボックス用 ColorInfo を作る（すべて未指定なら None）
+pub(crate) fn vpcc_color_info(vpcc: &[u8]) -> Option<ColorInfo> {
+    if vpcc.len() < 8 {
+        return None;
+    }
+    let full_range = (vpcc[2] & 0x01) != 0;
+    let primaries = vpcc[3] as u16;
+    let transfer = vpcc[4] as u16;
+    let matrix = vpcc[5] as u16;
+    if primaries == 2 && transfer == 2 && matrix == 2 && !full_range {
+        return None;
+    }
+    Some(ColorInfo {
+        primaries,
+        transfer,
+        matrix,
+        full_range,
+    })
+}
+
 /// AAC のサンプリング周波数の表（AudioSpecificConfig の samplingFrequencyIndex）
 pub(crate) const AAC_SAMPLE_RATES: [u32; 13] = [
     96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
@@ -754,9 +1112,18 @@ pub(crate) fn remux_video_track(
     let codec = match track.codec_id() {
         "V_MPEG4/ISO/AVC" => RemuxVideoCodec::Avc,
         "V_MPEGH/ISO/HEVC" => RemuxVideoCodec::Hevc,
+        "V_VP9" => RemuxVideoCodec::Vp9,
         "V_AV1" => RemuxVideoCodec::Av1,
         _ => return Err(unsupported()),
     };
+    let decoders = block_decoders(track).ok_or_else(unsupported)?;
+    let video = track.video().ok_or_else(unsupported)?;
+    let width = video.pixel_width().get().min(u16::MAX as u64) as u32;
+    let height = video.pixel_height().get().min(u16::MAX as u64) as u32;
+    let fps = track
+        .default_duration()
+        .map(|d| (1e9 / d.get() as f64).clamp(1.0, 240.0))
+        .unwrap_or(30.0);
     let (config, codec_string) = match codec {
         RemuxVideoCodec::Avc => {
             let config = track.codec_private().ok_or_else(unsupported)?.to_vec();
@@ -768,6 +1135,49 @@ pub(crate) fn remux_video_track(
             let cs = hevc_codec_string(&config).ok_or_else(unsupported)?;
             (config, cs)
         }
+        RemuxVideoCodec::Vp9 => {
+            // WebKit の VP9 デコーダは透過（AlphaMode = 1、BlockAdditions に α 面を持つ形式）に非対応。
+            // 本体の YUV トラック自体は Profile 0 として isTypeSupported を通ってしまうためここで弾く
+            if video.alpha_mode().unwrap_or(0) != 0 {
+                return Err(unsupported());
+            }
+            let (priv_profile, priv_level, priv_bits, priv_sub) = track
+                .codec_private()
+                .map(parse_mkv_vp9_private)
+                .unwrap_or((None, None, None, None));
+            let (col_bits, col_sub, full_range, primaries, transfer, matrix) = video
+                .colour()
+                .map(mkv_vp9_colour)
+                .unwrap_or((None, None, false, 2, 2, 2));
+            let profile = priv_profile.unwrap_or(0);
+            // VFR の MKV では DefaultDuration に 1ms（1000fps 相当のタイムベース）が入ることがあるため過大な値を抑える
+            let level_fps = if fps > 120.0 { 60.0 } else { fps };
+            let level = priv_level.unwrap_or_else(|| vp9_level_for(width, height, level_fps));
+            let bit_depth = priv_bits
+                .or(col_bits)
+                .unwrap_or(if profile >= 2 { 10 } else { 8 });
+            let raw_sub =
+                priv_sub
+                    .or(col_sub)
+                    .unwrap_or(if matches!(profile, 1 | 3) { 3 } else { 0 });
+            let subsampling = if matches!(profile, 0 | 2) && raw_sub > 1 {
+                0
+            } else {
+                raw_sub
+            };
+            let vpcc = vec![
+                profile,
+                level,
+                ((bit_depth & 0x0F) << 4) | ((subsampling & 0x07) << 1) | u8::from(full_range),
+                primaries,
+                transfer,
+                matrix,
+                0,
+                0,
+            ];
+            let cs = vp9_codec_string(&vpcc).ok_or_else(unsupported)?;
+            (vpcc, cs)
+        }
         RemuxVideoCodec::Av1 => {
             // AV1 は CodecPrivate（av1C）が省略されているファイルもある（先頭 OBU や変換で補える）
             let config = track.codec_private().unwrap_or(&[]).to_vec();
@@ -775,10 +1185,11 @@ pub(crate) fn remux_video_track(
             (config, cs)
         }
     };
-    let decoders = block_decoders(track).ok_or_else(unsupported)?;
-    let video = track.video().ok_or_else(unsupported)?;
-    let width = video.pixel_width().get().min(u16::MAX as u64) as u32;
-    let height = video.pixel_height().get().min(u16::MAX as u64) as u32;
+    let color = if codec == RemuxVideoCodec::Vp9 {
+        vpcc_color_info(&config)
+    } else {
+        None
+    };
     // DisplayUnit が画素（0）か未指定ならそのまま、縦横比（3）なら高さを保って幅を合わせる
     use matroska_demuxer::DisplayUnit;
     let clamp = |v: u64| v.clamp(1, u16::MAX as u64) as u32;
@@ -801,7 +1212,7 @@ pub(crate) fn remux_video_track(
         width,
         height,
         display,
-        color: None,
+        color,
         decoders,
         frame_ticks: 0,
     })
@@ -1042,7 +1453,7 @@ impl MkvStream {
         Arc::clone(&self.abort_read)
     }
 
-    /// 動画を開く（既定のモード: MKV の H.264/HEVC は無変換、AV1 はハードウェア非対応環境なら変換）。
+    /// 動画を開く（既定のモード: MKV の H.264 / HEVC / VP9 は無変換、AV1 はハードウェア非対応環境なら変換）。
     /// `audio` は鳴らす音声トラックの番号（None なら既定、負なら音声なし）
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn open(path: &Path, audio: Option<i64>) -> Result<(Self, MkvOpened), String> {
@@ -1204,6 +1615,17 @@ impl MkvStream {
                 stream.video.config = av1c;
                 video = stream.video.clone();
             }
+        } else if video.codec == RemuxVideoCodec::Vp9 {
+            // MKV の V_VP9 は CodecPrivate や Colour が省略されることも多いため、
+            // 先頭キーフレームの非圧縮ヘッダから profile / bit_depth / 色空間を補完する
+            if let Some(hdr) = stream.probe_first_vp9_header() {
+                merge_vp9_header_into_vpcc(&mut stream.video.config, hdr);
+                stream.video.color = vpcc_color_info(&stream.video.config);
+                if let Some(cs) = vp9_codec_string(&stream.video.config) {
+                    stream.video.codec_string = cs;
+                }
+                video = stream.video.clone();
+            }
         }
 
         let transcoded = {
@@ -1330,8 +1752,8 @@ impl MkvStream {
             clusters: None,
             reorder: 0,
         };
-        // AV1 はコンテナ上で表示順に並ぶため並べ替えの深さ調査は不要（H.264 / HEVC のみ調査）
-        if video.codec != RemuxVideoCodec::Av1 {
+        // AV1 / VP9 はコンテナ上で表示順に並ぶため並べ替えの深さ調査は不要（H.264 / HEVC のみ調査）
+        if matches!(video.codec, RemuxVideoCodec::Avc | RemuxVideoCodec::Hevc) {
             mkv_src.reorder = mkv_src
                 .probe_reorder(video.number)
                 .map_err(|e| format!("MKV を読めません: {e}"))?;
@@ -1350,20 +1772,36 @@ impl MkvStream {
         ))
     }
 
-    fn probe_first_av1c(&mut self) -> Option<Vec<u8>> {
+    /// 先頭の映像パケット 1 つだけを取り出してデコードし、読み取り位置をそのまま元の位置へ戻す。
+    /// 壊れたファイル（映像ブロックが無い等）でファイル全体を走査しないよう上限を設ける
+    fn probe_first_video_payload(&mut self) -> Option<Vec<u8>> {
+        const MAX_PROBE_BLOCKS: usize = 64;
         let StreamSource::Matroska(mkv) = &mut self.source else {
             return None;
         };
-        let mut av1c = None;
-        while let Ok(Some(frame)) = mkv.walker.next(true) {
+        let (saved_pos, saved_cluster_ts) = mkv.walker.position().ok()?;
+        let mut payload = None;
+        for _ in 0..MAX_PROBE_BLOCKS {
+            let Ok(Some(frame)) = mkv.walker.next(true) else {
+                break;
+            };
             if frame.track == self.video.number {
-                let raw = decode_block(frame.data, &self.video.decoders, REMUX_MAX_FRAME_BYTES)?;
-                av1c = av1c_from_obu_stream(&raw);
+                payload = decode_block(frame.data, &self.video.decoders, REMUX_MAX_FRAME_BYTES);
                 break;
             }
         }
-        let _ = mkv.seek(self.video.number, 0.0);
-        av1c
+        let _ = mkv.walker.seek_to(saved_pos, saved_cluster_ts);
+        payload
+    }
+
+    fn probe_first_av1c(&mut self) -> Option<Vec<u8>> {
+        let raw = self.probe_first_video_payload()?;
+        av1c_from_obu_stream(&raw)
+    }
+
+    fn probe_first_vp9_header(&mut self) -> Option<Vp9FrameHeader> {
+        let raw = self.probe_first_video_payload()?;
+        parse_vp9_frame_header(&raw)
     }
 
     /// `seconds` の直前のキーフレームから読むようにする。戻り値は開始位置（秒）
@@ -1439,7 +1877,7 @@ impl MkvStream {
         }
     }
 
-    /// Matroska / WebM の無変換リマックス（H.264 / HEVC / M3+ AV1）
+    /// Matroska / WebM の無変換リマックス（H.264 / HEVC / VP9 / M3+ AV1）
     fn read_matroska_remux_fragment(&mut self) -> std::io::Result<Vec<u8>> {
         let StreamSource::Matroska(mkv) = &mut self.source else {
             unreachable!();
@@ -1885,7 +2323,10 @@ impl MkvStream {
             track_id: 1,
             base_decode_time: timing.dts[0] as u64,
             samples,
-            has_composition_offsets: self.video.codec != RemuxVideoCodec::Av1,
+            has_composition_offsets: matches!(
+                self.video.codec,
+                RemuxVideoCodec::Avc | RemuxVideoCodec::Hevc
+            ),
         })
     }
 
