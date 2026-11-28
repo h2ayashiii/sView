@@ -5,7 +5,7 @@ globs: "src-tauri/src/lib.rs, src-tauri/src/platform/*.rs, src-tauri/src/logging
 
 # Platform specifics (macOS / Windows), windows, bundling
 
-- The windows in `tauri.conf.json` (`main` / `settings` / `shortcuts`) are `"create": false`; `create_configured_windows()` builds
+- The windows in `tauri.conf.json` (`main` / `settings` / `shortcuts` / `info`) are `"create": false`; `create_configured_windows()` builds
   them from the same config in `setup()`. That detour exists only so `data_directory()` can be set:
   on Windows an unspecified WebView2 user-data folder is created next to the exe
   (`C:\Program Files\sView\sview.exe.WebView2`) and the app fails to start. It is pointed at
@@ -17,6 +17,13 @@ globs: "src-tauri/src/lib.rs, src-tauri/src/platform/*.rs, src-tauri/src/logging
   `--autoplay-policy=no-user-gesture-required` (passing args replaces them, so both are
   copied) plus `--enable-blink-features=AudioVideoTracks` for audio-track switching. WebView2 instances on
   the same data folder must share identical args, so never give one window different args.
+- The `info` window (file information) is hidden on close like `settings` / `shortcuts`. The file it shows
+  lives in Rust (`InfoTargetState` in `info/mod.rs`): `open_info_window` sets it and emits `info-target` to
+  the window (it also re-emits for the same file so reopening re-reads), `sync_info_window` (called by
+  `main.js` from `show()` / `clearView()` / focus) only replaces it while the window is visible **and** the
+  calling viewer is focused, so with several macOS viewers the front one wins. `info.js` also pulls it once
+  with `get_info_target`, because the event can fire before the page has loaded. Info gathering reuses the
+  MP4 box helpers in `mkv/mp4.rs` (made `pub(crate)` for this) and reads headers only.
 - `tauri-plugin-log` is registered from `setup()` via `app.handle().plugin(...)`, not on the
   `Builder`, because the output folder needs an `AppHandle` (`log_dir()` → `config_dir()/logs`).
   A panic hook installed at the top of `run()` logs the panic and a backtrace before aborting,

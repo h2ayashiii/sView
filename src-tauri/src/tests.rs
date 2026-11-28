@@ -2556,3 +2556,267 @@ fn webm_opus_dops_roundtrip_and_cluster_splitting() {
     let parsed = parse_webm_audio_ticks(&frag);
     assert_eq!(parsed, vec![(0, 2), (25, 2), (50, 2), (40_050, 2)]);
 }
+
+// ---- ファイルの情報 ----
+
+fn info_of(path: &Path, entry: Option<&str>) -> crate::info::MediaInfo {
+    crate::info::collect_media_info(path, entry, &ArchiveCache(Mutex::new(None))).unwrap()
+}
+
+fn info_value<'a>(info: &'a crate::info::MediaInfo, section: &str, label: &str) -> Option<&'a str> {
+    info.sections
+        .iter()
+        .find(|s| s.title == section)
+        .and_then(|s| s.get(label))
+}
+
+#[test]
+fn info_formats_values_for_display() {
+    use crate::info::format::*;
+    assert_eq!(group_digits(1234567), "1,234,567");
+    assert_eq!(group_digits(999), "999");
+    assert_eq!(format_bytes(512), "512 バイト");
+    assert_eq!(format_bytes(1536), "1.50 KB（1,536 バイト）");
+    assert_eq!(
+        format_bytes(50 * 1024 * 1024),
+        "50.0 MB（52,428,800 バイト）"
+    );
+    assert_eq!(format_duration(3723.9).as_deref(), Some("1:02:03"));
+    assert_eq!(format_duration(65.0).as_deref(), Some("1:05"));
+    assert_eq!(format_duration(0.0), None);
+    assert_eq!(format_bitrate(320_000.0).as_deref(), Some("320 kbps"));
+    assert_eq!(format_bitrate(12_345_678.0).as_deref(), Some("12.3 Mbps"));
+    assert_eq!(format_sample_rate(44_100.0).as_deref(), Some("44.1 kHz"));
+    assert_eq!(format_sample_rate(48_000.0).as_deref(), Some("48 kHz"));
+    assert_eq!(format_channels(2).as_deref(), Some("2（ステレオ）"));
+    assert_eq!(format_channels(3).as_deref(), Some("3"));
+    assert_eq!(format_fps(24_000.0 / 1001.0).as_deref(), Some("23.976 fps"));
+    assert_eq!(format_aspect(1920, 1080).as_deref(), Some("16:9"));
+    assert_eq!(format_aspect(1920, 804).as_deref(), Some("2.39:1"));
+    assert_eq!(format_utc(0.0), "1970-01-01 00:00:00 UTC");
+    assert_eq!(format_utc(1_709_210_096_000.0), "2024-02-29 12:34:56 UTC");
+}
+
+#[test]
+fn info_reads_codec_profiles_from_config_records() {
+    use crate::info::video::*;
+    // avcC: version, profile 100 (High), compat, level 41
+    let avc = avc_detail(Some(&[1, 100, 0, 41]));
+    assert_eq!(avc.profile.as_deref(), Some("High@L4.1"));
+    // hvcC: Main 10、level_idc 153 (5.1)、bitDepthLumaMinus8 = 2
+    let mut hvcc = [0u8; 23];
+    hvcc[0] = 1;
+    hvcc[1] = 2;
+    hvcc[12] = 153;
+    hvcc[17] = 0xF8 | 2;
+    let hevc = hevc_detail(Some(&hvcc), "H.265 (HEVC)");
+    assert_eq!(hevc.profile.as_deref(), Some("Main 10@L5.1"));
+    assert_eq!(hevc.bit_depth, Some(10));
+    // av1C: marker, seq_profile 0 / seq_level_idx 8 (4.0), high_bitdepth
+    let av1 = av1_detail(Some(&[0x81, 8, 0x40, 0]));
+    assert_eq!(av1.profile.as_deref(), Some("Main@L4.0"));
+    assert_eq!(av1.bit_depth, Some(10));
+    // Matroska の VP9 CodecPrivate（ID, 長さ, 値）
+    let vp9 = mkv_codec_name("V_VP9", Some(&[1, 1, 2, 2, 1, 41, 3, 1, 10]));
+    assert_eq!(vp9.name, "VP9");
+    assert_eq!(vp9.profile.as_deref(), Some("Profile 2@L4.1"));
+    assert_eq!(vp9.bit_depth, Some(10));
+    assert_eq!(mkv_codec_name("A_EAC3", None).name, "E-AC-3");
+    assert_eq!(mkv_codec_name("S_HDMV/PGS", None).name, "PGS（画像字幕）");
+    // AudioSpecificConfig: object 2 (LC) / 5 (SBR)
+    assert_eq!(aac_name(Some(&[0x11, 0x90])), "AAC LC");
+    assert_eq!(aac_name(Some(&[0x2B, 0x10])), "HE-AAC");
+    assert_eq!(aac_name(None), "AAC");
+}
+
+#[test]
+fn info_reads_video_tracks_from_mp4_and_matroska() {
+    let mp4 = info_of(&remux_testdata("av1.mp4"), None);
+    assert_eq!(mp4.kind, Some(MediaKind::Video));
+    assert!(mp4.warning.is_none());
+    assert_eq!(info_value(&mp4, "映像", "コーデック"), Some("AV1"));
+    assert_eq!(info_value(&mp4, "映像", "解像度"), Some("128 × 96"));
+    assert_eq!(info_value(&mp4, "映像", "フレームレート"), Some("24 fps"));
+    assert_eq!(info_value(&mp4, "音声", "コーデック"), Some("AAC LC"));
+    assert_eq!(
+        info_value(&mp4, "音声", "サンプリング周波数"),
+        Some("48 kHz")
+    );
+    assert!(
+        info_value(&mp4, "全般", "コンテナ")
+            .unwrap()
+            .starts_with("MPEG-4")
+    );
+
+    let webm = info_of(&remux_testdata("av1.webm"), None);
+    assert_eq!(info_value(&webm, "全般", "コンテナ"), Some("WebM"));
+    assert_eq!(info_value(&webm, "映像", "コーデック"), Some("AV1"));
+    assert_eq!(info_value(&webm, "音声", "コーデック"), Some("Opus"));
+    // 非可逆圧縮の音声にはビット深度を出さない
+    assert_eq!(info_value(&webm, "音声", "ビット深度"), None);
+
+    let mkv = info_of(&remux_testdata("remux.mkv"), None);
+    assert_eq!(info_value(&mkv, "全般", "コンテナ"), Some("Matroska"));
+    assert_eq!(info_value(&mkv, "映像", "コーデック"), Some("H.264 (AVC)"));
+    assert_eq!(info_value(&mkv, "音声 1", "コーデック"), Some("AC-3"));
+    assert_eq!(info_value(&mkv, "音声 2", "コーデック"), Some("AAC LC"));
+    assert_eq!(info_value(&mkv, "音声 2", "言語"), Some("jpn"));
+
+    let subs = info_of(&remux_testdata("subtitles.mkv"), None);
+    assert_eq!(info_value(&subs, "字幕 1", "形式"), Some("SRT"));
+    assert_eq!(info_value(&subs, "字幕 1", "名前"), Some("日本語"));
+    assert_eq!(info_value(&subs, "字幕 2", "形式"), Some("ASS"));
+}
+
+/// Exif（Make / Model / ExposureTime / FNumber / ISO / DateTimeOriginal）入りの小さな JPEG
+fn jpeg_with_exif(width: u16, height: u16) -> Vec<u8> {
+    // TIFF（ビッグエンディアン）。IFD0 は 8、Exif IFD は 64 から
+    let mut tiff = vec![0u8; 154];
+    tiff[..8].copy_from_slice(b"MM\0*\0\0\0\x08");
+    let entry = |t: &mut Vec<u8>, at: usize, tag: u16, kind: u16, count: u32, value: u32| {
+        t[at..at + 2].copy_from_slice(&tag.to_be_bytes());
+        t[at + 2..at + 4].copy_from_slice(&kind.to_be_bytes());
+        t[at + 4..at + 8].copy_from_slice(&count.to_be_bytes());
+        t[at + 8..at + 12].copy_from_slice(&value.to_be_bytes());
+    };
+    tiff[8..10].copy_from_slice(&3u16.to_be_bytes());
+    entry(&mut tiff, 10, 0x010F, 2, 6, 50); // Make
+    entry(&mut tiff, 22, 0x0110, 2, 7, 56); // Model
+    entry(&mut tiff, 34, 0x8769, 4, 1, 64); // ExifIFDPointer
+    tiff[50..56].copy_from_slice(b"Canon\0");
+    tiff[56..63].copy_from_slice(b"EOS R5\0");
+    tiff[64..66].copy_from_slice(&4u16.to_be_bytes());
+    entry(&mut tiff, 66, 0x829A, 5, 1, 118); // ExposureTime
+    entry(&mut tiff, 78, 0x829D, 5, 1, 126); // FNumber
+    entry(&mut tiff, 90, 0x8827, 3, 1, 400 << 16); // ISO
+    entry(&mut tiff, 102, 0x9003, 2, 20, 134); // DateTimeOriginal
+    tiff[118..126].copy_from_slice(&[0, 0, 0, 1, 0, 0, 0, 250]);
+    tiff[126..134].copy_from_slice(&[0, 0, 0, 28, 0, 0, 0, 10]);
+    tiff[134..154].copy_from_slice(b"2024:05:06 07:08:09\0");
+
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
+    jpeg.extend_from_slice(&((tiff.len() + 8) as u16).to_be_bytes());
+    jpeg.extend_from_slice(b"Exif\0\0");
+    jpeg.extend_from_slice(&tiff);
+    // SOF0（解像度）
+    jpeg.extend_from_slice(&[0xFF, 0xC0, 0, 11, 8]);
+    jpeg.extend_from_slice(&height.to_be_bytes());
+    jpeg.extend_from_slice(&width.to_be_bytes());
+    jpeg.extend_from_slice(&[1, 1, 0x11, 0, 0xFF, 0xD9]);
+    jpeg
+}
+
+#[test]
+fn info_reads_image_size_and_exif() {
+    let dir = test_dir("info-image");
+    let jpg = dir.join("photo.jpg");
+    fs::write(&jpg, jpeg_with_exif(6000, 4000)).unwrap();
+    let info = info_of(&jpg, None);
+    assert_eq!(info.kind, Some(MediaKind::Image));
+    assert_eq!(info_value(&info, "ファイル", "名前"), Some("photo.jpg"));
+    assert_eq!(info_value(&info, "画像", "形式"), Some("JPEG"));
+    assert_eq!(
+        info_value(&info, "画像", "解像度"),
+        Some("6000 × 4000（24 MP）")
+    );
+    assert_eq!(info_value(&info, "撮影情報", "メーカー"), Some("Canon"));
+    assert_eq!(info_value(&info, "撮影情報", "機種"), Some("EOS R5"));
+    assert_eq!(info_value(&info, "撮影情報", "露出時間"), Some("1/250 秒"));
+    assert_eq!(info_value(&info, "撮影情報", "F 値"), Some("f/2.8"));
+    assert_eq!(info_value(&info, "撮影情報", "ISO 感度"), Some("400"));
+    assert_eq!(
+        info_value(&info, "撮影情報", "撮影日時"),
+        Some("2024-05-06 07:08:09")
+    );
+
+    // PNG（IHDR だけ）: Exif が無ければ撮影情報の欄は出さない
+    let png = dir.join("image.png");
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    bytes.extend_from_slice(&320u32.to_be_bytes());
+    bytes.extend_from_slice(&200u32.to_be_bytes());
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    fs::write(&png, bytes).unwrap();
+    let info = info_of(&png, None);
+    assert_eq!(info_value(&info, "画像", "形式"), Some("PNG"));
+    assert_eq!(info_value(&info, "画像", "解像度"), Some("320 × 200"));
+    assert_eq!(info_value(&info, "画像", "色"), Some("8 bit / RGBA"));
+    assert!(info.sections.iter().all(|s| s.title != "撮影情報"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn info_reads_image_inside_archive() {
+    use std::io::Write;
+    let dir = test_dir("info-archive");
+    let zip_path = dir.join("book.cbz");
+    let mut zip = zip::ZipWriter::new(File::create(&zip_path).unwrap());
+    zip.start_file("vol1/p001.jpg", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(&jpeg_with_exif(800, 600)).unwrap();
+    zip.finish().unwrap();
+    let info = info_of(&zip_path, Some("vol1/p001.jpg"));
+    assert_eq!(info.name, "p001.jpg");
+    assert_eq!(
+        info_value(&info, "ファイル", "書庫内の場所"),
+        Some("vol1/p001.jpg")
+    );
+    assert_eq!(
+        info_value(&info, "画像", "解像度"),
+        Some("800 × 600（0.5 MP）")
+    );
+    assert_eq!(info_value(&info, "撮影情報", "機種"), Some("EOS R5"));
+    assert!(
+        crate::info::collect_media_info(
+            &zip_path,
+            Some("missing.jpg"),
+            &ArchiveCache(Mutex::new(None))
+        )
+        .is_err()
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn info_reads_audio_properties() {
+    // 16 bit / 2 チャンネル / 44.1 kHz の 1 秒の無音 WAV
+    let dir = test_dir("info-audio");
+    let wav = dir.join("tone.wav");
+    let data_len: u32 = 44_100 * 4;
+    let mut bytes = b"RIFF".to_vec();
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&44_100u32.to_le_bytes());
+    bytes.extend_from_slice(&(44_100u32 * 4).to_le_bytes());
+    bytes.extend_from_slice(&4u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    bytes.resize(bytes.len() + data_len as usize, 0);
+    fs::write(&wav, bytes).unwrap();
+    let info = info_of(&wav, None);
+    assert_eq!(info.kind, Some(MediaKind::Audio));
+    assert_eq!(info_value(&info, "音声", "コーデック"), Some("PCM (WAV)"));
+    assert_eq!(info_value(&info, "音声", "長さ"), Some("0:01"));
+    assert_eq!(
+        info_value(&info, "音声", "サンプリング周波数"),
+        Some("44.1 kHz")
+    );
+    assert_eq!(info_value(&info, "音声", "ビット深度"), Some("16 bit"));
+    assert_eq!(
+        info_value(&info, "音声", "チャンネル"),
+        Some("2（ステレオ）")
+    );
+    // タグが無ければタグの欄は出さない
+    assert!(info.sections.iter().all(|s| s.title != "タグ"));
+
+    // 中身が壊れていても、ファイルの欄は出して理由を添える
+    let broken = dir.join("broken.mp3");
+    fs::write(&broken, b"not audio").unwrap();
+    let info = info_of(&broken, None);
+    assert_eq!(info_value(&info, "ファイル", "名前"), Some("broken.mp3"));
+    assert!(info.warning.is_some());
+    let _ = fs::remove_dir_all(&dir);
+}

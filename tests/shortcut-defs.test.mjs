@@ -33,6 +33,20 @@ describe("shortcut-defs", () => {
     assert.equal(resolveShortcutAction({ key: ",", ctrlKey: true }, macCtx), null);
   });
 
+  it("I はファイルの情報の開け閉め。動画・音楽の表示中も使え、キーの押しっぱなしは無視する", () => {
+    for (const showingMedia of [false, true]) {
+      const ctx = { isMac: false, showingMedia, showingBook: false };
+      for (const key of ["i", "I"]) {
+        assert.deepEqual(resolveShortcutAction({ key }, ctx), {
+          action: "toggleInfo",
+          preventDefault: false,
+        });
+      }
+      assert.equal(resolveShortcutAction({ key: "i", repeat: true }, ctx), null);
+      assert.equal(resolveShortcutAction({ key: "i", ctrlKey: true }, ctx), null);
+    }
+  });
+
   it("macOS の Cmd+Backspace は削除、単体 Backspace は前の画像として解決される", () => {
     const macCtx = { isMac: true, showingMedia: false, showingBook: false };
     assert.deepEqual(resolveShortcutAction({ key: "Backspace", metaKey: true }, macCtx), {

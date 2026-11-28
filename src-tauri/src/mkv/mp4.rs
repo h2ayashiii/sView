@@ -79,13 +79,13 @@ fn read_box_header<R: Read + Seek>(r: &mut R, limit: u64) -> std::io::Result<Opt
 }
 
 /// メモリ上のスライスから子ボックスを順に辿るイテレータ
-struct SliceBoxes<'a> {
+pub(crate) struct SliceBoxes<'a> {
     data: &'a [u8],
     pos: usize,
 }
 
 impl<'a> SliceBoxes<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
         Self { data, pos: 0 }
     }
 }
@@ -133,15 +133,15 @@ impl<'a> Iterator for SliceBoxes<'a> {
     }
 }
 
-fn find_box<'a>(data: &'a [u8], target: &[u8; 4]) -> Option<&'a [u8]> {
+pub(crate) fn find_box<'a>(data: &'a [u8], target: &[u8; 4]) -> Option<&'a [u8]> {
     SliceBoxes::new(data).find_map(|(k, b)| (&k == target).then_some(b))
 }
 
-fn read_u16(b: &[u8], off: usize) -> Option<u16> {
+pub(crate) fn read_u16(b: &[u8], off: usize) -> Option<u16> {
     Some(u16::from_be_bytes(b.get(off..off + 2)?.try_into().ok()?))
 }
 
-fn read_u32(b: &[u8], off: usize) -> Option<u32> {
+pub(crate) fn read_u32(b: &[u8], off: usize) -> Option<u32> {
     Some(u32::from_be_bytes(b.get(off..off + 4)?.try_into().ok()?))
 }
 
@@ -149,7 +149,7 @@ fn read_i32(b: &[u8], off: usize) -> Option<i32> {
     Some(i32::from_be_bytes(b.get(off..off + 4)?.try_into().ok()?))
 }
 
-fn read_u64(b: &[u8], off: usize) -> Option<u64> {
+pub(crate) fn read_u64(b: &[u8], off: usize) -> Option<u64> {
     Some(u64::from_be_bytes(b.get(off..off + 8)?.try_into().ok()?))
 }
 
@@ -228,7 +228,10 @@ pub(crate) fn looks_like_mp4(header: &[u8]) -> bool {
     )
 }
 
-fn read_moov_bytes<R: Read + Seek>(r: &mut R, file_len: u64) -> std::io::Result<Option<Vec<u8>>> {
+pub(crate) fn read_moov_bytes<R: Read + Seek>(
+    r: &mut R,
+    file_len: u64,
+) -> std::io::Result<Option<Vec<u8>>> {
     seek_to_pos(r, 0)?;
     while let Some(bx) = read_box_header(r, file_len)? {
         if &bx.kind == b"moov" {
@@ -317,7 +320,7 @@ fn parse_mdhd_language(packed: u16) -> Option<String> {
     (s != "und").then_some(s)
 }
 
-fn mp4_audio_codec_name(kind: &[u8; 4]) -> String {
+pub(crate) fn mp4_audio_codec_name(kind: &[u8; 4]) -> String {
     match kind {
         b"mp4a" => "AAC".into(),
         b"Opus" => "Opus".into(),
@@ -409,22 +412,22 @@ struct TrexDefaults {
 }
 
 /// moov のトラック 1 本分のヘッダ解析結果（サンプル表は選ばれたトラックだけ後から展開する）
-struct ParsedTrack<'a> {
-    track_id: u32,
-    handler: [u8; 4],
-    timescale: u32,
-    duration: u64,
-    language: Option<String>,
-    name: Option<String>,
+pub(crate) struct ParsedTrack<'a> {
+    pub(crate) track_id: u32,
+    pub(crate) handler: [u8; 4],
+    pub(crate) timescale: u32,
+    pub(crate) duration: u64,
+    pub(crate) language: Option<String>,
+    pub(crate) name: Option<String>,
     enabled: bool,
-    display: (u32, u32),
+    pub(crate) display: (u32, u32),
     edit: EditOffset,
     has_elst: bool,
-    stsd_entry: Option<([u8; 4], Vec<u8>)>,
-    stbl: &'a [u8],
+    pub(crate) stsd_entry: Option<([u8; 4], Vec<u8>)>,
+    pub(crate) stbl: &'a [u8],
 }
 
-fn parse_mvhd(moov: &[u8]) -> Option<(u32, Option<f64>)> {
+pub(crate) fn parse_mvhd(moov: &[u8]) -> Option<(u32, Option<f64>)> {
     let mvhd = find_box(moov, b"mvhd")?;
     let version = *mvhd.first()?;
     let (timescale, duration) = if version == 1 {
@@ -465,7 +468,7 @@ fn parse_trex_list(moov: &[u8]) -> Vec<TrexDefaults> {
     out
 }
 
-fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrack<'_>> {
+pub(crate) fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrack<'_>> {
     let tkhd = find_box(trak, b"tkhd")?;
     let tkhd_ver = *tkhd.first()?;
     let tkhd_flags = u32::from_be_bytes([0, tkhd[1], tkhd[2], tkhd[3]]);

@@ -554,6 +554,7 @@ async function show() {
   setFitMode();
   placeholder.hidden = true;
   updateChrome();
+  syncInfoWindow();
   if (showingMedia) {
     img.removeAttribute("src");
     releaseBookPages();
@@ -1227,6 +1228,7 @@ function clearView() {
   placeholder.hidden = false;
   updateChrome();
   syncAspectLock();
+  syncInfoWindow();
 }
 
 function step(delta) {
@@ -1582,6 +1584,9 @@ window.addEventListener("keydown", (e) => {
     case "openSettings":
       openSettings();
       break;
+    case "toggleInfo":
+      openInfo(true);
+      break;
     case "deleteCurrent":
       deleteCurrent();
       break;
@@ -1906,6 +1911,8 @@ appWindow.onMoved(scheduleWindowSave).catch(() => {});
 appWindow
   .onFocusChanged(({ payload: focused }) => {
     if (focused && settingsReady) catchUpWindowKindOnFocus();
+    // macOS で複数のビューアを開いているときは、前面に来たビューアのファイルの情報に替える
+    if (focused) syncInfoWindow();
   })
   .catch(() => {});
 
@@ -2082,6 +2089,31 @@ function currentFilePath() {
   return index >= 0 && index < images.length ? images[index] : null;
 }
 
+// 情報ウィンドウに出すファイル。書庫の中の画像なら書庫とその中のエントリ。
+// 本モードの見開きでは前のページ（images[index]）
+function infoTarget() {
+  if (index < 0 || index >= images.length) return { path: null, entry: null };
+  return archivePath
+    ? { path: archivePath, entry: images[index] }
+    : { path: images[index], entry: null };
+}
+
+// ファイルの情報のウィンドウを開く（toggle なら、開いているときは閉じる）
+async function openInfo(toggle = false) {
+  hideContextMenu();
+  try {
+    await invoke("open_info_window", { ...infoTarget(), toggle });
+  } catch (e) {
+    showError(e);
+  }
+}
+
+// 表示するファイルが変わったら、情報ウィンドウが開いていればその情報に替える
+// （開いていなければ Rust 側で何もしない）
+function syncInfoWindow() {
+  invoke("sync_info_window", infoTarget()).catch(() => {});
+}
+
 async function revealCurrent() {
   const path = currentFilePath();
   if (!path) return;
@@ -2096,6 +2128,7 @@ function buildContextMenu() {
   const hasFile = currentFilePath() !== null;
   return [
     { label: REVEAL_LABEL, disabled: !hasFile, action: revealCurrent },
+    { label: "ファイルの情報", accel: "I", disabled: !hasFile, action: () => openInfo() },
     {
       // 「…」は確認ウィンドウが出るときだけ添える
       label: settings.confirmDelete ? "ゴミ箱へ移動…" : "ゴミ箱へ移動",
