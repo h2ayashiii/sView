@@ -419,7 +419,7 @@ pub(crate) struct ParsedTrack<'a> {
     pub(crate) duration: u64,
     pub(crate) language: Option<String>,
     pub(crate) name: Option<String>,
-    pub(crate) enabled: bool,
+    enabled: bool,
     pub(crate) display: (u32, u32),
     edit: EditOffset,
     has_elst: bool,
