@@ -155,10 +155,15 @@ copyButton.addEventListener("click", async () => {
   }, 1500);
 });
 
-// 配色は設定ウィンドウと同じく設定の背景色から作り、変わったら追従する
-listen("settings-changed", (event) => applyTheme(normalizeSettings(event.payload)));
+// 配色は設定ウィンドウと同じく設定の背景色から作り、変わったら追従する。
+// 背景は設定ウィンドウと同じく「背景の不透明度」によらず常に不透明（100%）にする
+function applyInfoTheme(settings) {
+  applyTheme({ ...settings, backgroundOpacity: 100 });
+}
 
-applyTheme(SETTINGS_DEFAULTS);
+listen("settings-changed", (event) => applyInfoTheme(normalizeSettings(event.payload)));
+
+applyInfoTheme(SETTINGS_DEFAULTS);
 invoke("load_settings")
-  .then((saved) => applyTheme(normalizeSettings(saved)))
+  .then((saved) => applyInfoTheme(normalizeSettings(saved)))
   .catch(() => {});
