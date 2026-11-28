@@ -674,6 +674,14 @@ fn natural_sort_handles_leading_zeros_and_plain_names() {
 fn image_extension_detection() {
     assert!(is_image(Path::new("/x/photo.JPG")));
     assert!(is_image(Path::new("/x/photo.webp")));
+    assert_eq!(
+        is_image(Path::new("/x/photo.HEIC")),
+        cfg!(target_os = "macos")
+    );
+    assert_eq!(
+        is_image(Path::new("/x/photo.heif")),
+        cfg!(target_os = "macos")
+    );
     assert!(!is_image(Path::new("/x/notes.txt")));
     assert!(!is_image(Path::new("/x/noext")));
 }
@@ -1001,7 +1009,7 @@ fn dialog_text_loses_quotes_and_newlines() {
     assert!(!text.contains('\n'));
 }
 
-/// 対応拡張子の一覧は lib.rs / main.js / tauri.conf.json にあり、手で揃えるしかない。ずれたらここで落として気付けるようにする
+/// 対応拡張子の一覧（build.rs 生成定数 / media-formats.js / tauri.conf.json / tauri.macos.conf.json）がずれたらここで気付けるようにする
 #[test]
 fn supported_extensions_stay_in_sync() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))

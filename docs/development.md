@@ -56,7 +56,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 - テストは Rust 側（`src-tauri/src/lib.rs` の `#[cfg(test)] mod tests`）だけです。フロントエンドの自動テストはありません
 - `cargo test` も Tauri をリンクするため、OS ごとの前提条件（上記）が必要です。CI と同じく Linux で走らせる場合は `libgtk-3-dev` `libwebkit2gtk-4.1-dev` `libsoup-3.0-dev` `pkg-config` を入れてください（Linux は配布対象外で、テストのためにビルドできる状態だけを保っています）
-- 対応拡張子の一覧は `lib.rs`・`src/main.js`・`tauri.conf.json` の 3 か所にあり、ずれるとテスト（`supported_extensions_stay_in_sync`）が失敗します
+- 対応拡張子は `media-formats.json` で管理し、`npm run sync:formats` で `src/viewer/media-formats.js`・`src-tauri/tauri.conf.json`・`src-tauri/tauri.macos.conf.json` へ反映します。ずれると `npm run check:formats` と `supported_extensions_stay_in_sync` テストが失敗します
 
 ## CI（GitHub Actions）
 

@@ -81,6 +81,7 @@ fn generate_media_exts() {
 }
 
 fn main() {
+    println!("cargo:rerun-if-changed=tauri.macos.conf.json");
     generate_media_exts();
     tauri_build::build()
 }
