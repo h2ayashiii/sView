@@ -422,6 +422,7 @@ pub(crate) struct ParsedTrack<'a> {
     pub(crate) enabled: bool,
     pub(crate) display: (u32, u32),
     edit: EditOffset,
+    has_elst: bool,
     pub(crate) stsd_entry: Option<([u8; 4], Vec<u8>)>,
     pub(crate) stbl: &'a [u8],
 }
@@ -510,7 +511,7 @@ pub(crate) fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrac
         if s.is_empty()
             || matches!(
                 s,
-                "SoundHandler" | "VideoHandler" | "Core Media Audio" | "Core Media Video"
+                "SoundHandler" | "Core Media Audio" | "VideoHandler" | "Core Media Video"
             )
         {
             None
@@ -527,6 +528,9 @@ pub(crate) fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrac
         .and_then(|entries| SliceBoxes::new(entries).next())
         .map(|(k, b)| (k, b.to_vec()));
 
+    let has_elst = find_box(trak, b"edts")
+        .and_then(|e| find_box(e, b"elst"))
+        .is_some();
     let edit = parse_elst(trak, movie_timescale, timescale);
 
     Some(ParsedTrack {
@@ -539,6 +543,7 @@ pub(crate) fn parse_trak(trak: &[u8], movie_timescale: u32) -> Option<ParsedTrac
         enabled,
         display: (disp_w, disp_h),
         edit,
+        has_elst,
         stsd_entry,
         stbl,
     })
@@ -818,6 +823,7 @@ fn parse_mp4_audio_track(trak: &ParsedTrack<'_>) -> Option<RemuxAudio> {
                 number: trak.track_id as u64,
                 codec: RemuxAudioCodec::Aac,
                 config: asc,
+                opus_head: None,
                 codec_string: format!("mp4a.40.{object}"),
                 channels,
                 timescale: core_rate,
@@ -828,13 +834,12 @@ fn parse_mp4_audio_track(trak: &ParsedTrack<'_>) -> Option<RemuxAudio> {
         }
         b"Opus" => {
             let dops = find_box(children, b"dOps")?;
-            if dops.len() < 11 {
-                return None;
-            }
+            let opus_head = super::webm::dops_to_opus_head(dops)?;
             Some(RemuxAudio {
                 number: trak.track_id as u64,
                 codec: RemuxAudioCodec::Opus,
                 config: dops.to_vec(),
+                opus_head: Some(opus_head),
                 codec_string: "opus".into(),
                 channels: dops[1] as u16,
                 timescale: 48000,
@@ -1101,18 +1106,30 @@ impl Mp4Source {
             .filter(|_| audio_track.is_some())
             .map(|i| audio_traks[i]);
 
+        // Opus in ISOBMFF 仕様に従い、elst が無い Opus トラックは dOps の PreSkip 分を先頭オフセットとする
+        let audio_edit = selected_audio_trak.map_or(EditOffset::default(), |t| {
+            let mut edit = t.edit;
+            if !t.has_elst
+                && let Some(a) = &audio_track
+                && a.codec == RemuxAudioCodec::Opus
+            {
+                edit.media_offset =
+                    (a.output_pre_skip() as i128 * t.timescale as i128 / 48_000) as i64;
+            }
+            edit
+        });
+
         // 選ばれた映像・音声トラックだけサンプル表を構築する（不要トラックの展開や clone を省く）
         let (mut video_samples, mut video_stats) =
             parse_sample_table(video_trak.stbl, video_trak.edit);
         let mut audio_samples = selected_audio_trak
-            .map(|t| parse_sample_table(t.stbl, t.edit).0)
+            .map(|t| parse_sample_table(t.stbl, audio_edit).0)
             .unwrap_or_default();
 
         // 通常 MP4 のサンプルが空で fragmented MP4（moof + mdat）なら moof ヘッダを集める
         if video_samples.is_empty() {
             seek_to_pos(&mut reader, 0).map_err(|e| format!("MP4 を読めません: {e}"))?;
             let audio_id = selected_audio_trak.map(|t| t.track_id);
-            let audio_edit = selected_audio_trak.map_or(EditOffset::default(), |t| t.edit);
             let mut moof_stats = (0.0f64, 0usize, None);
             while let Some(bx) = read_box_header(&mut reader, file_len)
                 .map_err(|e| format!("MP4 を読めません: {e}"))?

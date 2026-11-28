@@ -5,6 +5,7 @@ pub(crate) mod remux;
 pub(crate) mod subtitles;
 #[cfg(target_os = "macos")]
 pub(crate) mod vt;
+pub(crate) mod webm;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -25,6 +26,8 @@ pub(crate) use remux::*;
 pub(crate) use remux::{MkvOpened, MkvStream};
 #[cfg(test)]
 pub(crate) use subtitles::*;
+#[cfg(test)]
+pub(crate) use webm::*;
 
 // ---- 動画ストリーム（MKV リマックス・macOS AV1 変換）のコマンド ----
 
