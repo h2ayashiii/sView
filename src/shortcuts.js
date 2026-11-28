@@ -71,11 +71,16 @@ function build() {
   }
 }
 
-// 配色は設定ウィンドウと同じく設定の背景色から作り、変わったら追従する
-listen("settings-changed", (event) => applyTheme(normalizeSettings(event.payload)));
+// 配色は設定ウィンドウと同じく設定の背景色から作り、変わったら追従する。
+// 背景は設定ウィンドウと同じく「背景の不透明度」によらず常に不透明（100%）にする
+function applyShortcutsTheme(settings) {
+  applyTheme({ ...settings, backgroundOpacity: 100 });
+}
+
+listen("settings-changed", (event) => applyShortcutsTheme(normalizeSettings(event.payload)));
 
 build();
-applyTheme(SETTINGS_DEFAULTS);
+applyShortcutsTheme(SETTINGS_DEFAULTS);
 invoke("load_settings")
-  .then((saved) => applyTheme(normalizeSettings(saved)))
+  .then((saved) => applyShortcutsTheme(normalizeSettings(saved)))
   .catch(() => {});
