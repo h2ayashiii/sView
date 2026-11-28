@@ -138,6 +138,13 @@ pub(crate) fn setup_viewer_window(window: &WebviewWindow) {
     if let Err(e) = mac_pointer::install(window) {
         log::warn!("カーソルの追跡を開始できません: {e}");
     }
+    // macOS では透過ウィンドウ（transparent: true）に OS の影（hasShadow: true）が残ると、
+    // 背景の不透明度を下げても WindowServer が不透明ウィンドウ並みの濃い輪郭線と影を描いて
+    // 枠だけが目立つ（CSS の角丸も粗く縁取られる）ため、ビューアでは影を切る
+    #[cfg(target_os = "macos")]
+    if let Err(e) = window.set_shadow(false) {
+        log::warn!("ウィンドウの影を無効にできません: {e}");
+    }
     // サイズを整えてから見せる（開いた直後のちらつきを避ける）
     let _ = window.show();
 }
