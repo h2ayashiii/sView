@@ -1,6 +1,7 @@
 mod archive;
 mod assoc;
 mod audio;
+mod info;
 mod listing;
 mod logging;
 mod media;
@@ -301,7 +302,7 @@ pub fn run() {
             tauri::WindowEvent::CloseRequested { api, .. } => match window.label() {
                 // 設定ウィンドウは閉じずに隠す。破棄してしまうと
                 // 開き直すたびに作り直しになり、閉じ忘れるとアプリが残り続ける
-                "settings" | "shortcuts" => {
+                "settings" | "shortcuts" | info::INFO_LABEL => {
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -378,6 +379,7 @@ pub fn run() {
         .manage(AspectLock::new())
         .manage(FolderWatcher::new())
         .manage(MkvStreams(PerWindow::new()))
+        .manage(info::InfoTargetState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             window::set_window_kind,
             window::save_window_geometry,
@@ -398,6 +400,10 @@ pub fn run() {
             listing::delete_image,
             audio::audio_info,
             audio::audio_artwork,
+            info::media_info,
+            info::open_info_window,
+            info::sync_info_window,
+            info::get_info_target,
             mkv::subtitles::video_subtitles,
             mkv::video_needs_stream,
             mkv::mkv_open,

@@ -39,7 +39,7 @@ MPL-2.0 について
 入手できます。
 
 
-依存クレート一覧（326 件）
+依存クレート一覧（329 件）
 ========================================
 
 --- MIT OR Apache-2.0  (163 件) ---
@@ -371,7 +371,7 @@ MPL-2.0 について
   windows-version 0.1.7
       https://github.com/microsoft/windows-rs
 
---- MIT  (54 件) ---
+--- MIT  (55 件) ---
 
   block2 0.6.2
       https://github.com/madsmtm/objc2
@@ -405,6 +405,8 @@ MPL-2.0 について
       https://github.com/bancek/rust-http-range.git
   ico 0.5.0
       https://github.com/mdsteele/rust-ico
+  imagesize 0.15.0
+      https://github.com/Roughsketch/imagesize
   infer 0.19.0
       https://github.com/bojand/infer
   mio 1.2.2
@@ -668,6 +670,15 @@ MPL-2.0 について
   winapi-util 0.1.11
       https://github.com/BurntSushi/winapi-util
 
+--- BSD-2-Clause  (3 件) ---
+
+  kamadak-exif 0.6.2
+      https://github.com/kamadak/exif-rs
+  mutate_once 0.1.2
+      https://github.com/kamadak/mutate_once-rs
+  rav1d 1.1.0
+      https://github.com/memorysafety/rav1d
+
 --- Apache-2.0  (2 件) ---
 
   sync_wrapper 1.0.2
@@ -743,11 +754,6 @@ MPL-2.0 について
 
   dpi 0.1.2
       https://github.com/rust-windowing/winit
-
---- BSD-2-Clause  (1 件) ---
-
-  rav1d 1.1.0
-      https://github.com/memorysafety/rav1d
 
 --- BSD-3-Clause AND MIT  (1 件) ---
 

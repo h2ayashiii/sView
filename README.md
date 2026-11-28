@@ -56,6 +56,7 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 - **本モード** — 画像を 2 ページずつ並べて見開きで表示できます。左開き・右開き（日本の漫画など）を切り替えられます
 - **フォルダの変更に追従** — 開いているフォルダにファイルを追加・削除すると、開き直さずに一覧へ反映されます
 - **ゴミ箱へ移動** — 表示中のファイルを OS のゴミ箱へ移動できます（完全削除はしません）
+- **ファイルの情報** — `I` キーか右クリックメニューで、画像の解像度・Exif（撮影機材・撮影日時など）、動画・音楽のコーデック・タグなどを別のウィンドウに出せます
 - **右クリックメニューと設定** — 右クリックでメニュー、`⌘ ,`（Windows は `Ctrl` + `,`）で設定ウィンドウが開きます
 - **対応形式** — 画像: avif / bmp / gif / ico / jfif / jpe / jpeg / jpg / png / svg / tif / tiff / webp、動画: mp4 / m4v / webm / mov / mkv、音楽: mp3 / m4a / aac / flac / wav / ogg / opus、圧縮フォルダ: zip / cbz（中の画像のみ）
 - **対応 OS** — Windows 10/11・macOS 10.15 以降（Apple Silicon）
@@ -78,6 +79,7 @@ SmartScreen の警告が出た場合は「詳細情報」→「実行」を選�
 | [docs/specs/files.md](docs/specs/files.md) | フォルダ・圧縮フォルダの探索範囲と読み込み、関連付け、フォルダの変更への追従、ファイルの削除 |
 | [docs/specs/video.md](docs/specs/video.md) | 動画の再生・再生操作・対応形式 |
 | [docs/specs/audio.md](docs/specs/audio.md) | 音楽の再生・アートワークと対応形式 |
+| [docs/specs/info.md](docs/specs/info.md) | ファイルの情報（画像の Exif、動画・音楽のコーデックやタグ）の表示 |
 | [docs/specs/window-size.md](docs/specs/window-size.md) | ウィンドウサイズの挙動（自由に変更 / メディアに合わせる）と大きさ・位置の保存 |
 | [docs/specs/settings.md](docs/specs/settings.md) | 設定項目・ログ・キャッシュの置き場所 |
 | [docs/architecture.md](docs/architecture.md) | 全体構成・設計方針・プラットフォーム別の注意点 |

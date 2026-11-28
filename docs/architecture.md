@@ -26,11 +26,14 @@ sView/
 │   ├── style.css            # オーバーレイ UI（自動表示・自動非表示）・再生操作カード・コンテキストメニュー
 │   ├── settings.html        # 設定ウィンドウ
 │   ├── settings.js          # 設定ウィンドウの UI 生成・保存
-│   ├── settings.css         # 設定ウィンドウとショートカット一覧の見た目（本体と同じ配色）
+│   ├── settings.css         # 設定ウィンドウ・ショートカット一覧・ファイルの情報の見た目（本体と同じ配色）
 │   ├── settings-defs.js     # 設定項目の定義（本体と設定ウィンドウで共有）
 │   ├── shortcuts.html       # ショートカット一覧ウィンドウ（設定ウィンドウから開く）
 │   ├── shortcuts.js         # ショートカット一覧の内容（main.js のキー操作の写し）
-│   ├── theme.js             # 設定ウィンドウとショートカット一覧の配色を設定から作る
+│   ├── info.html            # ファイルの情報ウィンドウ（右クリックメニュー / I キーで開く）
+│   ├── info.js              # ファイルの情報の表示（Rust の media_info の結果を並べる）
+│   ├── info-format.js       # ファイルの情報の日時の書き方・コピー用テキスト
+│   ├── theme.js             # 設定ウィンドウ・ショートカット一覧・ファイルの情報の配色を設定から作る
 │   └── audio-artwork.svg    # アートワークの無い音楽ファイルに出す既定の絵
 ├── src-tauri/
 │   ├── src/
@@ -41,6 +44,7 @@ sView/
 │   │   ├── archive.rs       # zip / cbz 書庫のキャッシュ・一覧・画像取り出し
 │   │   ├── listing.rs       # フォルダ/書庫の一覧作成・ゴミ箱への移動（trash）
 │   │   ├── audio.rs         # 音楽のタグとアートワークの読み取り（lofty）
+│   │   ├── info/            # ファイルの情報（画像の解像度・Exif / 動画のトラック / 音楽の形式とタグ）・情報ウィンドウ
 │   │   ├── watcher.rs       # フォルダの変更監視（notify）
 │   │   ├── window.rs        # ウィンドウの大きさ・位置の保存（window.json）・縦横比維持・ドラッグ制御
 │   │   ├── settings.rs      # 設定（settings.json）の読み書き・設定/ショートカットウィンドウの表示
@@ -77,6 +81,7 @@ sView/
 - ファイル一覧の作成（`listing.rs` / `media.rs`）と、圧縮フォルダからの画像の取り出し（`archive.rs`）
 - フォルダの変更の監視（`watcher.rs` / `notify`）、ゴミ箱への移動（`listing.rs` / `trash`）
 - 音楽のタグとアートワークの読み取り（`audio.rs` / `lofty`）
+- ファイルの情報の読み取り（`info/`）。画像の解像度は `imagesize`、Exif は `kamadak-exif`、動画は MP4 の moov（`mkv/mp4.rs` のボックス読み取りを共用）と Matroska のヘッダ（`matroska-demuxer`）、音楽は `lofty`
 - MKV のテキスト字幕（SRT / ASS）の取り出し（`mkv/subtitles.rs`）と、macOS での MKV / AV1 再生のための fragmented MP4 リマックスおよび `rav1d` + VideoToolbox リアルタイム変換（`mkv/remux.rs` / `mkv/fmp4.rs` / `mkv/mp4.rs` / `mkv/av1.rs` / `mkv/vt.rs`）
 - 設定（`settings.rs` / `settings.json`）とウィンドウの大きさ・位置（`window.rs` / `window.json`）の保存・縦横比維持
 - 起動時に渡されたファイルの受け取り（`lib.rs`）、OS への関連付け（`assoc.rs` / `platform/`）、ログ（`logging.rs`）
@@ -88,8 +93,9 @@ sView/
 | `main` | `index.html` | 本体。macOS で Finder / Dock から追加で開いたファイルは `viewer-N` という同じ作りのウィンドウで開く |
 | `settings` | `settings.html` | 設定ウィンドウ。閉じても隠すだけ |
 | `shortcuts` | `shortcuts.html` | ショートカット一覧。閉じても隠すだけ |
+| `info` | `info.html` | ファイルの情報。閉じても隠すだけ。出すファイルは Rust 側（`InfoTargetState`）が覚えていて、`info-target` イベントで届く |
 
-どれも `tauri.conf.json` に定義し、起動時に Rust 側（`create_configured_windows`）で作ります。許可する API はウィンドウごとに `capabilities/` の別ファイル（`default.json` / `settings.json` / `shortcuts.json`）で決めています。
+どれも `tauri.conf.json` に定義し、起動時に Rust 側（`create_configured_windows`）で作ります。許可する API はウィンドウごとに `capabilities/` の別ファイル（`default.json` / `settings.json` / `shortcuts.json` / `info.json`）で決めています。
 
 ## プラットフォーム別の注意点
 

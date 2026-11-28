@@ -42,6 +42,30 @@ export interface AudioInfo {
   album: string | null;
 }
 
+export interface InfoRow {
+  label: string;
+  value: string;
+  /** 日時の行なら UNIX 時刻（ミリ秒）。value には UTC で書いたものが入る */
+  time?: number;
+}
+
+export interface InfoSection {
+  title: string;
+  rows: InfoRow[];
+}
+
+export interface MediaInfo {
+  name: string;
+  kind: MediaKind | null;
+  sections: InfoSection[];
+  warning?: string;
+}
+
+export interface InfoTarget {
+  path: string;
+  entry: string | null;
+}
+
 export interface SubtitleCue {
   start: number;
   end: number;
@@ -167,6 +191,22 @@ export interface TauriCommandMap {
   audio_info: {
     args: { path: string };
     result: AudioInfo;
+  };
+  media_info: {
+    args: { path: string; entry?: string | null };
+    result: MediaInfo;
+  };
+  open_info_window: {
+    args: { path: string | null; entry?: string | null; toggle?: boolean | null };
+    result: undefined;
+  };
+  sync_info_window: {
+    args: { path: string | null; entry?: string | null };
+    result: undefined;
+  };
+  get_info_target: {
+    args: Record<never, never>;
+    result: InfoTarget | null;
   };
   audio_artwork: {
     args: { path: string };

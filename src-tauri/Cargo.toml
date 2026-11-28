@@ -35,6 +35,10 @@ lofty = "0.25"
 matroska-demuxer = "0.8"
 # MKV の字幕に掛かっている zlib 圧縮を戻す。zip と同じ版・同じ実装（zlib-rs）にそろえる
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# ファイルの情報: 画像の Exif（撮影機材・撮影日時など）を読む
+kamadak-exif = "0.6"
+# ファイルの情報: 画像の解像度をヘッダだけから読む（画像全体はデコードしない）
+imagesize = { version = "0.15", default-features = false, features = ["bmp", "gif", "heif", "ico", "jpeg", "png", "tiff", "webp"] }
 
 # 拡張子の関連付け（Windows のレジストリ操作）
 [target.'cfg(windows)'.dependencies]
