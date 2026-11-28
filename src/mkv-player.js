@@ -1,5 +1,5 @@
 // MKV / AV1 動画を MSE（Media Source Extensions）で再生する（macOS 用）。
-// - MKV（H.264 / HEVC、および M3 以降の AV1）は再エンコードせずに fragmented MP4 へ詰め直す。
+// - MKV（H.264 / HEVC / VP9、および M3 以降の AV1）は再エンコードせずに fragmented MP4 へ詰め直す。
 // - AV1 ハードウェアデコーダが無い Mac（M1 / M2 世代など）では、Rust 側が rav1d でデコードし
 //   VideoToolbox（H.264）へリアルタイム変換した fragmented MP4 を流す。
 // Windows の WebView2 は MKV も AV1 もそのまま再生できるので、この経路は使わない。

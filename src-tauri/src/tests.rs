@@ -2163,20 +2163,25 @@ fn vp9_codec_helpers_and_frame_header_parsing() {
     );
     assert_eq!(vp9_codec_string(&[0, 41, 0x80]), None);
     assert_eq!(vp9_codec_string(&[4, 41, 0x80, 2, 2, 2, 0, 0]), None);
+    // 仕様外のレベル値（25 など）は弾く
+    assert_eq!(vp9_codec_string(&[0, 25, 0x80, 1, 1, 1, 0, 0]), None);
 
-    // Matroska の V_VP9 CodecPrivate（TLV）
+    // Matroska の V_VP9 CodecPrivate（TLV）: 仕様外のレベル 25 は無視してフォールバックさせる
     let private = [1, 1, 2, 2, 1, 50, 3, 1, 10, 4, 1, 1];
     assert_eq!(
         parse_mkv_vp9_private(&private),
         (Some(2), Some(50), Some(10), Some(1))
     );
+    assert_eq!(parse_mkv_vp9_private(&[2, 1, 25]).1, None);
 
-    // 解像度・フレームレートからのレベル算出
+    // 解像度・フレームレートからのレベル算出（WebKit の上限に合わせ推定値は 60 まで）
     assert_eq!(vp9_level_for(64, 64, 24.0), 10);
     assert_eq!(vp9_level_for(1920, 1080, 30.0), 40);
     assert_eq!(vp9_level_for(1920, 1080, 60.0), 41);
     assert_eq!(vp9_level_for(3840, 2160, 30.0), 50);
     assert_eq!(vp9_level_for(3840, 2160, 60.0), 51);
+    assert_eq!(vp9_level_for(3840, 2160, 1000.0), 52);
+    assert_eq!(vp9_level_for(7680, 4320, 60.0), 60);
 
     // Profile 0・8bit・BT.709・limited のキーフレーム非圧縮ヘッダ
     // frame_marker=10, profile_low=0, profile_high=0, show_existing=0, frame_type=0, show=1, err_res=0 => 0x82
@@ -2211,6 +2216,16 @@ fn vp9_codec_helpers_and_frame_header_parsing() {
     let mut vpcc = [0, 50, (8 << 4) | (1 << 1), 9, 16, 9, 0, 0];
     merge_vp9_header_into_vpcc(&mut vpcc, hdr_p2);
     assert_eq!(vpcc, [2, 50, (10 << 4) | (1 << 1), 9, 16, 9, 0, 0]);
+    assert_eq!(
+        vpcc_color_info(&vpcc),
+        Some(ColorInfo {
+            primaries: 9,
+            transfer: 16,
+            matrix: 9,
+            full_range: false,
+        })
+    );
+    assert_eq!(vpcc_color_info(&[0, 10, 0x80, 2, 2, 2, 0, 0]), None);
 
     // スーパーフレーム（1 枚目が非キー、2 枚目がキーフレーム）からキーフレームを探せる
     let non_kf = [0x86, 0x00]; // frame_type = 1
@@ -2231,6 +2246,37 @@ fn vp9_codec_helpers_and_frame_header_parsing() {
             matrix: 1,
         })
     );
+    // フレーム長の合計がペイロード長と一致しない偽のインデックスは弾く
+    let mut bad_superframe = vec![0x00];
+    bad_superframe.extend_from_slice(&superframe);
+    assert_eq!(parse_vp9_frame_header(&bad_superframe), None);
+
+    // AlphaMode = 1 の透過 VP9 MKV は WebKit が透過デコード非対応のためエラーにする
+    let ebml_alpha_vp9: &[u8] = &[
+        0x1A, 0x45, 0xDF, 0xA3, 0x93, // EBML (19 bytes)
+        0x42, 0x82, 0x88, b'm', b'a', b't', b'r', b'o', b's', b'k', b'a', // DocType
+        0x42, 0x87, 0x81, 0x04, // DocTypeVersion = 4
+        0x42, 0x85, 0x81, 0x02, // DocTypeReadVersion = 2
+        0x18, 0x53, 0x80, 0x67, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Segment
+        0x15, 0x49, 0xA9, 0x66, 0x88, // Info (8 bytes)
+        0x4D, 0x80, 0x81, b't', // MuxingApp = "t"
+        0x57, 0x41, 0x81, b't', // WritingApp = "t"
+        0x16, 0x54, 0xAE, 0x6B, 0x9F, // Tracks (31 bytes)
+        0xAE, 0x9D, // TrackEntry (29 bytes)
+        0xD7, 0x81, 0x01, // TrackNumber = 1
+        0x73, 0xC5, 0x81, 0x01, // TrackUID = 1
+        0x83, 0x81, 0x01, // TrackType = Video (1)
+        0x86, 0x85, b'V', b'_', b'V', b'P', b'9', // CodecID = "V_VP9"
+        0xE0, 0x8A, // Video (10 bytes)
+        0xB0, 0x81, 0x40, // PixelWidth = 64
+        0xBA, 0x81, 0x40, // PixelHeight = 64
+        0x53, 0xC0, 0x81, 0x01, // AlphaMode = 1
+        0x1F, 0x43, 0xB6, 0x75, 0x84, 0xE7, 0x81, 0x00, // Cluster + Timestamp = 0
+    ];
+    let mkv_alpha =
+        matroska_demuxer::MatroskaFile::open(std::io::Cursor::new(ebml_alpha_vp9)).unwrap();
+    let err = remux_video_track(&mkv_alpha.tracks()[0]).unwrap_err();
+    assert!(err.contains("VP9"), "err={err}");
 }
 
 #[test]
@@ -2242,9 +2288,10 @@ fn vp9_mkv_is_remuxed_to_fragmented_mp4() {
     assert!(!opened.transcoded);
     assert!(!opened.can_transcode);
 
-    // 初期化セグメントに vp09 と FullBox の vpcC（version=1, flags=0, BT.709）が入る
+    // 初期化セグメントに vp09 と FullBox の vpcC（version=1, flags=0, BT.709）および colr（nclx）が入る
     let init = stream.init_segment();
     assert!(init.windows(4).any(|w| w == b"vp09"));
+    assert!(init.windows(4).any(|w| w == b"colr"));
     let vpcc_pos = init
         .windows(4)
         .position(|w| w == b"vpcC")
