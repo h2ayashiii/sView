@@ -122,18 +122,18 @@ fn read_leb128(data: &[u8]) -> Option<(u64, usize)> {
     None
 }
 
-/// ビット単位の簡易リーダー（AV1 Sequence Header OBU の先頭解析用）
-struct BitReader<'a> {
+/// ビット単位の簡易リーダー（AV1 Sequence Header OBU / VP9 ヘッダの解析用）
+pub(crate) struct BitReader<'a> {
     data: &'a [u8],
     bit_pos: usize,
 }
 
 impl<'a> BitReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
         Self { data, bit_pos: 0 }
     }
 
-    fn read_bits(&mut self, n: usize) -> Option<u32> {
+    pub(crate) fn read_bits(&mut self, n: usize) -> Option<u32> {
         if n > 32 || self.bit_pos + n > self.data.len() * 8 {
             return None;
         }
@@ -147,7 +147,7 @@ impl<'a> BitReader<'a> {
         Some(out)
     }
 
-    fn read_bit(&mut self) -> Option<bool> {
+    pub(crate) fn read_bit(&mut self) -> Option<bool> {
         Some(self.read_bits(1)? != 0)
     }
 

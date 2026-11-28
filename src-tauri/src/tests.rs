@@ -2149,3 +2149,154 @@ fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
     assert!(dst_y.iter().all(|&v| v == 200));
     assert_eq!(&dst_uv[..4], &[90, 150, 90, 150]);
 }
+
+#[test]
+fn vp9_codec_helpers_and_frame_header_parsing() {
+    // vpcC（8 バイト）から codecs 文字列を作る
+    assert_eq!(
+        vp9_codec_string(&[0, 41, 0x80, 1, 1, 1, 0, 0]).as_deref(),
+        Some("vp09.00.41.08")
+    );
+    assert_eq!(
+        vp9_codec_string(&[2, 51, 0xA2, 9, 16, 9, 0, 0]).as_deref(),
+        Some("vp09.02.51.10")
+    );
+    assert_eq!(vp9_codec_string(&[0, 41, 0x80]), None);
+    assert_eq!(vp9_codec_string(&[4, 41, 0x80, 2, 2, 2, 0, 0]), None);
+
+    // Matroska の V_VP9 CodecPrivate（TLV）
+    let private = [1, 1, 2, 2, 1, 50, 3, 1, 10, 4, 1, 1];
+    assert_eq!(
+        parse_mkv_vp9_private(&private),
+        (Some(2), Some(50), Some(10), Some(1))
+    );
+
+    // 解像度・フレームレートからのレベル算出
+    assert_eq!(vp9_level_for(64, 64, 24.0), 10);
+    assert_eq!(vp9_level_for(1920, 1080, 30.0), 40);
+    assert_eq!(vp9_level_for(1920, 1080, 60.0), 41);
+    assert_eq!(vp9_level_for(3840, 2160, 30.0), 50);
+    assert_eq!(vp9_level_for(3840, 2160, 60.0), 51);
+
+    // Profile 0・8bit・BT.709・limited のキーフレーム非圧縮ヘッダ
+    // frame_marker=10, profile_low=0, profile_high=0, show_existing=0, frame_type=0, show=1, err_res=0 => 0x82
+    // sync=0x49,0x83,0x42, color_space=2 (010), color_range=0 => 0b0100_0000 = 0x40
+    let kf_p0 = [0x82, 0x49, 0x83, 0x42, 0x40];
+    assert_eq!(
+        parse_vp9_frame_header(&kf_p0),
+        Some(Vp9FrameHeader {
+            profile: 0,
+            bit_depth: 8,
+            chroma_subsampling: 0,
+            full_range: false,
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+        })
+    );
+
+    // Profile 2・10bit・BT.2020・limited のキーフレーム
+    // frame_marker=10, profile_low=0, profile_high=1, show_existing=0, frame_type=0, show=1, err_res=0 => 0x92
+    // sync=0x49,0x83,0x42, ten_or_twelve=0, color_space=5 (101), color_range=0 => 0b0101_0000 = 0x50
+    let kf_p2 = [0x92, 0x49, 0x83, 0x42, 0x50];
+    let hdr_p2 = parse_vp9_frame_header(&kf_p2).unwrap();
+    assert_eq!(hdr_p2.profile, 2);
+    assert_eq!(hdr_p2.bit_depth, 10);
+    assert_eq!(
+        (hdr_p2.primaries, hdr_p2.transfer, hdr_p2.matrix),
+        (9, 14, 9)
+    );
+
+    // Matroska Colour の HDR PQ（transfer=16）と 4:2:0 colocated（1）は上書きせず保護する
+    let mut vpcc = [0, 50, (8 << 4) | (1 << 1), 9, 16, 9, 0, 0];
+    merge_vp9_header_into_vpcc(&mut vpcc, hdr_p2);
+    assert_eq!(vpcc, [2, 50, (10 << 4) | (1 << 1), 9, 16, 9, 0, 0]);
+
+    // スーパーフレーム（1 枚目が非キー、2 枚目がキーフレーム）からキーフレームを探せる
+    let non_kf = [0x86, 0x00]; // frame_type = 1
+    let mut superframe = Vec::new();
+    superframe.extend_from_slice(&non_kf);
+    superframe.extend_from_slice(&kf_p0);
+    // marker: 0b110_00_001 = 0xC1（1 バイト長 × 2 フレーム）
+    superframe.extend_from_slice(&[0xC1, non_kf.len() as u8, kf_p0.len() as u8, 0xC1]);
+    assert_eq!(
+        parse_vp9_frame_header(&superframe),
+        Some(Vp9FrameHeader {
+            profile: 0,
+            bit_depth: 8,
+            chroma_subsampling: 0,
+            full_range: false,
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+        })
+    );
+}
+
+#[test]
+fn vp9_mkv_is_remuxed_to_fragmented_mp4() {
+    let path = remux_testdata("vp9.mkv");
+    let (mut stream, opened) = MkvStream::open(&path, None).unwrap();
+    assert_eq!(opened.video_codec, "vp09.00.10.08");
+    assert_eq!(opened.audio_codec.as_deref(), Some("opus"));
+    assert!(!opened.transcoded);
+    assert!(!opened.can_transcode);
+
+    // 初期化セグメントに vp09 と FullBox の vpcC（version=1, flags=0, BT.709）が入る
+    let init = stream.init_segment();
+    assert!(init.windows(4).any(|w| w == b"vp09"));
+    let vpcc_pos = init
+        .windows(4)
+        .position(|w| w == b"vpcC")
+        .expect("init セグメントに vpcC が含まれること");
+    let vpcc_size = u32::from_be_bytes(init[vpcc_pos - 4..vpcc_pos].try_into().unwrap()) as usize;
+    assert_eq!(vpcc_size, 20); // header(8) + version/flags(4) + payload(8)
+    assert_eq!(&init[vpcc_pos + 4..vpcc_pos + 8], &[1, 0, 0, 0]);
+    let vpcc_body = &init[vpcc_pos + 8..vpcc_pos + 16];
+    assert_eq!(vpcc_body[0], 0); // profile 0
+    assert_eq!(vpcc_body[1], 10); // level 1.0 (64x64 24fps)
+    assert_eq!(vpcc_body[2] >> 4, 8); // 8-bit
+    assert_eq!(&vpcc_body[3..6], &[1, 1, 1]); // BT.709
+
+    // 全断片を順に読み切って全 72 映像フレーム + 音声が連続して得られる
+    let mut video_count = 0usize;
+    let mut video_end: Option<i64> = None;
+    let mut audio_end: Option<i64> = None;
+    let mut fragments = 0usize;
+    loop {
+        let fragment = stream.read_fragment().unwrap();
+        if fragment.is_empty() {
+            break;
+        }
+        fragments += 1;
+        let tracks = parse_fragment(&fragment);
+        let v = &tracks[&1];
+        assert!(v[0].keyframe);
+        assert!(v.iter().all(|s| s.pts == s.dts));
+        if let Some(end) = video_end {
+            assert_eq!(v[0].dts, end);
+        }
+        let v_last = v.last().unwrap();
+        video_end = Some(v_last.dts + v_last.duration);
+        video_count += v.len();
+        if let Some(a) = tracks.get(&2) {
+            if let Some(end) = audio_end {
+                assert_eq!(a[0].dts, end);
+            }
+            let a_last = a.last().unwrap();
+            audio_end = Some(a_last.dts + a_last.duration);
+        }
+    }
+    assert!(fragments >= 2);
+    assert_eq!(video_count, 72);
+    assert!(audio_end.unwrap() > 96_000);
+
+    // 途中（1.25 秒）へのシークは直前のキーフレーム（1.0 秒）から始まる
+    let sought = stream.seek(1.25).unwrap();
+    assert!((sought - 1.0).abs() < 0.05, "sought={sought}");
+    let after_seek = stream.read_fragment().unwrap();
+    let tracks = parse_fragment(&after_seek);
+    assert!(tracks[&1][0].keyframe);
+    let first_sec = tracks[&1][0].pts as f64 / 90_000.0;
+    assert!((first_sec - 1.0).abs() < 0.05, "first_sec={first_sec}");
+}

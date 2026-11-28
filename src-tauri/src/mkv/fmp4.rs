@@ -84,13 +84,15 @@ pub(crate) fn video_sample_entry(video: &RemuxVideo) -> Vec<u8> {
     body.extend_from_slice(&[0; 32]); // compressorname
     body.extend_from_slice(&0x0018u16.to_be_bytes());
     body.extend_from_slice(&(-1i16).to_be_bytes());
-    let (kind, config) = match video.codec {
-        RemuxVideoCodec::Avc => (b"avc1", b"avcC"),
+    let (kind, config_box) = match video.codec {
+        RemuxVideoCodec::Avc => (b"avc1", mp4_box(b"avcC", &video.config)),
         // hev1 では再生できない WebKit があるので hvc1 にする
-        RemuxVideoCodec::Hevc => (b"hvc1", b"hvcC"),
-        RemuxVideoCodec::Av1 => (b"av01", b"av1C"),
+        RemuxVideoCodec::Hevc => (b"hvc1", mp4_box(b"hvcC", &video.config)),
+        // vpcC は ISO BMFF 仕様上 FullBox（version = 1, flags = 0）
+        RemuxVideoCodec::Vp9 => (b"vp09", mp4_full_box(b"vpcC", 1, 0, &video.config)),
+        RemuxVideoCodec::Av1 => (b"av01", mp4_box(b"av1C", &video.config)),
     };
-    body.extend(mp4_box(config, &video.config));
+    body.extend(config_box);
     if let Some(color) = video.color {
         let mut colr = Vec::with_capacity(11);
         colr.extend_from_slice(b"nclx");
