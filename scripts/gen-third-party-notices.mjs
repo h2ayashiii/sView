@@ -23,6 +23,7 @@ const outPath = join(root, "THIRD-PARTY-NOTICES");
 const LICENSE_URLS = [
   ["MIT", "https://opensource.org/license/mit"],
   ["Apache-2.0", "https://www.apache.org/licenses/LICENSE-2.0"],
+  ["BSD-2-Clause", "https://opensource.org/license/bsd-2-clause"],
   ["BSD-3-Clause", "https://opensource.org/license/bsd-3-clause"],
   ["MPL-2.0", "https://www.mozilla.org/MPL/2.0/"],
   ["Zlib", "https://opensource.org/license/zlib"],

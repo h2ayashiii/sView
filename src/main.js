@@ -555,11 +555,12 @@ async function show() {
   setFitMode();
   placeholder.hidden = true;
   updateChrome();
+  syncInfoWindow();
   if (showingMedia) {
     img.removeAttribute("src");
     releaseBookPages();
     const autoplay = continuing || (showingAudio ? settings.audioAutoplay : settings.videoAutoplay);
-    loadVideo(images[index], autoplay);
+    loadVideo(images[index], autoplay, token);
     if (showingAudio) {
       loadAudioInfo(images[index], token);
     } else {
@@ -659,7 +660,7 @@ for (const el of [bookLeft, bookRight]) {
 
 // ---- 動画 ----
 // 再生は OS の WebView 任せ（Windows: WebView2 / macOS: WKWebView）。
-// 再生できる形式は OS ごとに違い、sView からは増やせない
+// macOS では MKV の詰め直しと、AV1 ハードウェアデコーダを持たない機種での AV1 変換のみ自前で行う
 const SEEK_STEP_S = 5;
 // ↑ ↓ で変える音量の幅（0〜1）
 const VOLUME_STEP = 0.05;
@@ -670,7 +671,7 @@ const volumeSaveKeys = new Set();
 // シークバーをつかんでいる間は、再生位置でつまみを動かさない
 let seekDragging = false;
 
-function loadVideo(path, autoplay) {
+async function loadVideo(path, autoplay, token) {
   video.loop = mediaLoop();
   setVolume(mediaVolume());
   video.muted = mediaMuted();
@@ -679,14 +680,29 @@ function loadVideo(path, autoplay) {
     syncVideoBar();
     return;
   }
+  if (IS_MAC && showingVideo && MkvPlayer.isSupported()) {
+    syncVideoBar();
+    let needsStream = false;
+    try {
+      needsStream = await invoke("video_needs_stream", { path });
+    } catch {
+      needsStream = false;
+    }
+    if (token !== showToken) return;
+    if (needsStream) {
+      startMkvPlayer(path, { autoplay });
+      syncVideoBar();
+      return;
+    }
+  }
   video.src = convertFileSrc(path);
   syncVideoBar();
   if (autoplay) playVideo();
 }
 
-// ---- MKV（macOS） ----
-// macOS の WKWebView は MKV を再生できないので、Rust 側で fragmented MP4 に詰め直して
-// MSE で再生する（mkv-player.js）。Windows の WebView2 はそのまま再生できる
+// ---- MKV・AV1 ストリーム（macOS） ----
+// macOS の WKWebView は MKV を再生できず、M1 / M2 世代では AV1 も再生できない。
+// Rust 側で fragmented MP4 へ詰め直し（必要なら rav1d + VideoToolbox で変換）して MSE で再生する
 let mkvPlayer = null;
 // MKV の音声の知らせ・エラーを出しておく長さ（文が長いので、ふつうの案内より長く出す）
 const MKV_NOTICE_MS = 4000;
@@ -1213,6 +1229,7 @@ function clearView() {
   placeholder.hidden = false;
   updateChrome();
   syncAspectLock();
+  syncInfoWindow();
 }
 
 function step(delta) {
@@ -1569,6 +1586,9 @@ window.addEventListener("keydown", (e) => {
     case "openSettings":
       openSettings();
       break;
+    case "toggleInfo":
+      openInfo(true);
+      break;
     case "deleteCurrent":
       deleteCurrent();
       break;
@@ -1893,6 +1913,8 @@ appWindow.onMoved(scheduleWindowSave).catch(() => {});
 appWindow
   .onFocusChanged(({ payload: focused }) => {
     if (focused && settingsReady) catchUpWindowKindOnFocus();
+    // macOS で複数のビューアを開いているときは、前面に来たビューアのファイルの情報に替える
+    if (focused) syncInfoWindow();
   })
   .catch(() => {});
 
@@ -2069,6 +2091,31 @@ function currentFilePath() {
   return index >= 0 && index < images.length ? images[index] : null;
 }
 
+// 情報ウィンドウに出すファイル。書庫の中の画像なら書庫とその中のエントリ。
+// 本モードの見開きでは前のページ（images[index]）
+function infoTarget() {
+  if (index < 0 || index >= images.length) return { path: null, entry: null };
+  return archivePath
+    ? { path: archivePath, entry: images[index] }
+    : { path: images[index], entry: null };
+}
+
+// ファイルの情報のウィンドウを開く（toggle なら、開いているときは閉じる）
+async function openInfo(toggle = false) {
+  hideContextMenu();
+  try {
+    await invoke("open_info_window", { ...infoTarget(), toggle });
+  } catch (e) {
+    showError(e);
+  }
+}
+
+// 表示するファイルが変わったら、情報ウィンドウが開いていればその情報に替える
+// （開いていなければ Rust 側で何もしない）
+function syncInfoWindow() {
+  invoke("sync_info_window", infoTarget()).catch(() => {});
+}
+
 async function revealCurrent() {
   const path = currentFilePath();
   if (!path) return;
@@ -2083,6 +2130,7 @@ function buildContextMenu() {
   const hasFile = currentFilePath() !== null;
   return [
     { label: REVEAL_LABEL, disabled: !hasFile, action: revealCurrent },
+    { label: "ファイルの情報", accel: "I", disabled: !hasFile, action: () => openInfo() },
     {
       // 「…」は確認ウィンドウが出るときだけ添える
       label: settings.confirmDelete ? "ゴミ箱へ移動…" : "ゴミ箱へ移動",

@@ -84,12 +84,24 @@ pub(crate) fn video_sample_entry(video: &RemuxVideo) -> Vec<u8> {
     body.extend_from_slice(&[0; 32]); // compressorname
     body.extend_from_slice(&0x0018u16.to_be_bytes());
     body.extend_from_slice(&(-1i16).to_be_bytes());
-    let (kind, config) = match video.codec {
-        RemuxVideoCodec::Avc => (b"avc1", b"avcC"),
+    let (kind, config_box) = match video.codec {
+        RemuxVideoCodec::Avc => (b"avc1", mp4_box(b"avcC", &video.config)),
         // hev1 では再生できない WebKit があるので hvc1 にする
-        RemuxVideoCodec::Hevc => (b"hvc1", b"hvcC"),
+        RemuxVideoCodec::Hevc => (b"hvc1", mp4_box(b"hvcC", &video.config)),
+        // vpcC は ISO BMFF 仕様上 FullBox（version = 1, flags = 0）
+        RemuxVideoCodec::Vp9 => (b"vp09", mp4_full_box(b"vpcC", 1, 0, &video.config)),
+        RemuxVideoCodec::Av1 => (b"av01", mp4_box(b"av1C", &video.config)),
     };
-    body.extend(mp4_box(config, &video.config));
+    body.extend(config_box);
+    if let Some(color) = video.color {
+        let mut colr = Vec::with_capacity(11);
+        colr.extend_from_slice(b"nclx");
+        colr.extend_from_slice(&color.primaries.to_be_bytes());
+        colr.extend_from_slice(&color.transfer.to_be_bytes());
+        colr.extend_from_slice(&color.matrix.to_be_bytes());
+        colr.push(if color.full_range { 0x80 } else { 0x00 });
+        body.extend(mp4_box(b"colr", &colr));
+    }
     let (dw, dh) = video.display;
     if (dw, dh) != (video.width, video.height) && dw > 0 && dh > 0 {
         // 画素の縦横比 = 表示の縦横比 / 画素数の縦横比
@@ -294,12 +306,16 @@ pub(crate) fn mp4_traf(run: &TrackRun, data_offset: u32) -> Vec<u8> {
     mp4_box(b"traf", &[tfhd, tfdt, trun].concat())
 }
 
-pub(crate) fn build_fragment(
+pub(crate) fn append_fragment(
+    out: &mut Vec<u8>,
     sequence: u32,
     video: Option<&TrackRun>,
     audio: Option<&TrackRun>,
-) -> Vec<u8> {
+) {
     let runs: Vec<&TrackRun> = [video, audio].into_iter().flatten().collect();
+    if runs.is_empty() {
+        return;
+    }
     let moof = |offsets: &[u32]| {
         let mut body = mp4_full_box(b"mfhd", 0, 0, &sequence.to_be_bytes());
         for (run, offset) in runs.iter().zip(offsets) {
@@ -309,14 +325,16 @@ pub(crate) fn build_fragment(
     };
     // data_offset の値で moof の大きさは変わらないので、一度作って大きさを測る
     let moof_size = moof(&vec![0; runs.len()]).len() as u32;
-    let mut offsets = Vec::new();
+    let mut offsets = Vec::with_capacity(runs.len());
     let mut offset = moof_size + 8;
     for run in &runs {
         offsets.push(offset);
         offset += run.samples.iter().map(|s| s.data.len() as u32).sum::<u32>();
     }
-    let mut out = moof(&offsets);
+    let moof_bytes = moof(&offsets);
     let mdat_size = offset - moof_size;
+    out.reserve(moof_bytes.len() + mdat_size as usize);
+    out.extend_from_slice(&moof_bytes);
     out.extend_from_slice(&mdat_size.to_be_bytes());
     out.extend_from_slice(b"mdat");
     for run in &runs {
@@ -324,5 +342,14 @@ pub(crate) fn build_fragment(
             out.extend_from_slice(&s.data);
         }
     }
+}
+
+pub(crate) fn build_fragment(
+    sequence: u32,
+    video: Option<&TrackRun>,
+    audio: Option<&TrackRun>,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    append_fragment(&mut out, sequence, video, audio);
     out
 }

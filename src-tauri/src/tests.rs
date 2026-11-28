@@ -1175,11 +1175,12 @@ fn be32(data: &[u8], at: usize) -> u32 {
     u32::from_be_bytes(data[at..at + 4].try_into().unwrap())
 }
 
-/// テスト用のサンプル（DTS, PTS, キーフレームか, 大きさ。時刻はトラックの単位）
+/// テスト用のサンプル（DTS, PTS, 長さ, キーフレームか。時刻はトラックの単位）
 #[derive(Debug)]
 struct ParsedSample {
     dts: i64,
     pts: i64,
+    duration: i64,
     keyframe: bool,
 }
 
@@ -1222,6 +1223,7 @@ fn parse_fragment(fragment: &[u8]) -> BTreeMap<u32, Vec<ParsedSample>> {
             samples.push(ParsedSample {
                 dts,
                 pts: dts + cts,
+                duration,
                 keyframe: be32(trun, at + 8) & 0x0001_0000 == 0,
             });
             dts += duration;
@@ -1608,4 +1610,1261 @@ fn archive_listing_and_single_entry_read() {
     assert!(read_archive_entry(&path, "b/clip.mp4", &cache).is_err());
 
     fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn av1_codec_string_and_helpers() {
+    // 8bit Main / 10bit High / 12bit Professional
+    assert_eq!(
+        av1_codec_string(&[0x81, 0x04, 0x0C, 0x00]).as_deref(),
+        Some("av01.0.04M.08")
+    );
+    assert_eq!(
+        av1_codec_string(&[0x81, 0x0D, 0xCC, 0x00]).as_deref(),
+        Some("av01.0.13H.10")
+    );
+    assert_eq!(
+        av1_codec_string(&[0x81, 0x48, 0x6C, 0x00]).as_deref(),
+        Some("av01.2.08M.12")
+    );
+    assert_eq!(av1_codec_string(&[0x80, 0x04, 0x0C, 0x00]), None);
+    assert_eq!(av1_codec_string(&[0x81, 0x04, 0x0C]), None);
+    assert_eq!(av1_codec_string(&[0x81, 0x60, 0x0C, 0x00]), None);
+
+    // SPS / PPS から avcC を組み立てて codecs 文字列へ戻せる
+    let avcc = build_avcc_from_sps_pps(&[0x67, 0x64, 0x00, 0x1F, 0xAC], &[0x68, 0xEE]).unwrap();
+    assert_eq!(avc_codec_string(&avcc).as_deref(), Some("avc1.64001F"));
+    assert_eq!(build_avcc_from_sps_pps(&[0x67, 0x64], &[0x68]), None);
+    assert_eq!(
+        build_avcc_from_sps_pps(&[0x67, 0x64, 0x00, 0x1F], &[]),
+        None
+    );
+
+    // SDR はそのまま、HDR (PQ / HLG) は 8bit H.264 向けに BT.709 へ落とす、未指定は None
+    let bt709 = ColorInfo {
+        primaries: 1,
+        transfer: 1,
+        matrix: 1,
+        full_range: false,
+    };
+    assert_eq!(bt709.for_sdr_h264(), Some(bt709));
+    let hdr_pq = ColorInfo {
+        primaries: 9,
+        transfer: 16,
+        matrix: 9,
+        full_range: false,
+    };
+    assert_eq!(hdr_pq.for_sdr_h264(), Some(bt709));
+    let hdr_hlg = ColorInfo {
+        primaries: 9,
+        transfer: 18,
+        matrix: 9,
+        full_range: true,
+    };
+    assert_eq!(
+        hdr_hlg.for_sdr_h264(),
+        Some(ColorInfo {
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+            full_range: true,
+        })
+    );
+    let unspecified = ColorInfo {
+        primaries: 2,
+        transfer: 2,
+        matrix: 2,
+        full_range: false,
+    };
+    assert_eq!(unspecified.for_sdr_h264(), None);
+
+    // ビットレートの上下限と 1080p の目安
+    assert_eq!(target_h264_bitrate(64, 48, 24.0), 2_000_000);
+    let fhd = target_h264_bitrate(1920, 1080, 30.0);
+    assert!((10_000_000..=15_000_000).contains(&fhd), "{fhd}");
+    assert_eq!(target_h264_bitrate(7680, 4320, 60.0), 60_000_000);
+}
+
+#[test]
+fn nv12_conversion_handles_bit_depths_and_layouts() {
+    // 1. 8bit I420（ストライド余白あり、dst が src より広いときのパディングも含む）
+    let y_src = [10, 20, 30, 40, 99, 99, 50, 60, 70, 80, 99, 99];
+    let u_src = [100, 110, 99];
+    let v_src = [200, 210, 99];
+    let frame = DecodedFrame {
+        width: 4,
+        height: 2,
+        bpc: 8,
+        layout: PixelLayout::I420,
+        y: PlaneView::from_slice(&y_src, 6, 4, 2),
+        u: Some(PlaneView::from_slice(&u_src, 3, 2, 1)),
+        v: Some(PlaneView::from_slice(&v_src, 3, 2, 1)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0xFFu8; 8 * 4];
+    let mut dst_uv = vec![0xFFu8; 8 * 2];
+    copy_frame_to_nv12(&frame, 6, 4, &mut dst_y, 8, &mut dst_uv, 8);
+    assert_eq!(&dst_y[0..6], &[10, 20, 30, 40, 16, 16]);
+    assert_eq!(&dst_y[8..14], &[50, 60, 70, 80, 16, 16]);
+    assert_eq!(&dst_y[16..22], &[16; 6]);
+    assert_eq!(&dst_uv[0..6], &[100, 200, 110, 210, 128, 128]);
+    assert_eq!(&dst_uv[8..14], &[128; 6]);
+
+    // 2. 10bit I420（丸め付きダウンシフト）
+    let mut y10 = Vec::new();
+    for val in [0u16, 400, 1020, 1023, 200, 300, 500, 600] {
+        y10.extend_from_slice(&val.to_le_bytes());
+    }
+    let mut u10 = Vec::new();
+    for val in [512u16, 1022] {
+        u10.extend_from_slice(&val.to_le_bytes());
+    }
+    let mut v10 = Vec::new();
+    for val in [256u16, 768] {
+        v10.extend_from_slice(&val.to_le_bytes());
+    }
+    let frame10 = DecodedFrame {
+        width: 4,
+        height: 2,
+        bpc: 10,
+        layout: PixelLayout::I420,
+        y: PlaneView::from_slice(&y10, 8, 8, 2),
+        u: Some(PlaneView::from_slice(&u10, 4, 4, 1)),
+        v: Some(PlaneView::from_slice(&v10, 4, 4, 1)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0u8; 8];
+    let mut dst_uv = vec![0u8; 4];
+    copy_frame_to_nv12(&frame10, 4, 2, &mut dst_y, 4, &mut dst_uv, 4);
+    assert_eq!(dst_y, vec![0, 100, 255, 255, 50, 75, 125, 150]);
+    assert_eq!(dst_uv, vec![128, 64, 255, 192]);
+
+    // 3. 12bit I420
+    let mut y12 = Vec::new();
+    for val in [0u16, 2048, 4095, 1024] {
+        y12.extend_from_slice(&val.to_le_bytes());
+    }
+    let u12 = 2048u16.to_le_bytes();
+    let v12 = 4095u16.to_le_bytes();
+    let frame12 = DecodedFrame {
+        width: 2,
+        height: 2,
+        bpc: 12,
+        layout: PixelLayout::I420,
+        y: PlaneView::from_slice(&y12, 4, 4, 2),
+        u: Some(PlaneView::from_slice(&u12, 2, 2, 1)),
+        v: Some(PlaneView::from_slice(&v12, 2, 2, 1)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0u8; 4];
+    let mut dst_uv = vec![0u8; 2];
+    copy_frame_to_nv12(&frame12, 2, 2, &mut dst_y, 2, &mut dst_uv, 2);
+    assert_eq!(dst_y, vec![0, 128, 255, 64]);
+    assert_eq!(dst_uv, vec![128, 255]);
+
+    // 4. 8bit I422（縦 2 行おきに色差を間引く）
+    let y422 = [1u8; 8];
+    let u422 = [11, 22, 33, 44];
+    let v422 = [55, 66, 77, 88];
+    let frame422 = DecodedFrame {
+        width: 4,
+        height: 2,
+        bpc: 8,
+        layout: PixelLayout::I422,
+        y: PlaneView::from_slice(&y422, 4, 4, 2),
+        u: Some(PlaneView::from_slice(&u422, 2, 2, 2)),
+        v: Some(PlaneView::from_slice(&v422, 2, 2, 2)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0u8; 8];
+    let mut dst_uv = vec![0u8; 4];
+    copy_frame_to_nv12(&frame422, 4, 2, &mut dst_y, 4, &mut dst_uv, 4);
+    assert_eq!(dst_uv, vec![11, 55, 22, 66]);
+
+    // 5. 8bit I444（横・縦とも 2 画素おきに間引く）
+    let y444 = [2u8; 8];
+    let u444 = [10, 11, 20, 21, 30, 31, 40, 41];
+    let v444 = [50, 51, 60, 61, 70, 71, 80, 81];
+    let frame444 = DecodedFrame {
+        width: 4,
+        height: 2,
+        bpc: 8,
+        layout: PixelLayout::I444,
+        y: PlaneView::from_slice(&y444, 4, 4, 2),
+        u: Some(PlaneView::from_slice(&u444, 4, 4, 2)),
+        v: Some(PlaneView::from_slice(&v444, 4, 4, 2)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0u8; 8];
+    let mut dst_uv = vec![0u8; 4];
+    copy_frame_to_nv12(&frame444, 4, 2, &mut dst_y, 4, &mut dst_uv, 4);
+    assert_eq!(dst_uv, vec![10, 50, 20, 60]);
+
+    // 6. 8bit I400（モノクロ: UV を無彩色 128 で埋め、フルレンジ時は Y 余白を 0 にする）
+    let y400 = [77, 88, 99, 111];
+    let frame400 = DecodedFrame {
+        width: 2,
+        height: 2,
+        bpc: 8,
+        layout: PixelLayout::I400,
+        y: PlaneView::from_slice(&y400, 2, 2, 2),
+        u: None,
+        v: None,
+        pts: 0,
+        color: Some(ColorInfo {
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+            full_range: true,
+        }),
+    };
+    let mut dst_y = vec![0xFFu8; 16];
+    let mut dst_uv = vec![0u8; 8];
+    copy_frame_to_nv12(&frame400, 4, 4, &mut dst_y, 4, &mut dst_uv, 4);
+    assert_eq!(&dst_y[0..4], &[77, 88, 0, 0]);
+    assert_eq!(&dst_y[4..8], &[99, 111, 0, 0]);
+    assert_eq!(&dst_y[8..16], &[0; 8]);
+    assert_eq!(dst_uv, vec![128; 8]);
+}
+
+#[test]
+fn av1_video_detection_distinguishes_codecs_and_containers() {
+    let mp4 = remux_testdata("av1.mp4");
+    let webm = remux_testdata("av1.webm");
+    let h264 = remux_testdata("remux.mkv");
+    let mpeg4 = remux_testdata("unsupported.mkv");
+
+    assert!(is_mp4_av1(&mp4));
+    assert!(is_av1_video(&mp4));
+
+    assert!(!is_mp4_av1(&webm));
+    assert!(is_av1_video(&webm));
+
+    assert!(!is_mp4_av1(&h264));
+    assert!(!is_av1_video(&h264));
+    assert!(!is_av1_video(&mpeg4));
+}
+
+/// WebM 音声断片（Cluster 列）から各 Opus パケットの時刻（0.1 ms 単位）と長さを読み出すテスト用ヘルパー
+fn parse_webm_audio_ticks(data: &[u8]) -> Vec<(i64, usize)> {
+    assert_eq!(WEBM_TIMESTAMP_SCALE_NS, 100_000);
+    let mut walker = MkvWalker::new(std::io::Cursor::new(data), vec![(1, 0)]);
+    let mut out = Vec::new();
+    while let Some(frame) = walker.next(true).unwrap() {
+        assert_eq!(frame.track, 1);
+        assert!(frame.keyframe);
+        out.push((frame.timestamp, frame.data.len()));
+    }
+    out
+}
+
+#[test]
+fn av1_mp4_and_webm_remux_and_fragmented_mp4_roundtrip() {
+    let mut fmp4_bytes = Vec::new();
+    for (name, expected_audio_codec, expected_separate, sample_step) in [
+        ("av1.mp4", "mp4a.40.2", false, 1024i64),
+        ("av1.webm", "opus", true, 960i64),
+    ] {
+        let (mut stream, info) =
+            MkvStream::open_with_options(&remux_testdata(name), None, Some(false)).unwrap();
+        assert!(!info.transcoded);
+        assert_eq!(info.separate_audio, expected_separate, "{name}");
+        assert!(
+            info.video_codec.starts_with("av01."),
+            "{name}: {}",
+            info.video_codec
+        );
+        assert_eq!(info.audio_codec.as_deref(), Some(expected_audio_codec));
+        assert!((info.duration.unwrap() - 2.0).abs() < 0.15, "{name}");
+
+        let init = stream.init_segment();
+        let (v_init, a_init) = if info.separate_audio {
+            let (v, a) = unpack_dual_payload(&init).unwrap();
+            (v.to_vec(), Some(a.to_vec()))
+        } else {
+            (init.clone(), None)
+        };
+        let has = |needle: &[u8]| v_init.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"av01") && has(b"av1C"),
+            "{name}: av01/av1C がありません"
+        );
+        if name == "av1.mp4" {
+            fmp4_bytes.extend_from_slice(&v_init);
+        }
+
+        let mut webm_audio = a_init.unwrap_or_default();
+        let mut video = Vec::new();
+        let mut audio_end: Option<i64> = None;
+        let mut webm_audio_end_ticks: Option<i64> = None;
+        loop {
+            let fragment = stream.read_fragment().unwrap();
+            if fragment.is_empty() {
+                break;
+            }
+            if info.separate_audio {
+                let (v_frag, a_frag) = unpack_dual_payload(&fragment).unwrap();
+                if !v_frag.is_empty() {
+                    let tracks = parse_fragment(v_frag);
+                    assert!(
+                        !tracks.contains_key(&2),
+                        "{name}: 分離モードで fMP4 に音声あり"
+                    );
+                    let v = &tracks[&1];
+                    assert!(v[0].keyframe, "{name}: 断片はキーフレームから始めます");
+                    video.extend(v.iter().map(|s| (s.dts, s.pts, s.keyframe)));
+                }
+                if !a_frag.is_empty() {
+                    webm_audio.extend_from_slice(a_frag);
+                    let frames = parse_webm_audio_ticks(a_frag);
+                    assert!(!frames.is_empty());
+                    if let Some(end) = webm_audio_end_ticks {
+                        assert_eq!(
+                            frames[0].0, end,
+                            "{name}: WebM 音声の継ぎ目 {} vs {end}",
+                            frames[0].0
+                        );
+                    } else {
+                        // 先頭プライミング込みの最初のパケットが欠落せず時刻 0 から始まること
+                        assert_eq!(frames[0].0, 0, "{name}: WebM 音声開始 {}", frames[0].0);
+                    }
+                    webm_audio_end_ticks = Some(frames.last().unwrap().0 + 200);
+                }
+            } else {
+                if name == "av1.mp4" {
+                    fmp4_bytes.extend_from_slice(&fragment);
+                }
+                let tracks = parse_fragment(&fragment);
+                let v = &tracks[&1];
+                assert!(v[0].keyframe, "{name}: 断片はキーフレームから始めます");
+                video.extend(v.iter().map(|s| (s.dts, s.pts, s.keyframe)));
+                if let Some(a) = tracks.get(&2) {
+                    if let Some(end) = audio_end {
+                        assert_eq!(a[0].dts, end, "{name}: 音声の継ぎ目が途切れています");
+                    } else {
+                        assert!(
+                            a[0].dts <= 2400,
+                            "{name}: 音声の開始が遅れています {}",
+                            a[0].dts
+                        );
+                    }
+                    audio_end = Some(a.last().unwrap().dts + sample_step);
+                }
+            }
+        }
+        assert_eq!(video.len(), 48, "{name}: 映像フレーム数");
+        if info.separate_audio {
+            // 組み立てた WebM（init + clusters）が MatroskaFile として正常に読め、CodecDelay が保持されること
+            let mkv = matroska_demuxer::MatroskaFile::open(std::io::Cursor::new(&webm_audio))
+                .expect("生成した WebM 音声がパースできること");
+            assert_eq!(mkv.tracks().len(), 1);
+            assert_eq!(mkv.tracks()[0].codec_id(), "A_OPUS");
+            assert_eq!(mkv.tracks()[0].codec_delay(), Some(6_500_000));
+            assert!(
+                mkv.tracks()[0]
+                    .codec_private()
+                    .unwrap()
+                    .starts_with(b"OpusHead")
+            );
+            let audio_sec = webm_audio_end_ticks.unwrap() as f64 / 10_000.0;
+            assert!((audio_sec - 2.0).abs() < 0.12, "{name}: {audio_sec}");
+        } else {
+            let audio_sec = audio_end.unwrap() as f64 / 48_000.0;
+            assert!((audio_sec - 2.0).abs() < 0.12, "{name}: {audio_sec}");
+        }
+    }
+
+    // 書き出した fMP4（moov + mvex + moof/mdat）をそのまま fragmented MP4 として読み戻せること
+    let tmp = std::env::temp_dir().join(format!("sview-fmp4-test-{}.mp4", std::process::id()));
+    fs::write(&tmp, &fmp4_bytes).unwrap();
+    assert!(is_mp4_av1(&tmp));
+    assert!(is_av1_video(&tmp));
+    let (mut stream, info) = MkvStream::open_with_options(&tmp, None, Some(false)).unwrap();
+    assert!(info.video_codec.starts_with("av01."));
+    let mut frames = 0usize;
+    let mut audio_samples = 0usize;
+    loop {
+        let fragment = stream.read_fragment().unwrap();
+        if fragment.is_empty() {
+            break;
+        }
+        let tracks = parse_fragment(&fragment);
+        frames += tracks[&1].len();
+        audio_samples += tracks.get(&2).map_or(0, Vec::len);
+    }
+    assert_eq!(frames, 48);
+    assert!(audio_samples > 80, "{audio_samples}");
+    fs::remove_file(&tmp).ok();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn av1_transcode_decodes_real_frames_and_keeps_av_sync() {
+    #[cfg(target_os = "linux")]
+    struct MockH264Encoder {
+        width: usize,
+        height: usize,
+        avcc: Vec<u8>,
+        pending: Vec<EncodedFrame>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl VideoEncoder for MockH264Encoder {
+        fn encode(&mut self, frame: &DecodedFrame<'_>, force_keyframe: bool) -> Result<(), String> {
+            assert_eq!(frame.width, self.width);
+            assert_eq!(frame.height, self.height);
+            // 実際に rav1d がデコードした画素を NV12 変換して中身を確かめる
+            let mut dst_y = vec![0u8; self.width * self.height];
+            let mut dst_uv = vec![0u8; self.width * self.height.div_ceil(2)];
+            copy_frame_to_nv12(
+                frame,
+                self.width,
+                self.height,
+                &mut dst_y,
+                self.width,
+                &mut dst_uv,
+                self.width,
+            );
+            assert!(
+                dst_y.iter().any(|&v| v != 0),
+                "復号された Y プレーンが空です"
+            );
+            let nal_type = if force_keyframe { 0x65 } else { 0x41 };
+            self.pending.push(EncodedFrame {
+                data: vec![0, 0, 0, 2, nal_type, 0x88],
+                pts: frame.pts,
+                keyframe: force_keyframe,
+            });
+            Ok(())
+        }
+
+        fn flush(&mut self) -> Result<Vec<EncodedFrame>, String> {
+            Ok(std::mem::take(&mut self.pending))
+        }
+
+        fn avcc(&self) -> Option<Vec<u8>> {
+            Some(self.avcc.clone())
+        }
+    }
+
+    let open_transcode = |path: &Path| -> Result<(MkvStream, MkvOpened), String> {
+        #[cfg(target_os = "macos")]
+        {
+            MkvStream::open_with_options(path, None, Some(true))
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let factory: EncoderFactory = Box::new(|w, h, _fps, _color| {
+                let avcc = build_avcc_from_sps_pps(&[0x67, 0x64, 0x00, 0x1F, 0xAC], &[0x68, 0xEE])
+                    .unwrap();
+                Ok(Box::new(MockH264Encoder {
+                    width: w as usize,
+                    height: h as usize,
+                    avcc,
+                    pending: Vec::new(),
+                }))
+            });
+            MkvStream::open_with_test_encoder(path, None, factory)
+        }
+    };
+
+    for (name, expected_separate, sample_step) in
+        [("av1.mp4", false, 1024i64), ("av1.webm", true, 960i64)]
+    {
+        let path = remux_testdata(name);
+        let (mut stream, info) = open_transcode(&path).unwrap();
+        assert!(info.transcoded, "{name}: 変換モードになっていること");
+        assert!(!info.can_transcode);
+        assert_eq!(info.separate_audio, expected_separate, "{name}");
+        assert!(
+            info.video_codec.starts_with("avc1."),
+            "{name}: {}",
+            info.video_codec
+        );
+
+        let init = stream.init_segment();
+        let v_init = if info.separate_audio {
+            unpack_dual_payload(&init).unwrap().0
+        } else {
+            &init
+        };
+        let has = |needle: &[u8]| v_init.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            has(b"avc1") && has(b"avcC"),
+            "{name}: avc1/avcC がありません"
+        );
+        assert!(!has(b"av01"), "{name}: 変換後に av01 が残っています");
+
+        // 1. 先頭から末尾までの再生（全 48 フレーム・B フレームなし・映像も音声も断片境界 0 ティック連続）
+        let mut video = Vec::new();
+        let mut video_end: Option<i64> = None;
+        let mut audio_end: Option<i64> = None;
+        let mut webm_audio_end_ticks: Option<i64> = None;
+        let mut fragments = 0usize;
+        let mut first_frag_frames = 0usize;
+        loop {
+            let fragment = stream.read_fragment().unwrap();
+            if fragment.is_empty() {
+                break;
+            }
+            fragments += 1;
+            let (v_frag, a_frag) = if info.separate_audio {
+                let (v, a) = unpack_dual_payload(&fragment).unwrap();
+                (v, Some(a))
+            } else {
+                (fragment.as_slice(), None)
+            };
+            let tracks = parse_fragment(v_frag);
+            let v = &tracks[&1];
+            if fragments == 1 {
+                first_frag_frames = v.len();
+            }
+            assert!(v[0].keyframe, "{name}: 断片の先頭は必ずキーフレーム");
+            if let Some(end) = video_end {
+                assert_eq!(v[0].dts, end, "{name}: 映像断片の継ぎ目に隙間があります");
+            }
+            for s in v {
+                assert_eq!(s.dts, s.pts, "{name}: B フレームなし (DTS == PTS) を保つ");
+            }
+            let v_last = v.last().unwrap();
+            video_end = Some(v_last.dts + v_last.duration);
+            video.extend(v.iter().map(|s| s.pts));
+            if let Some(a_bytes) = a_frag {
+                if !a_bytes.is_empty() {
+                    let frames = parse_webm_audio_ticks(a_bytes);
+                    if let Some(end) = webm_audio_end_ticks {
+                        assert_eq!(
+                            frames[0].0, end,
+                            "{name}: WebM 音声の継ぎ目が途切れています {} vs {end}",
+                            frames[0].0
+                        );
+                    } else {
+                        assert_eq!(frames[0].0, 0, "{name}: WebM 音声開始 {}", frames[0].0);
+                    }
+                    webm_audio_end_ticks = Some(frames.last().unwrap().0 + 200);
+                }
+            } else if let Some(a) = tracks.get(&2) {
+                if let Some(end) = audio_end {
+                    assert_eq!(a[0].dts, end, "{name}: 音声の継ぎ目が途切れています");
+                } else {
+                    assert!(a[0].dts <= 2400, "{name}: 音声開始 {}", a[0].dts);
+                }
+                audio_end = Some(a.last().unwrap().dts + sample_step);
+            }
+        }
+        assert!(fragments >= 3, "{name}: 初回短断片 + 後続断片に分かれる");
+        assert!(
+            (5..=8).contains(&first_frag_frames),
+            "{name}: 初回断片は 0.25 秒前後で素早く返す: {first_frag_frames}"
+        );
+        assert_eq!(
+            video.len(),
+            48,
+            "{name}: 全 48 フレームが復号・出力されること"
+        );
+        for pair in video.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "{name}: PTS が単調増加していません: {pair:?}"
+            );
+        }
+        for (i, &p) in video.iter().enumerate() {
+            let exact = i as i64 * 90_000 / 24;
+            assert!((p - exact).abs() <= 90, "{name}[{i}]: {p} != {exact}");
+        }
+        let audio_sec = if info.separate_audio {
+            webm_audio_end_ticks.unwrap() as f64 / 10_000.0
+        } else {
+            audio_end.unwrap() as f64 / 48_000.0
+        };
+        assert!(
+            (audio_sec - 2.0).abs() < 0.12,
+            "{name}: 音声長さ {audio_sec}"
+        );
+
+        // 2. GOP 途中（1.25 秒）へのシーク: 先頭断片が 1.25 秒を覆い、1 秒後以降の断片境界も隙間 0 で続く
+        let sought = stream.seek(1.25).unwrap();
+        assert!(
+            (1.19..=1.25).contains(&sought),
+            "{name}: シーク戻り値 {sought}"
+        );
+        let mut seek_video = Vec::new();
+        let mut seek_video_end: Option<i64> = None;
+        let mut seek_audio_start: Option<f64> = None;
+        let mut seek_audio_end: Option<i64> = None;
+        let mut seek_webm_end_ticks: Option<i64> = None;
+        loop {
+            let fragment = stream.read_fragment().unwrap();
+            if fragment.is_empty() {
+                break;
+            }
+            let (v_frag, a_frag) = if info.separate_audio {
+                let (v, a) = unpack_dual_payload(&fragment).unwrap();
+                (v, Some(a))
+            } else {
+                (fragment.as_slice(), None)
+            };
+            let tracks = parse_fragment(v_frag);
+            let v = &tracks[&1];
+            assert!(v[0].keyframe);
+            if let Some(end) = seek_video_end {
+                assert_eq!(
+                    v[0].dts, end,
+                    "{name}: シーク後の映像断片の継ぎ目に隙間があります"
+                );
+            }
+            let v_last = v.last().unwrap();
+            seek_video_end = Some(v_last.dts + v_last.duration);
+            seek_video.extend(v.iter().map(|s| s.pts));
+            if let Some(a_bytes) = a_frag {
+                if !a_bytes.is_empty() {
+                    let frames = parse_webm_audio_ticks(a_bytes);
+                    if seek_audio_start.is_none() {
+                        // WebM ワイヤ時刻から CodecDelay（6.5 ms = 65 ticks）を引いた実表示開始時刻
+                        seek_audio_start = Some((frames[0].0 as f64 - 65.0) / 10_000.0);
+                    }
+                    if let Some(end) = seek_webm_end_ticks {
+                        assert_eq!(
+                            frames[0].0, end,
+                            "{name}: シーク後の WebM 音声が途切れています"
+                        );
+                    }
+                    seek_webm_end_ticks = Some(frames.last().unwrap().0 + 200);
+                }
+            } else if let Some(a) = tracks.get(&2) {
+                if seek_audio_start.is_none() {
+                    seek_audio_start = Some(a[0].dts as f64 / 48_000.0);
+                }
+                if let Some(end) = seek_audio_end {
+                    assert_eq!(a[0].dts, end, "{name}: シーク後の音声が途切れています");
+                }
+                seek_audio_end = Some(a.last().unwrap().dts + sample_step);
+            }
+        }
+        let first_sec = seek_video[0] as f64 / 90_000.0;
+        assert!(
+            (1.19..=1.25).contains(&first_sec),
+            "{name}: シーク先頭映像({first_sec})は目標時刻 1.25 秒以下で覆うこと"
+        );
+        let a_start = seek_audio_start.unwrap();
+        assert!(
+            a_start <= first_sec + 0.01 && first_sec - a_start <= 0.05,
+            "{name}: シーク直後の映像({first_sec})と音声({a_start})がずれています"
+        );
+        assert!(
+            (18..=21).contains(&seek_video.len()),
+            "{name}: 1.20〜2.0 秒のフレーム数 {}",
+            seek_video.len()
+        );
+
+        // 3. 巻き戻しシーク（0.55 秒）でも継ぎ目なく再生できる
+        let back = stream.seek(0.55).unwrap();
+        assert!((0.49..=0.55).contains(&back), "{name}: {back}");
+        let back_frag = stream.read_fragment().unwrap();
+        let back_v = if info.separate_audio {
+            unpack_dual_payload(&back_frag).unwrap().0
+        } else {
+            &back_frag
+        };
+        let back_tracks = parse_fragment(back_v);
+        let back_first_sec = back_tracks[&1][0].pts as f64 / 90_000.0;
+        assert!(
+            (0.49..=0.55).contains(&back_first_sec),
+            "{name}: 巻き戻し先頭 {back_first_sec}"
+        );
+
+        // 4. 末尾以降へのシークでも空にならず最後のキーフレームから再生できる
+        let past_end = stream.seek(10.0).unwrap();
+        assert!((past_end - 1.0).abs() < 0.05, "{name}: {past_end}");
+        let tail_frag = stream.read_fragment().unwrap();
+        assert!(
+            !tail_frag.is_empty(),
+            "{name}: 末尾以降のシークで断片が空です"
+        );
+        let tail_v = if info.separate_audio {
+            unpack_dual_payload(&tail_frag).unwrap().0
+        } else {
+            &tail_frag
+        };
+        let tail_tracks = parse_fragment(tail_v);
+        assert!(tail_tracks[&1][0].keyframe);
+
+        // 5. シーク連打の中断フラグで read_fragment が即座に打ち切られ、次の seek で復帰できる
+        stream.seek(0.5).unwrap();
+        stream
+            .abort_flag()
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(stream.read_fragment().unwrap().is_empty());
+        stream.seek(0.5).unwrap();
+        assert!(!stream.read_fragment().unwrap().is_empty());
+    }
+
+    // 奇数解像度の偶数丸めと、5K / 8K 解像度の 4K 以下縮小
+    assert_eq!(h264_output_dimensions(853, 480), (854, 480));
+    assert_eq!(h264_output_dimensions(1920, 1079), (1920, 1080));
+    assert_eq!(h264_output_dimensions(7680, 4320), (4096, 2304));
+    assert_eq!(h264_output_dimensions(3840, 2160), (3840, 2160));
+
+    // NV12 の縮小コピー（8K → 4K 相当）が境界外アクセスせず書き込める
+    let big_y = vec![200u8; 8 * 6];
+    let big_u = vec![90u8; 4 * 3];
+    let big_v = vec![150u8; 4 * 3];
+    let frame = DecodedFrame {
+        width: 8,
+        height: 6,
+        bpc: 8,
+        layout: PixelLayout::I420,
+        y: PlaneView::from_slice(&big_y, 8, 8, 6),
+        u: Some(PlaneView::from_slice(&big_u, 4, 4, 3)),
+        v: Some(PlaneView::from_slice(&big_v, 4, 4, 3)),
+        pts: 0,
+        color: None,
+    };
+    let mut dst_y = vec![0u8; 4 * 4];
+    let mut dst_uv = vec![0u8; 4 * 2];
+    copy_frame_to_nv12(&frame, 4, 4, &mut dst_y, 4, &mut dst_uv, 4);
+    assert!(dst_y.iter().all(|&v| v == 200));
+    assert_eq!(&dst_uv[..4], &[90, 150, 90, 150]);
+}
+
+#[test]
+fn vp9_codec_helpers_and_frame_header_parsing() {
+    // vpcC（8 バイト）から codecs 文字列を作る
+    assert_eq!(
+        vp9_codec_string(&[0, 41, 0x80, 1, 1, 1, 0, 0]).as_deref(),
+        Some("vp09.00.41.08")
+    );
+    assert_eq!(
+        vp9_codec_string(&[2, 51, 0xA2, 9, 16, 9, 0, 0]).as_deref(),
+        Some("vp09.02.51.10")
+    );
+    assert_eq!(vp9_codec_string(&[0, 41, 0x80]), None);
+    assert_eq!(vp9_codec_string(&[4, 41, 0x80, 2, 2, 2, 0, 0]), None);
+    // 仕様外のレベル値（25 など）は弾く
+    assert_eq!(vp9_codec_string(&[0, 25, 0x80, 1, 1, 1, 0, 0]), None);
+
+    // Matroska の V_VP9 CodecPrivate（TLV）: 仕様外のレベル 25 は無視してフォールバックさせる
+    let private = [1, 1, 2, 2, 1, 50, 3, 1, 10, 4, 1, 1];
+    assert_eq!(
+        parse_mkv_vp9_private(&private),
+        (Some(2), Some(50), Some(10), Some(1))
+    );
+    assert_eq!(parse_mkv_vp9_private(&[2, 1, 25]).1, None);
+
+    // 解像度・フレームレートからのレベル算出（WebKit の上限に合わせ推定値は 60 まで）
+    assert_eq!(vp9_level_for(64, 64, 24.0), 10);
+    assert_eq!(vp9_level_for(1920, 1080, 30.0), 40);
+    assert_eq!(vp9_level_for(1920, 1080, 60.0), 41);
+    assert_eq!(vp9_level_for(3840, 2160, 30.0), 50);
+    assert_eq!(vp9_level_for(3840, 2160, 60.0), 51);
+    assert_eq!(vp9_level_for(3840, 2160, 1000.0), 52);
+    assert_eq!(vp9_level_for(7680, 4320, 60.0), 60);
+
+    // Profile 0・8bit・BT.709・limited のキーフレーム非圧縮ヘッダ
+    // frame_marker=10, profile_low=0, profile_high=0, show_existing=0, frame_type=0, show=1, err_res=0 => 0x82
+    // sync=0x49,0x83,0x42, color_space=2 (010), color_range=0 => 0b0100_0000 = 0x40
+    let kf_p0 = [0x82, 0x49, 0x83, 0x42, 0x40];
+    assert_eq!(
+        parse_vp9_frame_header(&kf_p0),
+        Some(Vp9FrameHeader {
+            profile: 0,
+            bit_depth: 8,
+            chroma_subsampling: 0,
+            full_range: false,
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+        })
+    );
+
+    // Profile 2・10bit・BT.2020・limited のキーフレーム
+    // frame_marker=10, profile_low=0, profile_high=1, show_existing=0, frame_type=0, show=1, err_res=0 => 0x92
+    // sync=0x49,0x83,0x42, ten_or_twelve=0, color_space=5 (101), color_range=0 => 0b0101_0000 = 0x50
+    let kf_p2 = [0x92, 0x49, 0x83, 0x42, 0x50];
+    let hdr_p2 = parse_vp9_frame_header(&kf_p2).unwrap();
+    assert_eq!(hdr_p2.profile, 2);
+    assert_eq!(hdr_p2.bit_depth, 10);
+    assert_eq!(
+        (hdr_p2.primaries, hdr_p2.transfer, hdr_p2.matrix),
+        (9, 14, 9)
+    );
+
+    // Matroska Colour の HDR PQ（transfer=16）と 4:2:0 colocated（1）は上書きせず保護する
+    let mut vpcc = [0, 50, (8 << 4) | (1 << 1), 9, 16, 9, 0, 0];
+    merge_vp9_header_into_vpcc(&mut vpcc, hdr_p2);
+    assert_eq!(vpcc, [2, 50, (10 << 4) | (1 << 1), 9, 16, 9, 0, 0]);
+    assert_eq!(
+        vpcc_color_info(&vpcc),
+        Some(ColorInfo {
+            primaries: 9,
+            transfer: 16,
+            matrix: 9,
+            full_range: false,
+        })
+    );
+    assert_eq!(vpcc_color_info(&[0, 10, 0x80, 2, 2, 2, 0, 0]), None);
+
+    // スーパーフレーム（1 枚目が非キー、2 枚目がキーフレーム）からキーフレームを探せる
+    let non_kf = [0x86, 0x00]; // frame_type = 1
+    let mut superframe = Vec::new();
+    superframe.extend_from_slice(&non_kf);
+    superframe.extend_from_slice(&kf_p0);
+    // marker: 0b110_00_001 = 0xC1（1 バイト長 × 2 フレーム）
+    superframe.extend_from_slice(&[0xC1, non_kf.len() as u8, kf_p0.len() as u8, 0xC1]);
+    assert_eq!(
+        parse_vp9_frame_header(&superframe),
+        Some(Vp9FrameHeader {
+            profile: 0,
+            bit_depth: 8,
+            chroma_subsampling: 0,
+            full_range: false,
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+        })
+    );
+    // フレーム長の合計がペイロード長と一致しない偽のインデックスは弾く
+    let mut bad_superframe = vec![0x00];
+    bad_superframe.extend_from_slice(&superframe);
+    assert_eq!(parse_vp9_frame_header(&bad_superframe), None);
+
+    // AlphaMode = 1 の透過 VP9 MKV は WebKit が透過デコード非対応のためエラーにする
+    let ebml_alpha_vp9: &[u8] = &[
+        0x1A, 0x45, 0xDF, 0xA3, 0x93, // EBML (19 bytes)
+        0x42, 0x82, 0x88, b'm', b'a', b't', b'r', b'o', b's', b'k', b'a', // DocType
+        0x42, 0x87, 0x81, 0x04, // DocTypeVersion = 4
+        0x42, 0x85, 0x81, 0x02, // DocTypeReadVersion = 2
+        0x18, 0x53, 0x80, 0x67, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Segment
+        0x15, 0x49, 0xA9, 0x66, 0x88, // Info (8 bytes)
+        0x4D, 0x80, 0x81, b't', // MuxingApp = "t"
+        0x57, 0x41, 0x81, b't', // WritingApp = "t"
+        0x16, 0x54, 0xAE, 0x6B, 0x9F, // Tracks (31 bytes)
+        0xAE, 0x9D, // TrackEntry (29 bytes)
+        0xD7, 0x81, 0x01, // TrackNumber = 1
+        0x73, 0xC5, 0x81, 0x01, // TrackUID = 1
+        0x83, 0x81, 0x01, // TrackType = Video (1)
+        0x86, 0x85, b'V', b'_', b'V', b'P', b'9', // CodecID = "V_VP9"
+        0xE0, 0x8A, // Video (10 bytes)
+        0xB0, 0x81, 0x40, // PixelWidth = 64
+        0xBA, 0x81, 0x40, // PixelHeight = 64
+        0x53, 0xC0, 0x81, 0x01, // AlphaMode = 1
+        0x1F, 0x43, 0xB6, 0x75, 0x84, 0xE7, 0x81, 0x00, // Cluster + Timestamp = 0
+    ];
+    let mkv_alpha =
+        matroska_demuxer::MatroskaFile::open(std::io::Cursor::new(ebml_alpha_vp9)).unwrap();
+    let err = remux_video_track(&mkv_alpha.tracks()[0]).unwrap_err();
+    assert!(err.contains("VP9"), "err={err}");
+}
+
+#[test]
+fn vp9_mkv_is_remuxed_to_fragmented_mp4() {
+    let path = remux_testdata("vp9.mkv");
+    let (mut stream, opened) = MkvStream::open(&path, None).unwrap();
+    assert_eq!(opened.video_codec, "vp09.00.10.08");
+    assert_eq!(opened.audio_codec.as_deref(), Some("opus"));
+    assert!(opened.separate_audio);
+    assert!(!opened.transcoded);
+    assert!(!opened.can_transcode);
+
+    // 初期化セグメントは映像 fMP4（vp09 + FullBox vpcC + colr）と音声 WebM（A_OPUS）に分かれる
+    let init_packed = stream.init_segment();
+    let (init, audio_init) = unpack_dual_payload(&init_packed).unwrap();
+    assert!(init.windows(4).any(|w| w == b"vp09"));
+    assert!(init.windows(4).any(|w| w == b"colr"));
+    let vpcc_pos = init
+        .windows(4)
+        .position(|w| w == b"vpcC")
+        .expect("init セグメントに vpcC が含まれること");
+    let vpcc_size = u32::from_be_bytes(init[vpcc_pos - 4..vpcc_pos].try_into().unwrap()) as usize;
+    assert_eq!(vpcc_size, 20); // header(8) + version/flags(4) + payload(8)
+    assert_eq!(&init[vpcc_pos + 4..vpcc_pos + 8], &[1, 0, 0, 0]);
+    let vpcc_body = &init[vpcc_pos + 8..vpcc_pos + 16];
+    assert_eq!(vpcc_body[0], 0); // profile 0
+    assert_eq!(vpcc_body[1], 10); // level 1.0 (64x64 24fps)
+    assert_eq!(vpcc_body[2] >> 4, 8); // 8-bit
+    assert_eq!(&vpcc_body[3..6], &[1, 1, 1]); // BT.709
+
+    // 全断片を順に読み切って全 72 映像フレーム + WebM Opus 音声が 0 秒から連続して得られる
+    let mut webm_audio = audio_init.to_vec();
+    let mut video_count = 0usize;
+    let mut video_end: Option<i64> = None;
+    let mut audio_end_ticks: Option<i64> = None;
+    let mut fragments = 0usize;
+    loop {
+        let fragment = stream.read_fragment().unwrap();
+        if fragment.is_empty() {
+            break;
+        }
+        fragments += 1;
+        let (v_frag, a_frag) = unpack_dual_payload(&fragment).unwrap();
+        if !v_frag.is_empty() {
+            let tracks = parse_fragment(v_frag);
+            assert!(!tracks.contains_key(&2));
+            let v = &tracks[&1];
+            assert!(v[0].keyframe);
+            assert!(v.iter().all(|s| s.pts == s.dts));
+            if let Some(end) = video_end {
+                assert_eq!(v[0].dts, end);
+            }
+            let v_last = v.last().unwrap();
+            video_end = Some(v_last.dts + v_last.duration);
+            video_count += v.len();
+        }
+        if !a_frag.is_empty() {
+            webm_audio.extend_from_slice(a_frag);
+            let frames = parse_webm_audio_ticks(a_frag);
+            if let Some(end) = audio_end_ticks {
+                assert_eq!(frames[0].0, end);
+            } else {
+                assert_eq!(frames[0].0, 0);
+            }
+            audio_end_ticks = Some(frames.last().unwrap().0 + 200);
+        }
+    }
+    assert!(fragments >= 2);
+    assert_eq!(video_count, 72);
+    assert!(audio_end_ticks.unwrap() > 20_000);
+    let mkv = matroska_demuxer::MatroskaFile::open(std::io::Cursor::new(&webm_audio)).unwrap();
+    assert_eq!(mkv.tracks()[0].codec_id(), "A_OPUS");
+    assert_eq!(mkv.tracks()[0].codec_delay(), Some(6_500_000));
+
+    // 途中（1.25 秒）へのシークは直前のキーフレーム（1.0 秒）から始まる
+    let sought = stream.seek(1.25).unwrap();
+    assert!((sought - 1.0).abs() < 0.05, "sought={sought}");
+    let after_seek = stream.read_fragment().unwrap();
+    let (v_seek, a_seek) = unpack_dual_payload(&after_seek).unwrap();
+    let tracks = parse_fragment(v_seek);
+    assert!(tracks[&1][0].keyframe);
+    let first_sec = tracks[&1][0].pts as f64 / 90_000.0;
+    assert!((first_sec - 1.0).abs() < 0.05, "first_sec={first_sec}");
+    let seek_audio = parse_webm_audio_ticks(a_seek);
+    assert!(!seek_audio.is_empty());
+    assert!((seek_audio[0].0 as f64 / 10_000.0 - 1.0).abs() < 0.1);
+}
+
+#[test]
+fn webm_opus_dops_roundtrip_and_cluster_splitting() {
+    // OpusHead <-> dOps の往復変換（ステレオ・マルチチャンネル双方）
+    let mut head = b"OpusHead".to_vec();
+    head.extend([1, 2, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0x00, 0x00, 0]);
+    assert_eq!(opus_head_pre_skip(&head), 312);
+    let dops = opus_dops(&head).unwrap();
+    assert_eq!(dops_to_opus_head(&dops).unwrap(), head);
+
+    let mut surround = b"OpusHead".to_vec();
+    surround.extend([
+        1, 6, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0, 0, 1, 4, 2, 0, 4, 1, 2, 3, 5,
+    ]);
+    let dops6 = opus_dops(&surround).unwrap();
+    assert_eq!(dops_to_opus_head(&dops6).unwrap(), surround);
+    assert_eq!(dops_to_opus_head(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), None);
+    assert_eq!(
+        opus_dops(b"OpusHead\x01\x00\x00\x00\x80\xBB\x00\x00\x00\x00\x00"),
+        None
+    );
+
+    // 2.5 ms（120 サンプル）の短フレーム精度と、3 秒超の長い断片での複数 Cluster 分割を両方検証
+    let run = TrackRun {
+        track_id: 2,
+        base_decode_time: 0,
+        samples: vec![
+            Sample {
+                data: vec![0xE0, 0x01],
+                duration: 120, // 2.5 ms = 25 ticks
+                composition_offset: 0,
+                keyframe: true,
+            },
+            Sample {
+                data: vec![0xE0, 0x02],
+                duration: 120, // +2.5 ms -> 5.0 ms = 50 ticks
+                composition_offset: 0,
+                keyframe: true,
+            },
+            Sample {
+                data: vec![0xF8, 0x03],
+                duration: 48_000 * 4, // +4.0 s -> 新 Cluster（40,050 ticks）
+                composition_offset: 0,
+                keyframe: true,
+            },
+            Sample {
+                data: vec![0xF8, 0x04],
+                duration: 960,
+                composition_offset: 0,
+                keyframe: true,
+            },
+        ],
+        has_composition_offsets: false,
+    };
+    let frag = build_webm_opus_fragment(&run);
+    let parsed = parse_webm_audio_ticks(&frag);
+    assert_eq!(parsed, vec![(0, 2), (25, 2), (50, 2), (40_050, 2)]);
+}
+
+// ---- ファイルの情報 ----
+
+fn info_of(path: &Path, entry: Option<&str>) -> crate::info::MediaInfo {
+    crate::info::collect_media_info(path, entry, &ArchiveCache(Mutex::new(None))).unwrap()
+}
+
+fn info_value<'a>(info: &'a crate::info::MediaInfo, section: &str, label: &str) -> Option<&'a str> {
+    info.sections
+        .iter()
+        .find(|s| s.title == section)
+        .and_then(|s| s.get(label))
+}
+
+#[test]
+fn info_formats_values_for_display() {
+    use crate::info::format::*;
+    assert_eq!(group_digits(1234567), "1,234,567");
+    assert_eq!(group_digits(999), "999");
+    assert_eq!(format_bytes(512), "512 バイト");
+    assert_eq!(format_bytes(1536), "1.50 KB（1,536 バイト）");
+    assert_eq!(
+        format_bytes(50 * 1024 * 1024),
+        "50.0 MB（52,428,800 バイト）"
+    );
+    assert_eq!(format_duration(3723.9).as_deref(), Some("1:02:03"));
+    assert_eq!(format_duration(65.0).as_deref(), Some("1:05"));
+    assert_eq!(format_duration(0.0), None);
+    assert_eq!(format_bitrate(320_000.0).as_deref(), Some("320 kbps"));
+    assert_eq!(format_bitrate(12_345_678.0).as_deref(), Some("12.3 Mbps"));
+    assert_eq!(format_sample_rate(44_100.0).as_deref(), Some("44.1 kHz"));
+    assert_eq!(format_sample_rate(48_000.0).as_deref(), Some("48 kHz"));
+    assert_eq!(format_channels(2).as_deref(), Some("2（ステレオ）"));
+    assert_eq!(format_channels(3).as_deref(), Some("3"));
+    assert_eq!(format_fps(24_000.0 / 1001.0).as_deref(), Some("23.976 fps"));
+    assert_eq!(format_aspect(1920, 1080).as_deref(), Some("16:9"));
+    assert_eq!(format_aspect(1920, 804).as_deref(), Some("2.39:1"));
+    assert_eq!(format_utc(0.0), "1970-01-01 00:00:00 UTC");
+    assert_eq!(format_utc(1_709_210_096_000.0), "2024-02-29 12:34:56 UTC");
+}
+
+#[test]
+fn info_reads_codec_profiles_from_config_records() {
+    use crate::info::video::*;
+    // avcC: version, profile 100 (High), compat, level 41
+    let avc = avc_detail(Some(&[1, 100, 0, 41]));
+    assert_eq!(avc.profile.as_deref(), Some("High@L4.1"));
+    // hvcC: Main 10、level_idc 153 (5.1)、bitDepthLumaMinus8 = 2
+    let mut hvcc = [0u8; 23];
+    hvcc[0] = 1;
+    hvcc[1] = 2;
+    hvcc[12] = 153;
+    hvcc[17] = 0xF8 | 2;
+    let hevc = hevc_detail(Some(&hvcc), "H.265 (HEVC)");
+    assert_eq!(hevc.profile.as_deref(), Some("Main 10@L5.1"));
+    assert_eq!(hevc.bit_depth, Some(10));
+    // av1C: marker, seq_profile 0 / seq_level_idx 8 (4.0), high_bitdepth
+    let av1 = av1_detail(Some(&[0x81, 8, 0x40, 0]));
+    assert_eq!(av1.profile.as_deref(), Some("Main@L4.0"));
+    assert_eq!(av1.bit_depth, Some(10));
+    // Matroska の VP9 CodecPrivate（ID, 長さ, 値）
+    let vp9 = mkv_codec_name("V_VP9", Some(&[1, 1, 2, 2, 1, 41, 3, 1, 10]));
+    assert_eq!(vp9.name, "VP9");
+    assert_eq!(vp9.profile.as_deref(), Some("Profile 2@L4.1"));
+    assert_eq!(vp9.bit_depth, Some(10));
+    assert_eq!(mkv_codec_name("A_EAC3", None).name, "E-AC-3");
+    assert_eq!(mkv_codec_name("S_HDMV/PGS", None).name, "PGS（画像字幕）");
+    // AudioSpecificConfig: object 2 (LC) / 5 (SBR)
+    assert_eq!(aac_name(Some(&[0x11, 0x90])), "AAC LC");
+    assert_eq!(aac_name(Some(&[0x2B, 0x10])), "HE-AAC");
+    assert_eq!(aac_name(None), "AAC");
+}
+
+#[test]
+fn info_reads_video_tracks_from_mp4_and_matroska() {
+    let mp4 = info_of(&remux_testdata("av1.mp4"), None);
+    assert_eq!(mp4.kind, Some(MediaKind::Video));
+    assert!(mp4.warning.is_none());
+    assert_eq!(info_value(&mp4, "映像", "コーデック"), Some("AV1"));
+    assert_eq!(info_value(&mp4, "映像", "解像度"), Some("128 × 96"));
+    assert_eq!(info_value(&mp4, "映像", "フレームレート"), Some("24 fps"));
+    assert_eq!(info_value(&mp4, "音声", "コーデック"), Some("AAC LC"));
+    assert_eq!(
+        info_value(&mp4, "音声", "サンプリング周波数"),
+        Some("48 kHz")
+    );
+    assert!(
+        info_value(&mp4, "全般", "コンテナ")
+            .unwrap()
+            .starts_with("MPEG-4")
+    );
+
+    let webm = info_of(&remux_testdata("av1.webm"), None);
+    assert_eq!(info_value(&webm, "全般", "コンテナ"), Some("WebM"));
+    assert_eq!(info_value(&webm, "映像", "コーデック"), Some("AV1"));
+    assert_eq!(info_value(&webm, "音声", "コーデック"), Some("Opus"));
+    // 非可逆圧縮の音声にはビット深度を出さない
+    assert_eq!(info_value(&webm, "音声", "ビット深度"), None);
+
+    let mkv = info_of(&remux_testdata("remux.mkv"), None);
+    assert_eq!(info_value(&mkv, "全般", "コンテナ"), Some("Matroska"));
+    assert_eq!(info_value(&mkv, "映像", "コーデック"), Some("H.264 (AVC)"));
+    assert_eq!(info_value(&mkv, "音声 1", "コーデック"), Some("AC-3"));
+    assert_eq!(info_value(&mkv, "音声 2", "コーデック"), Some("AAC LC"));
+    assert_eq!(info_value(&mkv, "音声 2", "言語"), Some("jpn"));
+
+    let subs = info_of(&remux_testdata("subtitles.mkv"), None);
+    assert_eq!(info_value(&subs, "字幕 1", "形式"), Some("SRT"));
+    assert_eq!(info_value(&subs, "字幕 1", "名前"), Some("日本語"));
+    assert_eq!(info_value(&subs, "字幕 2", "形式"), Some("ASS"));
+}
+
+/// Exif（Make / Model / ExposureTime / FNumber / ISO / DateTimeOriginal）入りの小さな JPEG
+fn jpeg_with_exif(width: u16, height: u16) -> Vec<u8> {
+    // TIFF（ビッグエンディアン）。IFD0 は 8、Exif IFD は 64 から
+    let mut tiff = vec![0u8; 154];
+    tiff[..8].copy_from_slice(b"MM\0*\0\0\0\x08");
+    let entry = |t: &mut Vec<u8>, at: usize, tag: u16, kind: u16, count: u32, value: u32| {
+        t[at..at + 2].copy_from_slice(&tag.to_be_bytes());
+        t[at + 2..at + 4].copy_from_slice(&kind.to_be_bytes());
+        t[at + 4..at + 8].copy_from_slice(&count.to_be_bytes());
+        t[at + 8..at + 12].copy_from_slice(&value.to_be_bytes());
+    };
+    tiff[8..10].copy_from_slice(&3u16.to_be_bytes());
+    entry(&mut tiff, 10, 0x010F, 2, 6, 50); // Make
+    entry(&mut tiff, 22, 0x0110, 2, 7, 56); // Model
+    entry(&mut tiff, 34, 0x8769, 4, 1, 64); // ExifIFDPointer
+    tiff[50..56].copy_from_slice(b"Canon\0");
+    tiff[56..63].copy_from_slice(b"EOS R5\0");
+    tiff[64..66].copy_from_slice(&4u16.to_be_bytes());
+    entry(&mut tiff, 66, 0x829A, 5, 1, 118); // ExposureTime
+    entry(&mut tiff, 78, 0x829D, 5, 1, 126); // FNumber
+    entry(&mut tiff, 90, 0x8827, 3, 1, 400 << 16); // ISO
+    entry(&mut tiff, 102, 0x9003, 2, 20, 134); // DateTimeOriginal
+    tiff[118..126].copy_from_slice(&[0, 0, 0, 1, 0, 0, 0, 250]);
+    tiff[126..134].copy_from_slice(&[0, 0, 0, 28, 0, 0, 0, 10]);
+    tiff[134..154].copy_from_slice(b"2024:05:06 07:08:09\0");
+
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
+    jpeg.extend_from_slice(&((tiff.len() + 8) as u16).to_be_bytes());
+    jpeg.extend_from_slice(b"Exif\0\0");
+    jpeg.extend_from_slice(&tiff);
+    // SOF0（解像度）
+    jpeg.extend_from_slice(&[0xFF, 0xC0, 0, 11, 8]);
+    jpeg.extend_from_slice(&height.to_be_bytes());
+    jpeg.extend_from_slice(&width.to_be_bytes());
+    jpeg.extend_from_slice(&[1, 1, 0x11, 0, 0xFF, 0xD9]);
+    jpeg
+}
+
+#[test]
+fn info_reads_image_size_and_exif() {
+    let dir = test_dir("info-image");
+    let jpg = dir.join("photo.jpg");
+    fs::write(&jpg, jpeg_with_exif(6000, 4000)).unwrap();
+    let info = info_of(&jpg, None);
+    assert_eq!(info.kind, Some(MediaKind::Image));
+    assert_eq!(info_value(&info, "ファイル", "名前"), Some("photo.jpg"));
+    assert_eq!(info_value(&info, "画像", "形式"), Some("JPEG"));
+    assert_eq!(
+        info_value(&info, "画像", "解像度"),
+        Some("6000 × 4000（24 MP）")
+    );
+    assert_eq!(info_value(&info, "撮影情報", "メーカー"), Some("Canon"));
+    assert_eq!(info_value(&info, "撮影情報", "機種"), Some("EOS R5"));
+    assert_eq!(info_value(&info, "撮影情報", "露出時間"), Some("1/250 秒"));
+    assert_eq!(info_value(&info, "撮影情報", "F 値"), Some("f/2.8"));
+    assert_eq!(info_value(&info, "撮影情報", "ISO 感度"), Some("400"));
+    assert_eq!(
+        info_value(&info, "撮影情報", "撮影日時"),
+        Some("2024-05-06 07:08:09")
+    );
+
+    // PNG（IHDR だけ）: Exif が無ければ撮影情報の欄は出さない
+    let png = dir.join("image.png");
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    bytes.extend_from_slice(&320u32.to_be_bytes());
+    bytes.extend_from_slice(&200u32.to_be_bytes());
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    fs::write(&png, bytes).unwrap();
+    let info = info_of(&png, None);
+    assert_eq!(info_value(&info, "画像", "形式"), Some("PNG"));
+    assert_eq!(info_value(&info, "画像", "解像度"), Some("320 × 200"));
+    assert_eq!(info_value(&info, "画像", "色"), Some("8 bit / RGBA"));
+    assert!(info.sections.iter().all(|s| s.title != "撮影情報"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn info_reads_image_inside_archive() {
+    use std::io::Write;
+    let dir = test_dir("info-archive");
+    let zip_path = dir.join("book.cbz");
+    let mut zip = zip::ZipWriter::new(File::create(&zip_path).unwrap());
+    zip.start_file("vol1/p001.jpg", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(&jpeg_with_exif(800, 600)).unwrap();
+    zip.finish().unwrap();
+    let info = info_of(&zip_path, Some("vol1/p001.jpg"));
+    assert_eq!(info.name, "p001.jpg");
+    assert_eq!(
+        info_value(&info, "ファイル", "書庫内の場所"),
+        Some("vol1/p001.jpg")
+    );
+    assert_eq!(
+        info_value(&info, "画像", "解像度"),
+        Some("800 × 600（0.5 MP）")
+    );
+    assert_eq!(info_value(&info, "撮影情報", "機種"), Some("EOS R5"));
+    assert!(
+        crate::info::collect_media_info(
+            &zip_path,
+            Some("missing.jpg"),
+            &ArchiveCache(Mutex::new(None))
+        )
+        .is_err()
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn info_reads_audio_properties() {
+    // 16 bit / 2 チャンネル / 44.1 kHz の 1 秒の無音 WAV
+    let dir = test_dir("info-audio");
+    let wav = dir.join("tone.wav");
+    let data_len: u32 = 44_100 * 4;
+    let mut bytes = b"RIFF".to_vec();
+    bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&44_100u32.to_le_bytes());
+    bytes.extend_from_slice(&(44_100u32 * 4).to_le_bytes());
+    bytes.extend_from_slice(&4u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    bytes.resize(bytes.len() + data_len as usize, 0);
+    fs::write(&wav, bytes).unwrap();
+    let info = info_of(&wav, None);
+    assert_eq!(info.kind, Some(MediaKind::Audio));
+    assert_eq!(info_value(&info, "音声", "コーデック"), Some("PCM (WAV)"));
+    assert_eq!(info_value(&info, "音声", "長さ"), Some("0:01"));
+    assert_eq!(
+        info_value(&info, "音声", "サンプリング周波数"),
+        Some("44.1 kHz")
+    );
+    assert_eq!(info_value(&info, "音声", "ビット深度"), Some("16 bit"));
+    assert_eq!(
+        info_value(&info, "音声", "チャンネル"),
+        Some("2（ステレオ）")
+    );
+    // タグが無ければタグの欄は出さない
+    assert!(info.sections.iter().all(|s| s.title != "タグ"));
+
+    // 中身が壊れていても、ファイルの欄は出して理由を添える
+    let broken = dir.join("broken.mp3");
+    fs::write(&broken, b"not audio").unwrap();
+    let info = info_of(&broken, None);
+    assert_eq!(info_value(&info, "ファイル", "名前"), Some("broken.mp3"));
+    assert!(info.warning.is_some());
+    let _ = fs::remove_dir_all(&dir);
 }

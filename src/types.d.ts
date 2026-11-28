@@ -42,6 +42,30 @@ export interface AudioInfo {
   album: string | null;
 }
 
+export interface InfoRow {
+  label: string;
+  value: string;
+  /** 日時の行なら UNIX 時刻（ミリ秒）。value には UTC で書いたものが入る */
+  time?: number;
+}
+
+export interface InfoSection {
+  title: string;
+  rows: InfoRow[];
+}
+
+export interface MediaInfo {
+  name: string;
+  kind: MediaKind | null;
+  sections: InfoSection[];
+  warning?: string;
+}
+
+export interface InfoTarget {
+  path: string;
+  entry: string | null;
+}
+
 export interface SubtitleCue {
   start: number;
   end: number;
@@ -66,9 +90,12 @@ export interface MkvOpened {
   id: number;
   videoCodec: string;
   audioCodec: string | null;
+  separateAudio: boolean;
   duration: number | null;
   audioTracks: RemuxAudioTrack[];
   audio: number | null;
+  transcoded: boolean;
+  canTranscode: boolean;
 }
 
 export interface AssociationItem {
@@ -166,6 +193,22 @@ export interface TauriCommandMap {
     args: { path: string };
     result: AudioInfo;
   };
+  media_info: {
+    args: { path: string; entry?: string | null };
+    result: MediaInfo;
+  };
+  open_info_window: {
+    args: { path: string | null; entry?: string | null; toggle?: boolean | null };
+    result: undefined;
+  };
+  sync_info_window: {
+    args: { path: string | null; entry?: string | null };
+    result: undefined;
+  };
+  get_info_target: {
+    args: Record<never, never>;
+    result: InfoTarget | null;
+  };
   audio_artwork: {
     args: { path: string };
     result: RawBytes;
@@ -174,8 +217,12 @@ export interface TauriCommandMap {
     args: { path: string };
     result: SubtitleTrack[];
   };
+  video_needs_stream: {
+    args: { path: string };
+    result: boolean;
+  };
   mkv_open: {
-    args: { path: string; audio: number | null };
+    args: { path: string; audio: number | null; transcode?: boolean | null };
     result: MkvOpened;
   };
   mkv_init: {
@@ -189,6 +236,10 @@ export interface TauriCommandMap {
   mkv_read: {
     args: { id: number };
     result: RawBytes;
+  };
+  mkv_cancel_read: {
+    args: { id: number };
+    result: undefined;
   };
   mkv_close: {
     args: { id: number };

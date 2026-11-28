@@ -5,7 +5,7 @@ sView is a minimal, frameless media viewer (images, videos, audio, zip/cbz archi
 
 - **Backend**: Rust 2024. `src-tauri/src/lib.rs` is the entry point (`run()` and window lifecycle),
   and domain logic is split into submodules (`media.rs`, `state.rs`, `archive.rs`, `listing.rs`,
-  `audio.rs`, `watcher.rs`, `window.rs`, `settings.rs`, `logging.rs`, `assoc.rs`, `mkv/`,
+  `audio.rs`, `info/`, `watcher.rs`, `window.rs`, `settings.rs`, `logging.rs`, `assoc.rs`, `mkv/`,
   `platform/`, `tests.rs`).
 - **Frontend**: plain HTML/CSS/JS in `src/`, served as-is with **native ES Modules
   (`<script type="module">`)**. **No framework, no bundler, no TypeScript** — modules use standard
@@ -98,9 +98,11 @@ cargo test --manifest-path src-tauri/Cargo.toml natural_sort_orders_numbers_nume
   `src/viewer/media-formats.js` and `fileAssociations` in `src-tauri/tauri.conf.json`. Both
   `npm run check:formats` and `supported_extensions_stay_in_sync` in `src-tauri/src/tests.rs` fail
   when they drift. Archives (`archive`) are deliberately **not** file-associated.
-- No codec is bundled (codec patent licensing): videos and audio play with the OS WebView's
-  decoders only, so don't add formats the WebViews can't handle. MKV on macOS is the one container
-  we unpack ourselves (remuxed to fragmented MP4, never re-encoded; see `media-playback.md`).
+- No patent-encumbered codec is bundled: videos and audio play with the OS WebView's decoders,
+  so don't add formats the WebViews can't handle. The only exception is `rav1d` (royalty-free
+  AV1 decoder) bundled on macOS for Macs without HW AV1 decode (M1/M2), where frames are
+  transcoded via VideoToolbox H.264. MKV on macOS is otherwise unpacked and remuxed to
+  fragmented MP4 without re-encoding (see `media-playback.md`).
 
 ## Detailed implementation notes
 

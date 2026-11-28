@@ -3,7 +3,7 @@
 ## 設計方針
 
 - **軽量** — フロントエンドはフレームワーク・バンドラなしの素の HTML/CSS/JS。バックエンドは Rust。UI は OS 標準の WebView（WebView2 / WKWebView）を使うため、バイナリは数MB程度です
-- 動画・音楽はコーデックを同梱せず、OS の WebView が再生できる形式だけを扱います（[動画](specs/video.md)・[音楽](specs/audio.md)）
+- 動画・音楽は特許ライセンスの掛かるコーデックを同梱せず、OS の WebView が再生できる形式を扱います（macOS の AV1 非対応機向けのみロイヤリティフリーの `rav1d` を同梱。[動画](specs/video.md)・[音楽](specs/audio.md)）
 - 通信は一切しません（自動更新もありません）
 
 ## プロジェクト構成
@@ -22,15 +22,18 @@ sView/
 │   │   ├── wheel.js         # ホイール操作の軸固定・感度しきい値・音量調整
 │   │   ├── delete-confirm.js # 削除確認ダイアログ
 │   │   └── context-menu.js  # 右クリックメニュー・サブメニューの表示と操作
-│   ├── mkv-player.js        # macOS で MKV を MSE で再生する（Rust が詰め直した fragmented MP4 を流す）
+│   ├── mkv-player.js        # macOS で MKV・AV1 を MSE で再生する（Rust が詰め直し / 変換した fragmented MP4 を流す）
 │   ├── style.css            # オーバーレイ UI（自動表示・自動非表示）・再生操作カード・コンテキストメニュー
 │   ├── settings.html        # 設定ウィンドウ
 │   ├── settings.js          # 設定ウィンドウの UI 生成・保存
-│   ├── settings.css         # 設定ウィンドウとショートカット一覧の見た目（本体と同じ配色）
+│   ├── settings.css         # 設定ウィンドウ・ショートカット一覧・ファイルの情報の見た目（本体と同じ配色）
 │   ├── settings-defs.js     # 設定項目の定義（本体と設定ウィンドウで共有）
 │   ├── shortcuts.html       # ショートカット一覧ウィンドウ（設定ウィンドウから開く）
 │   ├── shortcuts.js         # ショートカット一覧の内容（main.js のキー操作の写し）
-│   ├── theme.js             # 設定ウィンドウとショートカット一覧の配色を設定から作る
+│   ├── info.html            # ファイルの情報ウィンドウ（右クリックメニュー / I キーで開く）
+│   ├── info.js              # ファイルの情報の表示（Rust の media_info の結果を並べる）
+│   ├── info-format.js       # ファイルの情報の日時の書き方・コピー用テキスト
+│   ├── theme.js             # 設定ウィンドウ・ショートカット一覧・ファイルの情報の配色を設定から作る
 │   └── audio-artwork.svg    # アートワークの無い音楽ファイルに出す既定の絵
 ├── src-tauri/
 │   ├── src/
@@ -41,16 +44,17 @@ sView/
 │   │   ├── archive.rs       # zip / cbz 書庫のキャッシュ・一覧・画像取り出し
 │   │   ├── listing.rs       # フォルダ/書庫の一覧作成・ゴミ箱への移動（trash）
 │   │   ├── audio.rs         # 音楽のタグとアートワークの読み取り（lofty）
+│   │   ├── info/            # ファイルの情報（画像の解像度・Exif / 動画のトラック / 音楽の形式とタグ）・情報ウィンドウ
 │   │   ├── watcher.rs       # フォルダの変更監視（notify）
 │   │   ├── window.rs        # ウィンドウの大きさ・位置の保存（window.json）・縦横比維持・ドラッグ制御
 │   │   ├── settings.rs      # 設定（settings.json）の読み書き・設定/ショートカットウィンドウの表示
 │   │   ├── logging.rs       # ログ初期化・パニックフック・ファイルマネージャーで表示
 │   │   ├── assoc.rs         # OS への拡張子関連付けの共通インターフェースとコマンド
-│   │   ├── mkv/             # MKV 字幕抽出（subtitles.rs）・macOS 向けリマックス（remux.rs）・fMP4 書き出し（fmp4.rs）
+│   │   ├── mkv/             # MKV 字幕抽出（subtitles.rs）・macOS 向けリマックス/変換（remux.rs / fmp4.rs / mp4.rs / av1.rs / vt.rs）
 │   │   ├── platform/        # OS 固有実装（windows.rs: レジストリ関連付け・WM_SIZING / macos.rs: LaunchServices・NSTrackingArea 等）
 │   │   └── tests.rs         # ユニットテスト
 │   ├── tauri.conf.json      # ウィンドウ設定（フレームレス等）・CSP・バンドル設定・関連付け
-│   ├── testdata/            # テストで読むファイル（字幕入りの小さな MKV、詰め直しを確かめる MKV）
+│   ├── testdata/            # テストで読むファイル（字幕・リマックス・AV1 変換を確かめる小さな動画）
 │   ├── capabilities/        # ウィンドウごとにフロントエンドへ許可する API の定義
 │   ├── installer-hooks.nsh  # Windows インストーラ（NSIS）のフック。旧ユーザー単位インストールの後始末
 │   ├── installer/           # インストーラの見た目（Windows のインストーラの画像、macOS の dmg の背景）
@@ -77,7 +81,8 @@ sView/
 - ファイル一覧の作成（`listing.rs` / `media.rs`）と、圧縮フォルダからの画像の取り出し（`archive.rs`）
 - フォルダの変更の監視（`watcher.rs` / `notify`）、ゴミ箱への移動（`listing.rs` / `trash`）
 - 音楽のタグとアートワークの読み取り（`audio.rs` / `lofty`）
-- MKV のテキスト字幕（SRT / ASS）の取り出し（`mkv/subtitles.rs`）と、macOS での MKV 再生のための fragmented MP4 リマックス（`mkv/remux.rs` / `mkv/fmp4.rs`）
+- ファイルの情報の読み取り（`info/`）。画像の解像度は `imagesize`、Exif は `kamadak-exif`、動画は MP4 の moov（`mkv/mp4.rs` のボックス読み取りを共用）と Matroska のヘッダ（`matroska-demuxer`）、音楽は `lofty`
+- MKV のテキスト字幕（SRT / ASS）の取り出し（`mkv/subtitles.rs`）と、macOS での MKV / AV1 再生のための fragmented MP4 リマックスおよび `rav1d` + VideoToolbox リアルタイム変換（`mkv/remux.rs` / `mkv/fmp4.rs` / `mkv/mp4.rs` / `mkv/av1.rs` / `mkv/vt.rs`）
 - 設定（`settings.rs` / `settings.json`）とウィンドウの大きさ・位置（`window.rs` / `window.json`）の保存・縦横比維持
 - 起動時に渡されたファイルの受け取り（`lib.rs`）、OS への関連付け（`assoc.rs` / `platform/`）、ログ（`logging.rs`）
 
@@ -88,8 +93,9 @@ sView/
 | `main` | `index.html` | 本体。macOS で Finder / Dock から追加で開いたファイルは `viewer-N` という同じ作りのウィンドウで開く |
 | `settings` | `settings.html` | 設定ウィンドウ。閉じても隠すだけ |
 | `shortcuts` | `shortcuts.html` | ショートカット一覧。閉じても隠すだけ |
+| `info` | `info.html` | ファイルの情報。閉じても隠すだけ。出すファイルは Rust 側（`InfoTargetState`）が覚えていて、`info-target` イベントで届く |
 
-どれも `tauri.conf.json` に定義し、起動時に Rust 側（`create_configured_windows`）で作ります。許可する API はウィンドウごとに `capabilities/` の別ファイル（`default.json` / `settings.json` / `shortcuts.json`）で決めています。
+どれも `tauri.conf.json` に定義し、起動時に Rust 側（`create_configured_windows`）で作ります。許可する API はウィンドウごとに `capabilities/` の別ファイル（`default.json` / `settings.json` / `shortcuts.json` / `info.json`）で決めています。
 
 ## プラットフォーム別の注意点
 

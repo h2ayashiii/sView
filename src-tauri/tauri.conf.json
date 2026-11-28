@@ -57,6 +57,22 @@
         "visible": false,
         "transparent": true,
         "dragDropEnabled": false
+      },
+      {
+        "label": "info",
+        "create": false,
+        "title": "sView のファイルの情報",
+        "url": "info.html",
+        "width": 440,
+        "height": 600,
+        "minWidth": 320,
+        "minHeight": 240,
+        "center": true,
+        "resizable": true,
+        "decorations": false,
+        "visible": false,
+        "transparent": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {

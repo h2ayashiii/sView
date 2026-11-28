@@ -1,6 +1,11 @@
+pub(crate) mod av1;
 pub(crate) mod fmp4;
+pub(crate) mod mp4;
 pub(crate) mod remux;
 pub(crate) mod subtitles;
+#[cfg(target_os = "macos")]
+pub(crate) mod vt;
+pub(crate) mod webm;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -11,17 +16,29 @@ use tauri::ipc::Response;
 
 use crate::state::PerWindow;
 #[cfg(test)]
+pub(crate) use av1::*;
+#[cfg(test)]
 pub(crate) use fmp4::*;
+#[cfg(test)]
+pub(crate) use mp4::*;
 #[cfg(test)]
 pub(crate) use remux::*;
 pub(crate) use remux::{MkvOpened, MkvStream};
 #[cfg(test)]
 pub(crate) use subtitles::*;
+#[cfg(test)]
+pub(crate) use webm::*;
 
-// ---- MKV のリマックスのコマンド ----
+// ---- 動画ストリーム（MKV リマックス・macOS AV1 変換）のコマンド ----
 
-/// ウィンドウごとに開いている MKV（1 ウィンドウ 1 本。開き直したら前のものは閉じる）
-pub(crate) struct MkvStreams(pub(crate) PerWindow<Option<(u64, std::sync::Arc<Mutex<MkvStream>>)>>);
+type MkvStreamEntry = (
+    u64,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    std::sync::Arc<Mutex<MkvStream>>,
+);
+
+/// ウィンドウごとに開いている動画ストリーム（1 ウィンドウ 1 本。開き直したら前のものは閉じる）
+pub(crate) struct MkvStreams(pub(crate) PerWindow<Option<MkvStreamEntry>>);
 
 static NEXT_MKV_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -33,26 +50,68 @@ impl MkvStreams {
     ) -> Result<std::sync::Arc<Mutex<MkvStream>>, String> {
         self.0
             .with(label, |s| {
-                s.as_ref().filter(|(i, _)| *i == id).map(|(_, s)| s.clone())
+                s.as_ref()
+                    .filter(|(i, _, _)| *i == id)
+                    .map(|(_, _, stream)| stream.clone())
             })
             .flatten()
             .ok_or_else(|| "動画はもう閉じています".to_string())
     }
+
+    pub(crate) fn remove_window(&self, label: &str) {
+        self.0.with(label, |s| {
+            if let Some((_, abort, _)) = s.take() {
+                abort.store(true, AtomicOrdering::Relaxed);
+            }
+        });
+        self.0.remove(label);
+    }
 }
 
-/// MKV を開いて fMP4 へのリマックスを始める。`audio` は鳴らす音声の番号
-/// （None なら既定の音声、負なら音声なし）
+/// この動画を Rust 側のストリーム経路（MKV リマックス / AV1 変換）で再生する必要があるかを返す。
+/// - Windows 等では常に false（OS の WebView がそのまま再生する）
+/// - macOS の M3 以降（AV1 ハードウェアデコード対応）では MKV 以外 false（ファイル I/O なし）
+/// - macOS の M1 / M2 世代など非対応機ではコンテナヘッダだけを高速に覗き、AV1 なら true を返す
+#[tauri::command(async)]
+pub(crate) fn video_needs_stream(path: String) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let p = Path::new(&path);
+        if crate::media::has_ext(p, &["mkv"]) {
+            return true;
+        }
+        if av1::hw_av1_decode_supported() {
+            return false;
+        }
+        remux::is_av1_video(p)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// 動画を開いて fMP4 ストリーム（リマックスまたは AV1 変換）を始める。
+/// `audio` は鳴らす音声の番号（None なら既定の音声、負なら音声なし）。
+/// `transcode` は AV1 の強制ソフトウェア変換指定（None なら環境に応じて自動判定）
 #[tauri::command(async)]
 pub(crate) fn mkv_open(
     window: tauri::Window,
     streams: State<MkvStreams>,
     path: String,
     audio: Option<i64>,
+    transcode: Option<bool>,
 ) -> Result<MkvOpened, String> {
-    let (stream, mut opened) = MkvStream::open(Path::new(&path), audio)?;
+    let (stream, mut opened) = MkvStream::open_with_options(Path::new(&path), audio, transcode)?;
     opened.id = NEXT_MKV_ID.fetch_add(1, AtomicOrdering::Relaxed);
-    let entry = (opened.id, std::sync::Arc::new(Mutex::new(stream)));
-    streams.0.with(window.label(), |s| *s = Some(entry));
+    let abort = stream.abort_flag();
+    let entry = (opened.id, abort, std::sync::Arc::new(Mutex::new(stream)));
+    streams.0.with(window.label(), |s| {
+        if let Some((_, old_abort, _)) = s.replace(entry) {
+            old_abort.store(true, AtomicOrdering::Relaxed);
+        }
+    });
     Ok(opened)
 }
 
@@ -99,12 +158,26 @@ pub(crate) fn mkv_read(
         .map_err(|e| format!("動画を読めません: {e}"))
 }
 
-/// MKV を閉じる（ファイルを手放す）
+/// シーク連打時に実行中の mkv_read（AV1 変換ループ）をロック待ちなしで中断させる
+#[tauri::command]
+pub(crate) fn mkv_cancel_read(window: tauri::Window, streams: State<MkvStreams>, id: u64) {
+    streams.0.with(window.label(), |s| {
+        if let Some((cur_id, abort, _)) = s.as_ref()
+            && *cur_id == id
+        {
+            abort.store(true, AtomicOrdering::Relaxed);
+        }
+    });
+}
+
+/// 動画ストリームを閉じる（実行中の変換があれば中断してファイルを手放す）
 #[tauri::command]
 pub(crate) fn mkv_close(window: tauri::Window, streams: State<MkvStreams>, id: u64) {
     streams.0.with(window.label(), |s| {
-        if s.as_ref().is_some_and(|(i, _)| *i == id) {
-            *s = None;
+        if s.as_ref().is_some_and(|(i, _, _)| *i == id)
+            && let Some((_, abort, _)) = s.take()
+        {
+            abort.store(true, AtomicOrdering::Relaxed);
         }
     });
 }
